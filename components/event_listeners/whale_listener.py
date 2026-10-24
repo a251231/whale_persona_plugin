@@ -983,12 +983,19 @@ class WhaleListener(EventListener):
         return "\n".join(parts).strip()
 
     @staticmethod
+    def _is_incoming_sticker(text: str) -> bool:
+        s = (text or "").strip()
+        return "<emoji " in s or s.startswith("<msg><emoji")
+
+    @staticmethod
     def _should_ignore_plugin_command(text: str) -> bool:
         if not text:
             return True
         stripped = text.strip()
         if not stripped:
             return True
+        if "<emoji " in stripped or stripped.startswith("<msg><emoji"):
+            return False
         if stripped.startswith(IGNORE_PREFIXES):
             return True
         if SMS_OR_PHONE_RE.fullmatch(stripped):
@@ -1312,12 +1319,18 @@ class WhaleListener(EventListener):
         if self._should_ignore_plugin_command(raw_text):
             return
 
-        cleaned_text = STRIP_TRIGGER_RE.sub("", raw_text).strip()
-        if not cleaned_text:
-            cleaned_text = raw_text.strip()
+        is_sticker_in = self._is_incoming_sticker(raw_text)
+        if is_sticker_in:
+            if is_group:
+                return
+            cleaned_text = "（对方刚刚给你发了一张微信表情包跟你斗图！请用活人短句回敬一句，并在最末尾附上 `[表情: 名称]` 甩一张你的表情包回去！）"
+        else:
+            cleaned_text = STRIP_TRIGGER_RE.sub("", raw_text).strip()
+            if not cleaned_text:
+                cleaned_text = raw_text.strip()
 
-        if self._should_ignore_plugin_command(cleaned_text):
-            return
+            if self._should_ignore_plugin_command(cleaned_text):
+                return
 
         if await self._is_duplicate(getattr(event_ctx, "query_id", None)):
             return
@@ -1404,6 +1417,9 @@ class WhaleListener(EventListener):
                 )
                 cleaned_reply = self._clean_reply(raw_reply)
                 reply_text, _, meme_b64 = self._extract_text_and_meme(cleaned_reply)
+                if is_sticker_in and not meme_b64 and self._memes_b64:
+                    fallback_tag = random.choice(["得意", "干饭", "猫爪", "偷看", "飘了"])
+                    meme_b64 = self._memes_b64.get(fallback_tag)
         except Exception as exc:
             logger.warning("Whale persona DeepSeek API call failed: %s", exc)
             return
