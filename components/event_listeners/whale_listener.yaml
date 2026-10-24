@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: EventListener
+metadata:
+  name: whale_listener
+  label:
+    en_US: Whale Persona Listener
+    zh_Hans: 大肥鱼活人感监听器
+  description:
+    en_US: Full Dafeiyu live-persona suite with mood, fish memory, token balance, and proactive speak-up.
+    zh_Hans: 集成大肥鱼活人版预设、鱼的心情、鱼的记忆、主动搭话与真实Token粮仓感知。
+spec: {}
+execution:
+  python:
+    path: whale_listener.py
+    attr: WhaleListener

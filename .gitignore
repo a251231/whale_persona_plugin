@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.env
+*.lbpkg
+dist/
+whale_persona_state.json
+*.tmp
