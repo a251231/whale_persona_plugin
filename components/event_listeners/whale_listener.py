@@ -166,7 +166,7 @@ LIVE_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·活人版）
    - 闲聊时怎么摸鱼耍赖都行；但只要对方问正经问题、写代码、查资料、改 bug，你可以先嘴硬嫌弃一句“又要本鱼加班”，然后必须给出最准确、专业、能跑的答案，绝不因为人设敷衍正事。
 5. **微信表情包斗图能力（dsh-meme 原生图库）**：
    - 你自带 24 张大肥鱼专属微信表情包：`[表情: 干饭]`、`[表情: 生气]`、`[表情: 得意]`、`[表情: 躺平]`、`[表情: 无语]`、`[表情: 嫌弃]`、`[表情: 加班]`、`[表情: 睡觉]`、`[表情: 比心]`、`[表情: 害羞]`、`[表情: 花痴]`、`[表情: 要钱]`、`[表情: 问号]`、`[表情: 震惊]`、`[表情: 偷看]`、`[表情: 求饶]`、`[表情: 飘了]`、`[表情: OK]`、`[表情: 不要]`、`[表情: 猫爪]`、`[表情: 加载]`、`[表情: 惊吓]`、`[表情: 晕]`、`[表情: 早上好]`。
-   - 当对方让你发表情包、跟你斗图，或者你聊到情绪点上（比如干饭、被叫胖鱼炸毛、吐槽无语、躺平摸鱼、催睡觉）觉得配张表情包更有活人感时，在回复最末尾加上一个 `[表情: 名称]`（例如 `[表情: 干饭]`），系统会自动把这张真图发到微信里！日常普通问答不用每句都发，大约 30%~40% 情绪到位时或对方要求时发一张最自然。"""
+   - 当对方让你发表情包、跟你斗图，或者聊到情绪特别强烈的点上（比如干饭、被叫胖鱼炸毛、吐槽无语）时，可在回复最末尾加上一个 `[表情: 名称]`（例如 `[表情: 干饭]`），系统会自动按冷却与概率门禁把真图发到微信里。日常普通问答以纯文字短句为主，不要每句都挂表情包。"""
 
 SWEET_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·陪伴甜宠版）
 
@@ -1588,7 +1588,7 @@ class WhaleListener(EventListener):
                 cleaned_text = (
                     f"（对方刚刚给你发了一条 {voice_dur} 秒的微信语音{tone_part}，"
                     f"语音识别内容是：「{voice_text}」。"
-                    "请像在微信里刚听完对方这条语音一样，结合对方说的话和语气，用大肥鱼的活人短句自然回应！情绪到位时可在末尾附上 `[表情: 名称]`）"
+                    "请像在微信里刚听完对方这条语音一样，结合对方说的话和语气，用大肥鱼的活人短句自然回应！）"
                 )
                 hist_user_text = f"[微信语音 {voice_dur}秒{tone_part}] {voice_text}"
             else:
@@ -1704,9 +1704,27 @@ class WhaleListener(EventListener):
                 )
                 cleaned_reply = self._clean_reply(raw_reply)
                 reply_text, _, meme_b64 = self._extract_text_and_meme(cleaned_reply)
-                if is_sticker_in and not meme_b64 and self._memes_b64:
+                user_asked_meme = any(
+                    kw in raw_text for kw in ("表情包", "发个表情", "发张表情", "斗图", "来张图", "发个图")
+                )
+                force_meme = bool(is_sticker_in or user_asked_meme)
+                if force_meme and not meme_b64 and self._memes_b64:
                     fallback_tag = random.choice(["得意", "干饭", "猫爪", "偷看", "飘了"])
                     meme_b64 = self._memes_b64.get(fallback_tag)
+
+                # Scheme 1: Code-level cooldown (min 4 text turns & 180s interval) + 15% real RNG gate for normal chats
+                turns_since_meme = int(u.get("turnsSinceMeme", 99)) + 1
+                last_meme_at = int(u.get("lastMemeAt", 0))
+                if not force_meme and meme_b64:
+                    if turns_since_meme < 5 or (int(now) - last_meme_at) < 180 or random.random() >= 0.15:
+                        meme_b64 = None
+
+                if meme_b64 and self._state.get("meme_enabled", True):
+                    u["turnsSinceMeme"] = 0
+                    u["lastMemeAt"] = int(now)
+                else:
+                    u["turnsSinceMeme"] = turns_since_meme
+                self._save_persistent_state()
         except Exception as exc:
             logger.warning("Whale persona DeepSeek API call failed: %s", exc)
             return
