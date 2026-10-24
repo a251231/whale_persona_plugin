@@ -4,6 +4,8 @@ import asyncio
 import base64
 from collections import deque
 from datetime import datetime
+import html
+import io
 import json
 import logging
 import math
@@ -15,6 +17,11 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
+try:
+    from PIL import Image
+except Exception:
+    Image = None  # type: ignore
+
 from langbot_plugin.api.definition.components.common.event_listener import EventListener
 from langbot_plugin.api.entities import context, events
 import langbot_plugin.api.entities.builtin.platform.message as platform_message
@@ -499,7 +506,7 @@ class WhaleListener(EventListener):
                     f"{base_url}/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json={
-                        "model": model,
+                        "model": self._normalize_api_model(model),
                         "messages": [
                             {"role": "system", "content": ARCHIVE_CONSOLIDATE_SYSTEM},
                             {"role": "user", "content": user_prompt},
@@ -586,7 +593,7 @@ class WhaleListener(EventListener):
         """Generate a Dafeiyu Moment post with an accompanying meme image and save to moments wall."""
         api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
         base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
-        model = self._get_config_str("deepseek_model", DEFAULT_MODEL)
+        model = self._normalize_api_model(self._get_config_str("deepseek_model", DEFAULT_MODEL))
 
         u = self._get_user_state(user_id)
         now_dt = datetime.now(TZ)
@@ -721,6 +728,84 @@ class WhaleListener(EventListener):
         cleaned = MEME_TAG_RE.sub("", text).strip()
         return (cleaned if cleaned else text.strip()), meme_tag, meme_b64
 
+    @staticmethod
+    def _normalize_api_model(model: str) -> str:
+        m = (model or DEFAULT_MODEL).strip()
+        if m.lower() in ("deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4.1-flash-1017"):
+            return "deepseek-chat"
+        return m
+
+    @staticmethod
+    def _sticker_bytes_to_jpeg_b64(raw_bytes: bytes) -> str | None:
+        if not raw_bytes or Image is None:
+            return None
+        try:
+            img = Image.open(io.BytesIO(raw_bytes))
+            n_frames = getattr(img, "n_frames", 1)
+            if n_frames > 1:
+                indices = sorted(set([0, n_frames // 2, n_frames - 1]))
+                frames = []
+                for idx in indices:
+                    img.seek(idx)
+                    f_rgb = img.convert("RGB")
+                    f_rgb.thumbnail((220, 220))
+                    frames.append(f_rgb)
+                total_w = sum(f.width for f in frames)
+                max_h = max(f.height for f in frames)
+                strip = Image.new("RGB", (total_w, max_h), (255, 255, 255))
+                x_off = 0
+                for f in frames:
+                    strip.paste(f, (x_off, 0))
+                    x_off += f.width
+                out_img = strip
+            else:
+                out_img = img.convert("RGB")
+                out_img.thumbnail((360, 360))
+            buf = io.BytesIO()
+            out_img.save(buf, format="JPEG", quality=82)
+            return base64.b64encode(buf.getvalue()).decode("ascii")
+        except Exception as e:
+            logger.debug("Sticker decode failed: %s", e)
+            return None
+
+    async def _fetch_sticker_strip_b64(self, xml_text: str) -> str | None:
+        m = re.search(r'cdnurl="([^"]+)"', xml_text or "")
+        if not m:
+            return None
+        cdn_url = html.unescape(m.group(1)).strip()
+        if not cdn_url.startswith("http"):
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
+                r = await client.get(cdn_url)
+                if r.status_code == 200 and r.content:
+                    return self._sticker_bytes_to_jpeg_b64(r.content)
+        except Exception as e:
+            logger.debug("Fetch sticker cdnurl failed: %s", e)
+        return None
+
+    async def _extract_image_b64_from_chain(self, message_chain: Any) -> str | None:
+        if not message_chain:
+            return None
+        try:
+            for comp in message_chain:
+                if isinstance(comp, platform_message.Image):
+                    b64_val = str(getattr(comp, "base64", "") or "").strip()
+                    if b64_val:
+                        if "," in b64_val and b64_val.startswith("data:"):
+                            b64_val = b64_val.split(",", 1)[1]
+                        raw_bytes = base64.b64decode(b64_val)
+                        return self._sticker_bytes_to_jpeg_b64(raw_bytes) or b64_val
+                    url_val = str(getattr(comp, "url", "") or "").strip()
+                    if url_val.startswith("http"):
+                        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
+                            r = await client.get(url_val)
+                            if r.status_code == 200 and r.content:
+                                return self._sticker_bytes_to_jpeg_b64(r.content)
+        except Exception as e:
+            logger.debug("Extract image from chain skipped: %s", e)
+        return None
+
     async def _async_post_turn_judge(
         self,
         *,
@@ -733,6 +818,7 @@ class WhaleListener(EventListener):
     ) -> None:
         if not api_key:
             return
+        api_model = self._normalize_api_model(model)
         prompt_user = (
             f"【你（大肥鱼）这轮回复的话】：\n{reply_text[:800]}\n\n"
             f"【对方这轮说的话】：\n{user_text[:800]}\n\n"
@@ -744,7 +830,7 @@ class WhaleListener(EventListener):
                     f"{base_url}/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json={
-                        "model": model,
+                        "model": api_model,
                         "messages": [
                             {"role": "system", "content": MOOD_JUDGE_SYSTEM},
                             {"role": "user", "content": prompt_user},
@@ -765,6 +851,8 @@ class WhaleListener(EventListener):
             return
 
         should_consolidate = False
+        should_auto_moment = False
+        moment_topic = ""
         async with self._state_lock:
             u = self._get_user_state(user_id)
             mood_delta = int(_clamp(round(float(obj.get("moodDelta", 0)) / 2.0), -6, 6))
@@ -796,6 +884,11 @@ class WhaleListener(EventListener):
                 )
                 if len(tl) > 20:
                     u["timeline"] = tl[-20:]
+                last_moment_ms = int(u.get("lastAutoMomentAt", 0))
+                if abs(mood_delta) >= 4 and (now_ms - last_moment_ms) > 4 * 3600 * 1000 and user_id.startswith("wxid_"):
+                    u["lastAutoMomentAt"] = now_ms
+                    should_auto_moment = True
+                    moment_topic = reason
 
             today_str = datetime.now(TZ).strftime("%Y-%m-%d")
             mem_fact = str(obj.get("memory_fact") or "").strip()
@@ -823,13 +916,24 @@ class WhaleListener(EventListener):
             await self._consolidate_user_archive(
                 api_key=api_key,
                 base_url=base_url,
-                model=model,
+                model=api_model,
                 user_id=user_id,
             )
 
-    async def _send_proactive_wechat(self, target_id: str, text: str) -> bool:
+        if should_auto_moment:
+            card_txt, meme_b64 = await self._generate_and_post_moment(user_id, moment_topic)
+            await self._send_proactive_wechat(user_id, card_txt, meme_b64)
+
+    async def _send_proactive_wechat(self, target_id: str, text: str, image_b64: str | None = None) -> bool:
         try:
-            chain = platform_message.MessageChain([platform_message.Plain(text=text)])
+            comps: list[Any] = []
+            if text:
+                comps.append(platform_message.Plain(text=text))
+            if image_b64 and self._state.get("meme_enabled", True):
+                comps.append(platform_message.Image(base64=image_b64))
+            if not comps:
+                return False
+            chain = platform_message.MessageChain(comps)
             await self.plugin.send_message(
                 bot_uuid=self._get_config_str("target_bot_uuid", DEFAULT_BOT_UUID),
                 target_type="person",
@@ -845,7 +949,7 @@ class WhaleListener(EventListener):
         if not api_key:
             return None, None
         base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
-        model = self._get_config_str("deepseek_model", DEFAULT_MODEL)
+        model = self._normalize_api_model(self._get_config_str("deepseek_model", DEFAULT_MODEL))
 
         u = self._get_user_state(user_id)
         now_dt = datetime.now(TZ)
@@ -895,7 +999,7 @@ class WhaleListener(EventListener):
                     u["missStreak"] = 0
                     self._save_persistent_state()
                     if not manual:
-                        await self._send_proactive_wechat(user_id, reply)
+                        await self._send_proactive_wechat(user_id, reply, meme_b64)
                     return reply, meme_b64
         except Exception as e:
             logger.warning("Speak-up generation failed: %s", e)
@@ -930,7 +1034,14 @@ class WhaleListener(EventListener):
                     threshold = min(100.0, base_line * factor + bonus)
                     roll = random.uniform(0.0, 100.0)
                     if roll <= threshold:
-                        await self._trigger_speak_up_for_user(uid, manual=False)
+                        if random.random() < 0.28:
+                            u["lastSpeakUpAt"] = now_ms
+                            u["missStreak"] = 0
+                            self._save_persistent_state()
+                            card_txt, meme_b64 = await self._generate_and_post_moment(uid, "")
+                            await self._send_proactive_wechat(uid, card_txt, meme_b64)
+                        else:
+                            await self._trigger_speak_up_for_user(uid, manual=False)
                     else:
                         u["missStreak"] = miss_streak + 1
                         self._save_persistent_state()
@@ -1320,10 +1431,15 @@ class WhaleListener(EventListener):
             return
 
         is_sticker_in = self._is_incoming_sticker(raw_text)
+        vision_b64: str | None = None
         if is_sticker_in:
             if is_group:
                 return
-            cleaned_text = "（对方刚刚给你发了一张微信表情包跟你斗图！请用活人短句回敬一句，并在最末尾附上 `[表情: 名称]` 甩一张你的表情包回去！）"
+            vision_b64 = await self._fetch_sticker_strip_b64(raw_text)
+            if vision_b64:
+                cleaned_text = "（对方刚刚给你发了这张微信表情包！如果是动图则已抽帧拼成左中右三格。请用 DeepSeek-V4.1-Flash 视觉看清表情包里的画面/角色动作/文字，用大肥鱼的活人短句接梗回应一句，并在最末尾附上 `[表情: 名称]` 甩一张你的表情包回去！）"
+            else:
+                cleaned_text = "（对方刚刚给你发了一张微信表情包跟你斗图！请用活人短句回敬一句，并在最末尾附上 `[表情: 名称]` 甩一张你的表情包回去！）"
         else:
             cleaned_text = STRIP_TRIGGER_RE.sub("", raw_text).strip()
             if not cleaned_text:
@@ -1331,6 +1447,8 @@ class WhaleListener(EventListener):
 
             if self._should_ignore_plugin_command(cleaned_text):
                 return
+            if not is_group:
+                vision_b64 = await self._extract_image_b64_from_chain(getattr(event_ctx.event, "message_chain", None))
 
         if await self._is_duplicate(getattr(event_ctx, "query_id", None)):
             return
@@ -1341,7 +1459,7 @@ class WhaleListener(EventListener):
             return
 
         base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
-        model = self._get_config_str("deepseek_model", DEFAULT_MODEL)
+        model = self._normalize_api_model(self._get_config_str("deepseek_model", DEFAULT_MODEL))
         max_turns = max(1, min(20, self._get_config_int("max_history_turns", 12)))
 
         now = time.time()
@@ -1384,10 +1502,21 @@ class WhaleListener(EventListener):
             f"- **鱼的记忆（dsh-fish-memory）**：\n{mem_sec}"
         )
 
-        messages: list[dict[str, str]] = [{"role": "system", "content": dynamic_system_prompt}]
+        messages: list[dict[str, Any]] = [{"role": "system", "content": dynamic_system_prompt}]
         for _, r, c in history:
             messages.append({"role": r, "content": c})
-        messages.append({"role": "user", "content": cleaned_text})
+        if vision_b64:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": cleaned_text},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{vision_b64}"}},
+                    ],
+                }
+            )
+        else:
+            messages.append({"role": "user", "content": cleaned_text})
 
         try:
             async with httpx.AsyncClient(timeout=45.0) as client:
@@ -1427,7 +1556,8 @@ class WhaleListener(EventListener):
         if not reply_text and not meme_b64:
             return
 
-        history.append((now, "user", cleaned_text))
+        hist_user_text = "[发来了一张微信表情包]" if is_sticker_in else cleaned_text
+        history.append((now, "user", hist_user_text))
         history.append((now, "assistant", reply_text))
         if len(history) > max_turns * 2:
             history = history[-(max_turns * 2) :]
@@ -1439,7 +1569,7 @@ class WhaleListener(EventListener):
                 base_url=base_url,
                 model=model,
                 user_id=sender_id,
-                user_text=cleaned_text,
+                user_text=hist_user_text,
                 reply_text=reply_text,
             )
         )
