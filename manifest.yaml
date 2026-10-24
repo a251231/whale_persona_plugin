@@ -4,10 +4,10 @@ metadata:
   author: a251231
   name: whale_persona_plugin
   repository: "https://github.com/a251231/whale_persona_plugin"
-  version: 0.2.0
+  version: 0.3.0
   description:
-    en_US: DeepSeek Dafeiyu Live-Persona Suite (Mood + Fish Memory + Speak-Up + Token Rice Meter)
-    zh_Hans: DeepSeek 大肥鱼活人感全家桶（活人版预设 + 鱼的心情 + 鱼的记忆 + 主动搭话 + 实时偷吃Token粮仓）
+    en_US: DeepSeek Dafeiyu Live-Persona Suite v0.3.0 (Live Persona + Mood + Fish Memory & Archive + Speak-Up + Token Rice + 24 Memes + Moments)
+    zh_Hans: DeepSeek 大肥鱼活人感全家桶 v0.3.0（活人版预设 + 鱼的心情 + 鱼的记忆与档案重整 + 主动搭话 + 实时粮仓 + 24张专属表情包斗图 + 鱼塘朋友圈）
   label:
     en_US: Dafeiyu Live Persona Suite
     zh_Hans: 大肥鱼（活人感全家桶版）
@@ -36,8 +36,8 @@ spec:
       default: "deepseek-chat"
     - name: target_bot_uuid
       label:
-        en_US: Target Bot UUID (Optional)
-        zh_Hans: 绑定指定机器人 UUID（留空则对所有关联机器人人生效）
+        en_US: Target Bot UUID
+        zh_Hans: 绑定指定机器人 UUID（留空则对所有关联机器人生效）
       type: string
       required: false
       default: ""

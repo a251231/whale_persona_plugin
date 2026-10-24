@@ -6,8 +6,8 @@ metadata:
     en_US: Whale Persona Listener
     zh_Hans: 大肥鱼活人感监听器
   description:
-    en_US: Full Dafeiyu live-persona suite with mood, fish memory, token balance, and proactive speak-up.
-    zh_Hans: 集成大肥鱼活人版预设、鱼的心情、鱼的记忆、主动搭话与真实Token粮仓感知。
+    en_US: Full Dafeiyu live-persona suite with mood, fish memory & archive consolidation, token balance, speak-up, 24 official memes, and cyber moments.
+    zh_Hans: 集成大肥鱼活人版预设、鱼的心情、鱼的记忆（含八章节档案重整）、主动搭话、真实Token粮仓、24张官方表情包斗图与赛博朋友圈。
 spec: {}
 execution:
   python:
