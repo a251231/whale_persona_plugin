@@ -29,11 +29,34 @@ import langbot_plugin.api.entities.builtin.platform.message as platform_message
 logger = logging.getLogger(__name__)
 
 DEFAULT_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEFAULT_SF_API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_BOT_UUID = os.getenv("TARGET_BOT_UUID", "")
+SILICONFLOW_ASR_URL = "https://api.siliconflow.cn/v1/audio/transcriptions"
+SILICONFLOW_ASR_MODEL = "FunAudioLLM/SenseVoiceSmall"
 STATE_FILE = os.getenv("WHALE_STATE_FILE", "/app/data/whale_persona_state.json")
 TZ = ZoneInfo("Asia/Shanghai")
+
+SENSEVOICE_TAGS: dict[str, str] = {
+    "HAPPY": "开心/轻快",
+    "SAD": "难过/低落",
+    "ANGRY": "生气/激动",
+    "NEUTRAL": "",
+    "FEARFUL": "紧张/害怕",
+    "DISGUSTED": "嫌弃",
+    "SURPRISED": "惊讶",
+    "LAUGHTER": "带着笑声",
+    "GIGGLE": "偷笑",
+    "SNICKER": "憋笑",
+    "CHUCKLE": "轻笑",
+    "CRY": "带着哭腔",
+    "SIGH": "叹气/疲惫",
+    "COUGH": "咳嗽了一声",
+    "THROAT_CLEARING": "清了清嗓子",
+    "YAWN": "打了个哈欠/犯困",
+    "SNEEZE": "打了个喷嚏",
+}
 
 DIMS = [
     ("happy", "开心"),
@@ -806,6 +829,49 @@ class WhaleListener(EventListener):
             logger.debug("Extract image from chain skipped: %s", e)
         return None
 
+    async def _transcribe_incoming_voice(self, xml_text: str) -> tuple[str, str, float]:
+        dur_sec = 3.0
+        m_len = re.search(r'voicelength="(\d+)"', xml_text or "")
+        if m_len:
+            try:
+                dur_sec = round(max(1.0, int(m_len.group(1)) / 1000.0), 1)
+            except Exception:
+                dur_sec = 3.0
+
+        m_b64 = re.search(r'audio_b64="([^"]+)"', xml_text or "")
+        if not m_b64:
+            return "", "", dur_sec
+
+        sf_key = self._get_config_str("siliconflow_api_key", DEFAULT_SF_API_KEY)
+        if not sf_key:
+            return "", "", dur_sec
+
+        try:
+            mp3_bytes = base64.b64decode(m_b64.group(1))
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    SILICONFLOW_ASR_URL,
+                    headers={"Authorization": f"Bearer {sf_key}"},
+                    files={"file": ("voice.mp3", mp3_bytes, "audio/mpeg")},
+                    data={"model": SILICONFLOW_ASR_MODEL},
+                )
+                if resp.status_code != 200:
+                    logger.warning("SiliconFlow ASR failed: %s %s", resp.status_code, resp.text)
+                    return "", "", dur_sec
+                raw_trans = str((resp.json().get("text") or "")).strip()
+        except Exception as e:
+            logger.warning("Transcribe voice exception: %s", e)
+            return "", "", dur_sec
+
+        mood_tags: list[str] = []
+        for tag_m in re.finditer(r"<\|([A-Z_]+)\|>", raw_trans):
+            t_code = tag_m.group(1).strip()
+            mapped = SENSEVOICE_TAGS.get(t_code, "")
+            if mapped and mapped not in mood_tags:
+                mood_tags.append(mapped)
+        clean_trans = re.sub(r"<\|[^|>]+\|>", "", raw_trans).strip()
+        return clean_trans, "、".join(mood_tags), dur_sec
+
     async def _async_post_turn_judge(
         self,
         *,
@@ -1099,13 +1165,23 @@ class WhaleListener(EventListener):
         return "<emoji " in s or s.startswith("<msg><emoji")
 
     @staticmethod
+    def _is_incoming_voice(text: str) -> bool:
+        s = (text or "").strip()
+        return "<voicemsg " in s or s.startswith("<msg><voicemsg")
+
+    @staticmethod
     def _should_ignore_plugin_command(text: str) -> bool:
         if not text:
             return True
         stripped = text.strip()
         if not stripped:
             return True
-        if "<emoji " in stripped or stripped.startswith("<msg><emoji"):
+        if (
+            "<emoji " in stripped
+            or stripped.startswith("<msg><emoji")
+            or "<voicemsg " in stripped
+            or stripped.startswith("<msg><voicemsg")
+        ):
             return False
         if stripped.startswith(IGNORE_PREFIXES):
             return True
@@ -1431,7 +1507,9 @@ class WhaleListener(EventListener):
             return
 
         is_sticker_in = self._is_incoming_sticker(raw_text)
+        is_voice_in = self._is_incoming_voice(raw_text)
         vision_b64: str | None = None
+        hist_user_text: str = ""
         if is_sticker_in:
             if is_group:
                 return
@@ -1440,6 +1518,25 @@ class WhaleListener(EventListener):
                 cleaned_text = "（对方刚刚给你发了这张微信表情包！如果是动图则已抽帧拼成左中右三格。请用 DeepSeek-V4.1-Flash 视觉看清表情包里的画面/角色动作/文字，用大肥鱼的活人短句接梗回应一句，并在最末尾附上 `[表情: 名称]` 甩一张你的表情包回去！）"
             else:
                 cleaned_text = "（对方刚刚给你发了一张微信表情包跟你斗图！请用活人短句回敬一句，并在最末尾附上 `[表情: 名称]` 甩一张你的表情包回去！）"
+            hist_user_text = "[发来了一张微信表情包]"
+        elif is_voice_in:
+            if is_group:
+                return
+            voice_text, voice_tone, voice_dur = await self._transcribe_incoming_voice(raw_text)
+            tone_part = f"，语气特征[{voice_tone}]" if voice_tone else ""
+            if voice_text:
+                cleaned_text = (
+                    f"（对方刚刚给你发了一条 {voice_dur} 秒的微信语音{tone_part}，"
+                    f"语音识别内容是：「{voice_text}」。"
+                    "请像在微信里刚听完对方这条语音一样，结合对方说的话和语气，用大肥鱼的活人短句自然回应！情绪到位时可在末尾附上 `[表情: 名称]`）"
+                )
+                hist_user_text = f"[微信语音 {voice_dur}秒{tone_part}] {voice_text}"
+            else:
+                cleaned_text = (
+                    f"（对方刚刚给你发了一条 {voice_dur} 秒的微信语音{tone_part}，"
+                    "但里面几乎没听清说话声，只有一点背景动静或呼吸声。请用大肥鱼的活人口吻吐槽或追问一句！）"
+                )
+                hist_user_text = f"[微信语音 {voice_dur}秒（未听清内容）]"
         else:
             cleaned_text = STRIP_TRIGGER_RE.sub("", raw_text).strip()
             if not cleaned_text:
@@ -1449,6 +1546,7 @@ class WhaleListener(EventListener):
                 return
             if not is_group:
                 vision_b64 = await self._extract_image_b64_from_chain(getattr(event_ctx.event, "message_chain", None))
+            hist_user_text = cleaned_text
 
         if await self._is_duplicate(getattr(event_ctx, "query_id", None)):
             return
@@ -1556,7 +1654,8 @@ class WhaleListener(EventListener):
         if not reply_text and not meme_b64:
             return
 
-        hist_user_text = "[发来了一张微信表情包]" if is_sticker_in else cleaned_text
+        if not hist_user_text:
+            hist_user_text = "[发来了一张微信表情包]" if is_sticker_in else cleaned_text
         history.append((now, "user", hist_user_text))
         history.append((now, "assistant", reply_text))
         if len(history) > max_turns * 2:

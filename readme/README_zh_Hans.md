@@ -1,6 +1,6 @@
 # 🐋 LangBot 大肥鱼插件（活人感全家桶版 `whale_persona_plugin` v0.3.0）
 
-将 DeepSeek Harness (DSH) 社区爆火的 **「大肥鱼（鲸鱼娘）六大核心组件」** 完整移植并集成到 [LangBot](https://github.com/RockChinQ/LangBot) 微信/多平台机器人体系中，并原生支持 **`DeepSeek-V4.1-Flash` (`deepseek-flash`) 多模态视觉识图（看懂微信动画表情包）**。
+将 DeepSeek Harness (DSH) 社区爆火的 **「大肥鱼（鲸鱼娘）六大核心组件」** 完整移植并集成到 [LangBot](https://github.com/RockChinQ/LangBot) 微信/多平台机器人体系中，并原生支持 **`DeepSeek-V4.1-Flash` (`deepseek-flash`) 多模态视觉识图（看懂微信动画表情包）** 与 **SiliconFlow `FunAudioLLM/SenseVoiceSmall` 微信语音识别（含语气/笑声/叹气感知）**。
 
 ---
 
@@ -13,7 +13,7 @@
 | **3. 鱼的记忆与八章节档案重整 (`dsh-fish-memory`)** | `Yuuyuko-uu/dsh-fish-memory` (`lib/生成档案.js`) | 按每个微信用户 (`sender_id`) 独立建档，自动提炼「长期事实」与 30 天半衰期「事件记忆」；完整移植 `生成档案.js` 的 **八章节档案归并重整**（遵循「过了一个星期再看还有用吗？」唯一尺子，支持自动满额重整与手动指令重整）。 |
 | **4. 主动搭话 (`dsh-speak-up`)** | `Yuuyuko-uu/dsh-speak-up` + `dsh-time-context` | 实时注入北京时间、星期与时段；后台每 30 分钟（避开 01:00~08:00 免打扰时段）按空闲时长因子与未命中累加保底掷骰子，主动发微信找用户搭话或推送朋友圈动态。 |
 | **5. 实时粮仓 (`dsh-whale-widget`)** | `MeteorNOX/DeepSeek-Balance-Whale-Widget` | 实时调用 `GET /user/balance` 查询 DeepSeek 账户真实余额，并统计上一口偷吃与今日累计消耗的 Token 饭量。 |
-| **6. 24张官方表情包真看图斗图 (`dsh-meme`) + 鱼塘朋友圈** | `yyh-001/dsh-meme` (`dafeiyu-001`) + `DeepSeek-V4.1-Flash` Vision | 内置 24 张大肥鱼 Chibi 表情包真图，收到微信动画表情包时自动抽帧拼图交给 `DeepSeek-V4.1-Flash` 视觉看图接梗回图；支持自主与手动发布图文并茂的「鱼塘朋友圈动态」。 |
+| **6. 24张表情包真看图斗图 (`dsh-meme`) + 朋友圈 + 语音听感** | `yyh-001/dsh-meme` + `DeepSeek-V4.1-Flash` + `SenseVoiceSmall` | 内置 24 张大肥鱼 Chibi 表情包真图，收到微信动画表情包自动抽帧拼图看图回图；收到微信语音自动转写文字并识别语气/笑声/叹气；支持自主与手动发布「鱼塘朋友圈动态」。 |
 
 ---
 

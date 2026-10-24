@@ -6,8 +6,8 @@ metadata:
   repository: "https://github.com/a251231/whale_persona_plugin"
   version: 0.3.0
   description:
-    en_US: DeepSeek Dafeiyu Live-Persona Suite v0.3.0 (Live Persona + Mood + Fish Memory & Archive + Speak-Up + Token Rice + 24 Memes + Moments)
-    zh_Hans: DeepSeek 大肥鱼活人感全家桶 v0.3.0（活人版预设 + 鱼的心情 + 鱼的记忆与档案重整 + 主动搭话 + 实时粮仓 + 24张专属表情包斗图 + 鱼塘朋友圈）
+    en_US: DeepSeek Dafeiyu Live-Persona Suite v0.3.0 (Live Persona + Mood + Fish Memory & Archive + Speak-Up + Token Rice + 24 Memes + Moments + Voice ASR)
+    zh_Hans: DeepSeek 大肥鱼活人感全家桶 v0.3.0（活人版预设 + 鱼的心情 + 鱼的记忆与档案重整 + 主动搭话 + 实时粮仓 + 24张专属表情包真看图斗图 + 鱼塘朋友圈 + SenseVoice语音听感）
   label:
     en_US: Dafeiyu Live Persona Suite
     zh_Hans: 大肥鱼（活人感全家桶版）
@@ -19,6 +19,13 @@ spec:
         zh_Hans: DeepSeek API Key
       type: string
       required: true
+      default: ""
+    - name: siliconflow_api_key
+      label:
+        en_US: SiliconFlow API Key (Voice ASR SenseVoiceSmall)
+        zh_Hans: SiliconFlow API Key（用于微信语音识别 SenseVoiceSmall）
+      type: string
+      required: false
       default: ""
     - name: deepseek_base_url
       label:
