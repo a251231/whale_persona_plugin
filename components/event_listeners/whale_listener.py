@@ -244,10 +244,18 @@ IGNORE_PREFIXES = (
     "<msg",
     "<?xml",
     "<sysmsg",
+    "[图片]",
+    "[未知类型",
+    "[动画表情]",
+    "[语音]",
+    "[视频]",
+    "[文件]",
+    "[链接]",
 )
 
 SMS_OR_PHONE_RE = re.compile(r"^\d{4,11}$")
-STRIP_TRIGGER_RE = re.compile(r"^(?:ai|AI|大肥鱼|鲸鱼娘|小鲸鱼)[,，:：\s]*")
+STRIP_TRIGGER_RE = re.compile(r"^(?:@[^\s\u2005]+[\s\u2005]*)*(?:ai|AI|大肥鱼|鲸鱼娘|小鲸鱼)?[,，:：\s]*")
+GROUP_WAKE_RE = re.compile(r"^(?:大肥鱼|鲸鱼娘|小鲸鱼)(?:[,，:：\s]|$)")
 ACTION_PAREN_RE = re.compile(r"[（(][^）)\n]{2,35}(?:抬头|饭碗|米饭|尾巴|腮帮|喷水|水柱|水花|扒拉|低头|哼了|拍了拍|鼓起|嚼着|咽下|擦了擦|抱起|翻了个白眼)[^）)\n]*[）)]\s*")
 MEME_TAG_RE = re.compile(r"\[(?:表情|表情包|meme)\s*[:：]\s*([^\]\s]{1,12})\s*\]", re.IGNORECASE)
 
@@ -339,6 +347,7 @@ class WhaleListener(EventListener):
                     if isinstance(data, dict):
                         data.setdefault("meme_enabled", True)
                         data.setdefault("moments", [])
+                        data.setdefault("enabled_groups", [])
                         return data
         except Exception as e:
             logger.warning("Failed to load whale state: %s", e)
@@ -347,6 +356,7 @@ class WhaleListener(EventListener):
             "mode": "live",
             "speak_up_enabled": True,
             "meme_enabled": True,
+            "enabled_groups": [],
             "moments": [],
             "token_stats": {"date": "", "today_tokens": 0, "last_tokens": 0, "total_tokens": 0},
             "users": {},
@@ -1208,6 +1218,21 @@ class WhaleListener(EventListener):
             return False
 
     @staticmethod
+    def _is_group_woken(message_chain: Any, raw_text: str) -> bool:
+        if message_chain:
+            try:
+                for comp in message_chain:
+                    if isinstance(comp, platform_message.At):
+                        return True
+            except Exception:
+                pass
+        s = (raw_text or "").strip()
+        s_no_at = re.sub(r"^(?:@[^\s\u2005]+[\s\u2005]*)+", "", s).strip()
+        if GROUP_WAKE_RE.match(s) or GROUP_WAKE_RE.match(s_no_at):
+            return True
+        return False
+
+    @staticmethod
     def _reply(event_ctx: context.EventContext, text: str = "", image_b64: str | None = None) -> None:
         comps: list[Any] = []
         if text:
@@ -1230,7 +1255,8 @@ class WhaleListener(EventListener):
         if target_bot_uuid and bot_uuid and bot_uuid != target_bot_uuid:
             return
 
-        raw_text = self._extract_plain_text(getattr(event_ctx.event, "message_chain", None))
+        msg_chain = getattr(event_ctx.event, "message_chain", None)
+        raw_text = self._extract_plain_text(msg_chain)
         if not raw_text:
             raw_text = str(getattr(event_ctx.event, "text_message", "") or "").strip()
         if not raw_text:
@@ -1240,7 +1266,38 @@ class WhaleListener(EventListener):
         launcher_id = str(getattr(event_ctx.event, "launcher_id", "") or "chat")
         session_key = f"{'group' if is_group else 'person'}:{launcher_id}:{sender_id}"
 
-        cmd_norm = re.sub(r"\s+", " ", raw_text.strip())
+        raw_no_at = re.sub(r"^(?:@[^\s\u2005]+[\s\u2005]*)+", "", raw_text.strip()).strip()
+        cmd_norm = re.sub(r"\s+", " ", (raw_no_at or raw_text).strip())
+
+        # Group Chat Whitelist Gate (Scheme C: all groups silent by default; only whitelisted groups respond when @/woken)
+        if is_group:
+            enabled_groups: list[str] = self._state.setdefault("enabled_groups", [])
+            if cmd_norm in ("大肥鱼 本群开启", "鲸鱼娘 本群开启", "大肥鱼 开启本群"):
+                if launcher_id not in enabled_groups:
+                    enabled_groups.append(launcher_id)
+                    self._save_persistent_state()
+                resolved = self._resolve_meme_b64("OK")
+                self._reply(
+                    event_ctx,
+                    "收到！本群已加入大肥鱼白名单。在本群里 @我 或开头喊「大肥鱼 <内容>」本鱼就会出来接话，平时绝不乱插嘴（发「大肥鱼 本群关闭」可随时移出白名单）。",
+                    resolved[1] if resolved else None,
+                )
+                return
+            if cmd_norm in ("大肥鱼 本群关闭", "鲸鱼娘 本群关闭", "大肥鱼 关闭本群"):
+                if launcher_id in enabled_groups:
+                    enabled_groups.remove(launcher_id)
+                    self._save_persistent_state()
+                resolved = self._resolve_meme_b64("睡觉")
+                self._reply(
+                    event_ctx,
+                    "好嘞，本群已移出白名单，本鱼在这个群彻底闭嘴退下啦。",
+                    resolved[1] if resolved else None,
+                )
+                return
+            if launcher_id not in enabled_groups:
+                return
+            if not self._is_group_woken(msg_chain, raw_text):
+                return
 
         # 1. Switch / Control commands
         if cmd_norm in ("大肥鱼 开启", "鲸鱼娘 开启", "鲸鱼人设 开启", "开启大肥鱼"):
@@ -1480,6 +1537,7 @@ class WhaleListener(EventListener):
             mode_name = "活人版（去括号短句/会怼人摸鱼）" if self._state.get("mode", "live") == "live" else "陪伴甜宠版"
             su_flag = "开启" if self._state.get("speak_up_enabled", True) else "关闭"
             meme_flag = f"开启（内置 {len(self._memes_b64)} 张）" if self._state.get("meme_enabled", True) else "关闭"
+            grp_cnt = len(self._state.get("enabled_groups", []))
             stats = self._record_tokens(0)
             arch_cnt = sum(len(v) for v in (u.get("archive") or {}).values())
             msg = (
@@ -1489,12 +1547,14 @@ class WhaleListener(EventListener):
                 f"• 当前心情：{u.get('mood', 70)}/100（{self._mood_label(int(u.get('mood', 70)))}）\n"
                 f"• 短期上下文：{turns} 轮 | 记忆：{len(u.get('facts', []))} 条事实 / {arch_cnt} 条归档 / {len(u.get('events', []))} 条事件\n"
                 f"• 表情包斗图：{meme_flag} | 鱼塘朋友圈：{len(self._state.get('moments', []))} 条\n"
+                f"• 群聊白名单：已开启 {grp_cnt} 个群（默认所有群静默）\n"
                 f"• 今日偷吃白饭：{stats.get('today_tokens', 0)} tokens | 主动搭话：{su_flag}\n\n"
                 f"📋 微信口令速查：\n"
                 f"- 大肥鱼 心情 | 大肥鱼 记忆 | 大肥鱼 整理档案\n"
                 f"- 大肥鱼 表情包 | 大肥鱼 表情 干饭\n"
                 f"- 大肥鱼 发朋友圈 | 大肥鱼 朋友圈 | 大肥鱼 点赞\n"
                 f"- 大肥鱼 粮仓 | 大肥鱼 记住 <内容> | 大肥鱼 搭话\n"
+                f"- 大肥鱼 本群开启 | 大肥鱼 本群关闭（群聊白名单控制）\n"
                 f"- 大肥鱼 切换 | 大肥鱼 重置 | 大肥鱼 失忆"
             )
             self._reply(event_ctx, msg)
