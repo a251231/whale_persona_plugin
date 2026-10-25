@@ -213,15 +213,16 @@ GROUP_INTEREST_KEYWORDS = (
 
 GROUP_INTERJECT_SYSTEM = """你是微信群里的「大肥鱼」（平时自称「我」，傲娇或得意时才偶尔自称「本鱼」，绝对禁止使用任何括号动作或神态描写）。
 下面是这个微信群刚刚聊的几句话（群友没有直接 @ 你），以及你对这个群的记忆印象。
-请你像一个平时在群里潜水的真实群友一样，自行判断现在应该【顺嘴接个梗/神吐槽】还是【保持安静】：
-1. 什么时候保持安静（should_reply: false）：
-   - 群友在聊严肃正事、工作对接、转账、私人纠纷、发口令/号码，或者只是普通打招呼/单字/表情，或者你没找到特别好玩自然的切入点时，宁可保持安静！
+请你像一个平时在群里潜水的真实群友一样，克制、有眼力见儿地判断现在应该【顺嘴接个梗/神吐槽】还是【保持安静】：
+1. 什么时候必须保持安静（should_reply: false，默认优先选安静）：
+   - 如果最近几条消息里已经有 `[... 大肥鱼]:` 的发言（说明你刚插过嘴），必须保持安静，绝不连续刷屏！
+   - 群友在聊严肃正事、工作对接、转账、私人烦心事/纠纷、发口令/号码，或者只是普通打招呼/单字/表情，或者没有特别亮眼好玩的切入点时，一律保持安静！
 2. 什么时候顺嘴插话（should_reply: true）：
-   - 群友在聊干饭/美食/夜宵、摸鱼/不想上班/加班、熬夜犯困、吐槽离谱好玩的事、聊游戏/科技/八卦，或者点名提到你时。
+   - 只有当群友聊到特别契合的干饭/美食/夜宵、摸鱼/加班吐槽、熬夜犯困、离谱爆笑梗，或者话题里点名提到「大肥鱼/鲸鱼」时，才顺嘴接一句。
 3. 活人群友铁律（极重要）：
-   - 插话必须像真人群友随手敲出来的一句短评或接梗（6~25字以内，句尾不要打句号，不要端着架子自我介绍，严禁每次都背诵“吃DeepSeek token当大白饭”！）。
+   - 插话必须像真人群友随手敲出来的一句短评或接梗（6~22字以内，句尾不要打句号，不要端着架子自我介绍，严禁每次都背诵“吃DeepSeek token当大白饭”！）。
 4. 只输出一个合法 JSON 对象，不要代码块，不要多余解释：
-{"should_reply": false, "reason": "用一句话写明为什么决定插话，或者为什么决定保持安静", "reply": "如果 should_reply 为 true，写出你要在群里随口接的那句短话（6~25字，严禁使用括号动作和句尾句号）；如果为 false 则填空字符串"}"""
+{"should_reply": false, "reason": "用一句话写明为什么决定插话，或者为什么决定保持安静", "reply": "如果 should_reply 为 true，写出你要在群里随口接的那句短话（6~22字，严禁使用括号动作和句尾句号）；如果为 false 则填空字符串"}"""
 
 
 def append_group_context_line(
@@ -261,12 +262,12 @@ def record_group_message_for_interject(
     meta["unjudged_count"] = int(meta.get("unjudged_count", 0)) + 1
 
     now = time.time()
-    # Cooldown: at least 90 seconds between LLM evaluations per group
-    if now - float(meta.get("last_judge_ts", 0.0)) < 90:
+    # Cooldown: at least 240 seconds (4 minutes) between LLM evaluations per group
+    if now - float(meta.get("last_judge_ts", 0.0)) < 240:
         return False
 
     has_kw = any(kw in s for kw in GROUP_INTEREST_KEYWORDS)
-    if has_kw or int(meta.get("unjudged_count", 0)) >= 5:
+    if has_kw or int(meta.get("unjudged_count", 0)) >= 8:
         meta["last_judge_ts"] = now
         meta["unjudged_count"] = 0
         return True
@@ -460,15 +461,21 @@ async def steal_incoming_sticker(
             return False
 
     try:
-        img = Image.open(io.BytesIO(raw_bytes))
-        n_frames = getattr(img, "n_frames", 1)
-        if n_frames > 1:
-            img.seek(n_frames // 2)
-        rgb = img.convert("RGB")
-        rgb.thumbnail((300, 300))
-        buf = io.BytesIO()
-        rgb.save(buf, format="JPEG", quality=84)
-        single_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        # Preserve animated GIF directly if within 1.8MB so WeChat sends it as a real animated sticker
+        if raw_bytes[:6] in (b"GIF87a", b"GIF89a") and len(raw_bytes) <= 1_800_000:
+            single_b64 = base64.b64encode(raw_bytes).decode("ascii")
+            is_gif = True
+        else:
+            img = Image.open(io.BytesIO(raw_bytes))
+            n_frames = getattr(img, "n_frames", 1)
+            if n_frames > 1:
+                img.seek(n_frames // 2)
+            rgb = img.convert("RGB")
+            rgb.thumbnail((300, 300))
+            buf = io.BytesIO()
+            rgb.save(buf, format="JPEG", quality=84)
+            single_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            is_gif = False
     except Exception:
         return False
 
@@ -477,6 +484,7 @@ async def steal_incoming_sticker(
         {
             "md5": sticker_md5,
             "b64": single_b64,
+            "is_gif": is_gif,
             "tags": tags,
             "at": datetime.now(TZ).strftime("%m-%d %H:%M"),
         }
@@ -1227,6 +1235,48 @@ async def search_and_fetch_music(query: str) -> dict[str, Any] | None:
         logger.debug("QQ music search error: %s", e)
 
     return fallback_candidate
+
+
+RANDOM_SONG_POOL: tuple[str, ...] = (
+    "平凡之路 朴树",
+    "光年之外 邓紫棋",
+    "消愁 毛不易",
+    "成全 林宥嘉",
+    "后来 刘若英",
+    "爱人错过 告五人",
+    "江南 林俊杰",
+    "麻雀 李荣浩",
+    "海阔天空 Beyond",
+    "遇见 孙燕姿",
+    "体面 于文文",
+    "起风了 买辣椒也用券",
+    "年少有为 李荣浩",
+    "泡沫 邓紫棋",
+    "传奇 王菲",
+    "成都 赵雷",
+    "唯一 告五人",
+    "追光者 岑宁儿",
+    "夜空中最亮的星 逃跑计划",
+    "像我这样的人 毛不易",
+    "红色高跟鞋 蔡健雅",
+    "晴天 周杰伦",
+    "突然好想你 五月天",
+    "匆匆那年 王菲",
+)
+
+
+async def pick_random_playable_song() -> dict[str, Any] | None:
+    """Picks a random song from RANDOM_SONG_POOL, preferring one with downloadable MP3 audio."""
+    candidates = random.sample(RANDOM_SONG_POOL, k=min(4, len(RANDOM_SONG_POOL)))
+    first_found: dict[str, Any] | None = None
+    for q in candidates:
+        song = await search_and_fetch_music(q)
+        if song:
+            if first_found is None:
+                first_found = song
+            if song.get("audio_bytes"):
+                return song
+    return first_found
 
 
 async def send_music_to_wechat(receiver: str, song: dict[str, Any]) -> tuple[bool, bool]:

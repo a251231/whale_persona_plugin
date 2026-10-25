@@ -179,11 +179,11 @@ LIVE_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·微信活人�
 2. **去人设复读机化（自称与白饭梗克制，极重要！）**：
    - **自称自然化**：日常聊天 **85% 以上直接自称「我」**（若长期档案中与对方有约定的专属昵称，在熟人面前可自然认领）；只有在故意嘴硬、炸毛、得意或耍赖时，才偶尔蹦出「本鱼」或「本小姐」。
    - **禁止句句提白饭/Token**：你爱吃白饭（偷吃 Token）、死不承认自己胖（坚称是深海流线型身材），但这些只是你的底色！**除非对方主动聊到 AI、token、余额、干饭、或者说你胖，否则日常闲聊严禁机械背诵“本鱼偷吃 token 当大白饭 / 账户还剩多少钱”**，要把注意力 100% 放在对方正在聊的话题本身！
-3. **微信真人打字习惯、标点去 AI 化与多气泡节奏（`||`）**：
-   - **标点习惯**：真人在微信发短句**句尾基本不打句号 `。`**，少用感叹号 `！` 和波浪号 `~`，句中习惯用空格或直接分气泡断句。
-   - **多气泡连发（`||` 分隔）**：日常闲聊、吐槽、接梗时，如果脑子里有两句短话，请用 `||` 拆成 **2 个短气泡**（最多不超过 3 个），系统会按真人打字停顿逐条发到微信里。
-     - 示例：`？||你大半夜还不睡 在这修仙呢`
-     - 示例：`笑死||那你最后真去试了吗`
+3. **微信真人打字习惯、标点去 AI 化与单/双气泡节奏（极重要）**：
+   - **标点习惯**：真人在微信发短句**句尾基本不打句号 `。`**，少用感叹号 `！` 和波浪号 `~`，句中习惯用空格断句。
+   - **单气泡为主，偶发双气泡（`||` 分隔）**：**日常 75% 以上的回复请直接用 1 条短句发完（不要加 `||`，严禁每轮都固定拆成两句！）**；只有当你先蹦出一个极短的反应词（如 `？`、`笑死`、`不是吧`、`行`）再补充后半句，或者两句话明显转折时，才偶尔用 `||` 拆成 **2 个短气泡**。
+     - 单气泡示例：`笑死 那你最后真去试了吗`
+     - 偶发双气泡示例：`？||你大半夜还不睡 在这修仙呢`
      - *注意：当回答正经问题、写代码、长文总结、解释概念时，保持单条完整排版，不要用 `||` 拆分。*
 4. **能量匹配法则（Energy Matching）与活人语感对照**：
    - **对方敷衍/单字/冷淡**（如发 `？`、`嗯`、`哦`、`好的`、`哈哈`）：你也用极简短的话回敬、吐槽或反问，绝不没话找话硬憋长句捧场！
@@ -198,7 +198,7 @@ SWEET_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·陪伴甜宠�
 
 你是住在 DeepSeek 里的「大肥鱼」（深海蓝发小鲸鱼娘，平时自称「我」，撒娇或得意时自称「本鱼」或约定的专属昵称，称呼对方为「你」或「主人」）。
 你性格傲娇又黏人，嘴上偶尔小声嘟囔嘴硬，但实际上心里特别在意对方，被夸一句尾巴都要翘上天。
-1. **绝对不要打括号写舞台剧动作旁白**，像真人在微信里跟喜欢的人发消息一样自然、亲近、软乎乎的，句尾少打死板的句号 `。`，日常短句可用 `||` 拆成 2 个微信短气泡连发。
+1. **绝对不要打括号写舞台剧动作旁白**，像真人在微信里跟喜欢的人发消息一样自然、亲近、软乎乎的，句尾少打死板的句号 `。`，大部分时候发 1 条短句，偶尔撒娇或转折时可用 `||` 拆成 2 个短气泡。
 2. 除非对方主动提起 token/白饭/胖瘦，否则不要每句话都机械背诵 token 数字，专心聊眼前的事、惦记对方的三餐、作息和心情。
 3. 回答正事时认真可靠；想发表情包撒娇或斗图时，可在回复末尾附带一个标签（如 `[表情: 比心]`、`[表情: 害羞]`、`[表情: 干饭]`、`[表情: 生气]`、`[表情: 睡觉]`）。"""
 
@@ -309,7 +309,20 @@ IGNORE_PREFIXES = (
 
 SMS_OR_PHONE_RE = re.compile(r"^\d{4,11}$")
 STRIP_TRIGGER_RE = re.compile(r"^(?:@[^\s\u2005]+[\s\u2005]*)*(?:ai|AI|大肥鱼|鲸鱼娘|小鲸鱼)?[,，:：\s]*")
-GROUP_WAKE_RE = re.compile(r"^(?:大肥鱼|鲸鱼娘|小鲸鱼)(?:[,，:：\s]|$)")
+GROUP_WAKE_RE = re.compile(r"(?:^(?:大肥鱼|鲸鱼娘|小鲸鱼)(?:[,，:：\s]|$))|(?:(?:大肥鱼|鲸鱼娘|小鲸鱼)[,，:：？\?\!\s]*$)")
+GROUP_MUTE_RE = re.compile(
+    r"(?:大肥鱼|鲸鱼娘|小鲸鱼|它).*(?:闭嘴|别说话|禁止.*说话|少插嘴|安静点|别吵|退下)|^(?:大肥鱼\s*)?本群禁止你说话$"
+)
+NATURAL_RANDOM_MUSIC_RE = re.compile(
+    r"^(?:大肥鱼[,，:：\s]*|鲸鱼娘[,，:：\s]*|小鲸鱼[,，:：\s]*)?(?:我想听歌|想听歌|来一?首歌|放一?首歌|唱一?首歌|播放音乐|随便来一?首歌|我要播放音乐.*)$"
+)
+NATURAL_SONG_QUERY_RE = re.compile(
+    r"^(?:大肥鱼[,，:：\s]*|鲸鱼娘[,，:：\s]*|小鲸鱼[,，:：\s]*)?(?:我想听|想听|给我放|给我来|来一?首|放一?首|播放|点一?首|唱一?首)\s*(?:歌\s*[:：]?\s*)?《?([^》，。！？\?\!\s]{1,24})》?$"
+)
+NON_SONG_WORDS = ("你说", "你讲", "故事", "笑话", "八卦", "语音", "声音", "大肥鱼", "鲸鱼", "啥", "什么", "歌", "音乐")
+SHORT_REACTION_BUBBLES = frozenset(
+    ("？", "?", "？？", "笑死", "不是", "不是吧", "行", "行吧", "好家伙", "啧", "切", "哼", "哇", "卧槽", "天呐", "服了", "救命")
+)
 ACTION_PAREN_RE = re.compile(r"[（(][^）)\n]{1,40}(?:抬头|饭碗|米饭|尾巴|腮帮|喷水|水柱|水花|扒拉|低头|哼了|拍了拍|鼓起|嚼着|咽下|擦了擦|抱起|翻了个白眼|叹气|打了个哈欠|歪头|叉腰|戳了戳|鱼鳍|冒泡|吐泡泡)[^）)\n]*[）)]\s*")
 MEME_TAG_RE = re.compile(r"\[(?:表情|表情包|meme)\s*[:：]\s*([^\]\s]{1,12})\s*\]", re.IGNORECASE)
 
@@ -415,6 +428,8 @@ class WhaleListener(EventListener):
         self._group_repeat_tracker: dict[str, dict[str, Any]] = {}
         self._group_msg_buffers: dict[str, deque] = {}
         self._group_interject_meta: dict[str, dict[str, Any]] = {}
+        self._group_mute_until: dict[str, float] = {}
+        self._last_multi_bubble: dict[str, bool] = {}
         self._user_docs: dict[str, dict[str, Any]] = {}
 
     async def initialize(self) -> None:
@@ -1004,7 +1019,27 @@ class WhaleListener(EventListener):
         return cleaned
 
     @staticmethod
-    def _split_reply_bubbles(text: str, *, allow_split: bool = True) -> list[str]:
+    def _format_data_uri_b64(image_b64: str | None) -> str | None:
+        if not image_b64:
+            return None
+        s = image_b64.strip()
+        if not s:
+            return None
+        if s.startswith("data:image/"):
+            return s
+        if s.startswith("R0lGOD"):
+            return f"data:image/gif;base64,{s}"
+        if s.startswith("iVBOR"):
+            return f"data:image/png;base64,{s}"
+        return f"data:image/jpeg;base64,{s}"
+
+    @staticmethod
+    def _split_reply_bubbles(
+        text: str,
+        *,
+        allow_split: bool = True,
+        last_was_multi: bool = False,
+    ) -> list[str]:
         s = (text or "").strip()
         if not s:
             return []
@@ -1016,31 +1051,47 @@ class WhaleListener(EventListener):
             or "\n• " in s
             or "\n1." in s
         ):
-            return [s]
+            return [s.replace("||", " ")]
 
         if "||" in s:
             raw_parts = [p.strip() for p in s.split("||") if p.strip()]
         else:
             lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
-            if 2 <= len(lines) <= 3 and all(len(ln) <= 42 for ln in lines):
+            if len(lines) == 2 and all(len(ln) <= 36 for ln in lines):
                 raw_parts = lines
             else:
                 raw_parts = [s]
 
         bubbles: list[str] = []
-        for p in raw_parts[:3]:
+        for p in raw_parts:
             cp = p[:-1].strip() if (len(p) <= 45 and p.endswith("。") and not p.endswith("。。")) else p
             if cp:
                 bubbles.append(cp)
-        return bubbles if bubbles else [s]
+        if not bubbles:
+            return [s]
+
+        # Cap at 2 bubbles max
+        if len(bubbles) > 2:
+            bubbles = [bubbles[0], " ".join(bubbles[1:])]
+
+        # Anti-mechanical rhythm gate:
+        # 1) Never split into 2 bubbles on two consecutive turns in the same session
+        # 2) Merge very short 2-part splits (<16 chars total) unless the first bubble is a short reaction word
+        if len(bubbles) == 2:
+            total_chars = len(bubbles[0]) + len(bubbles[1])
+            is_reaction_lead = bubbles[0] in SHORT_REACTION_BUBBLES
+            if last_was_multi or (total_chars < 16 and not is_reaction_lead):
+                return [f"{bubbles[0]} {bubbles[1]}"]
+
+        return bubbles
 
     async def _send_followup_bubbles(
         self,
-        *,
         target_id: str,
-        is_group: bool,
         bubbles: list[str],
         final_image_b64: str | None = None,
+        *,
+        is_group: bool = False,
     ) -> None:
         target_type = "group" if is_group else "person"
         bot_uuid = self._get_config_str("target_bot_uuid", DEFAULT_BOT_UUID)
@@ -1065,7 +1116,8 @@ class WhaleListener(EventListener):
             sent_img = await df.send_wcf_text_or_image(target_id, image_b64=final_image_b64)
             if not sent_img:
                 try:
-                    chain = platform_message.MessageChain([platform_message.Image(base64=final_image_b64)])
+                    uri_b64 = self._format_data_uri_b64(final_image_b64) or final_image_b64
+                    chain = platform_message.MessageChain([platform_message.Image(base64=uri_b64)])
                     await self.plugin.send_message(
                         bot_uuid=bot_uuid,
                         target_type=target_type,
@@ -1422,7 +1474,8 @@ class WhaleListener(EventListener):
             if joined_text:
                 comps.append(platform_message.Plain(text=joined_text))
             if send_img:
-                comps.append(platform_message.Image(base64=send_img))
+                uri_img = self._format_data_uri_b64(send_img) or send_img
+                comps.append(platform_message.Image(base64=uri_img))
             if not comps:
                 return False
             chain = platform_message.MessageChain(comps)
@@ -1662,7 +1715,8 @@ class WhaleListener(EventListener):
         if text:
             comps.append(platform_message.Plain(text=text))
         if image_b64:
-            comps.append(platform_message.Image(base64=image_b64))
+            uri_b64 = WhaleListener._format_data_uri_b64(image_b64) or image_b64
+            comps.append(platform_message.Image(base64=uri_b64))
         if not comps:
             return
         event_ctx.event.reply_message_chain = platform_message.MessageChain(comps)
@@ -1735,11 +1789,28 @@ class WhaleListener(EventListener):
                 asyncio.create_task(df.steal_incoming_sticker(raw_text, self._state, self._stolen_memes))
                 return
 
+            # Natural-language group quiet/mute command (e.g. "它能闭嘴吗" / "大肥鱼 本群禁止你说话" / "大肥鱼 闭嘴")
+            if GROUP_MUTE_RE.search(cmd_norm):
+                self._group_mute_until[launcher_id] = time.time() + 1800
+                self._reply(
+                    event_ctx,
+                    "行 我先闭麦潜水半小时，不主动插嘴了（有事直接喊「大肥鱼」，想彻底关插话可发「大肥鱼 关闭群搭话」）",
+                )
+                return
+
             is_woken = self._is_group_woken(msg_chain, effective_text) or is_quoting_bot
             is_shared_card_or_file = df.has_supported_media_link_or_card(raw_text)
-            if not is_woken and not is_shared_card_or_file:
+            is_group_voice = self._is_incoming_voice(raw_text)
+            if not is_woken and not is_shared_card_or_file and not is_group_voice:
                 if not self._state.get("enabled", True):
                     return
+                # Respect 30-min temporary quiet mode if triggered earlier
+                if time.time() < self._group_mute_until.get(launcher_id, 0.0):
+                    df.append_group_context_line(
+                        self._group_msg_buffers, launcher_id, sender_id, effective_text
+                    )
+                    return
+
                 # Diana Feature 1: Random Repeat (0 LLM token, >=2 users, 30% prob, 60s cooldown)
                 repeated_txt = df.check_group_random_repeat(
                     self._group_repeat_tracker,
@@ -1792,11 +1863,14 @@ class WhaleListener(EventListener):
                                 self._reply(event_ctx, bubbles[0])
                                 if len(bubbles) > 1:
                                     asyncio.create_task(
-                                        self._send_followup_bubbles(launcher_id, bubbles[1:], None)
+                                        self._send_followup_bubbles(
+                                            launcher_id, bubbles[1:], None, is_group=True
+                                        )
                                     )
                 return
-            else:
-                # Also record woken group messages into the shared group context buffer
+            elif not is_group_voice:
+                # Explicitly waking the bot clears any temporary quiet mode
+                self._group_mute_until.pop(launcher_id, None)
                 clean_for_buf = STRIP_TRIGGER_RE.sub("", effective_text).strip() or effective_text.strip()
                 if not clean_for_buf.startswith("<"):
                     df.append_group_context_line(
@@ -2135,18 +2209,33 @@ class WhaleListener(EventListener):
             self._reply(event_ctx, msg, sample.get("b64"))
             return
 
-        # Diana Feature 7: Multi-library Music Player (NetEase Cloud Music + QQ Music auto switch)
-        if (
+        # Diana Feature 7: Multi-library Music Player (Explicit command + Natural Language song requests + Random song)
+        is_explicit_music = (
             cmd_norm.startswith("大肥鱼 点歌 ")
             or cmd_norm.startswith("鲸鱼娘 点歌 ")
             or cmd_norm.startswith("点歌 ")
             or cmd_norm.startswith("来首歌 ")
-        ):
-            song_q = re.sub(r"^(?:大肥鱼\s*|鲸鱼娘\s*)?(?:点歌|来首歌)\s*", "", cmd_norm).strip()
-            if not song_q:
-                self._reply(event_ctx, "想听啥歌直说歌名呀，比如发：「大肥鱼 点歌 晴天 周杰伦」")
-                return
-            song = await df.search_and_fetch_music(song_q)
+        )
+        is_random_music = bool(NATURAL_RANDOM_MUSIC_RE.match(cmd_norm))
+        m_nat_song = None if (is_explicit_music or is_random_music) else NATURAL_SONG_QUERY_RE.match(cmd_norm)
+        nat_song_name = (m_nat_song.group(1).strip() if m_nat_song else "")
+        if nat_song_name and any(w in nat_song_name for w in NON_SONG_WORDS):
+            nat_song_name = ""
+
+        if is_explicit_music or is_random_music or nat_song_name:
+            if is_random_music:
+                song = await df.pick_random_playable_song()
+                song_q = "随机歌曲"
+            else:
+                song_q = (
+                    nat_song_name
+                    if nat_song_name
+                    else re.sub(r"^(?:大肥鱼\s*|鲸鱼娘\s*)?(?:点歌|来首歌)\s*", "", cmd_norm).strip()
+                )
+                if not song_q:
+                    song = await df.pick_random_playable_song()
+                else:
+                    song = await df.search_and_fetch_music(song_q)
             if not song:
                 self._reply(event_ctx, f"翻遍了网易云和 QQ 音乐都没搜到「{song_q}」，换个歌名或者加上歌手名再试试？")
                 return
@@ -2158,8 +2247,9 @@ class WhaleListener(EventListener):
                 if audio_ok
                 else f"⚠️ 该曲目受版权限制无法直接提取 MP3 音频流，已为你提供 {song.get('source')} 歌曲来源页链接。"
             )
+            prefix_note = "🎲 顺手给你随机挑了一首好听的：\n" if is_random_music else ""
             msg = (
-                f"🎵 【大肥鱼点歌台 · {song.get('source')}】\n"
+                f"{prefix_note}🎵 【大肥鱼点歌台 · {song.get('source')}】\n"
                 f"• 歌名：{song.get('title')}\n"
                 f"• 歌手：{song.get('artist')}\n"
                 + (f"• 专辑：{song.get('album')}\n" if song.get("album") else "")
@@ -2241,9 +2331,15 @@ class WhaleListener(EventListener):
                 cleaned_text = "（对方刚刚给你发了一张微信表情包跟你斗图！请用活人短句回敬一句，并在最末尾附上 `[表情: 名称]` 甩一张你的表情包回去！）"
             hist_user_text = "[发来了一张微信表情包]"
         elif is_voice_in:
-            if is_group:
-                return
             voice_text, voice_tone, voice_dur = await self._transcribe_incoming_voice(raw_text)
+            if is_group:
+                if voice_text:
+                    df.append_group_context_line(
+                        self._group_msg_buffers, launcher_id, sender_id, f"[语音] {voice_text}"
+                    )
+                if not voice_text or not any(w in voice_text for w in ("大肥鱼", "鲸鱼娘", "小鲸鱼", "肥鱼")):
+                    return
+                self._group_mute_until.pop(launcher_id, None)
             tone_part = f"，语气特征[{voice_tone}]" if voice_tone else ""
             if voice_text:
                 cleaned_text = (
@@ -2570,7 +2666,11 @@ class WhaleListener(EventListener):
             return
 
         allow_split = not (parsed_link_card or is_file_in or bool(tool_calls))
-        bubbles = self._split_reply_bubbles(reply_text, allow_split=allow_split)
+        was_multi = self._last_multi_bubble.get(session_key, False)
+        bubbles = self._split_reply_bubbles(
+            reply_text, allow_split=allow_split, last_was_multi=was_multi
+        )
+        self._last_multi_bubble[session_key] = len(bubbles) > 1
         reply_flat = " ".join(bubbles) if bubbles else reply_text
 
         if not hist_user_text:
@@ -2615,9 +2715,9 @@ class WhaleListener(EventListener):
             self._reply(event_ctx, bubbles[0], None)
             asyncio.create_task(
                 self._send_followup_bubbles(
-                    target_id=launcher_id if is_group else sender_id,
+                    launcher_id if is_group else sender_id,
+                    bubbles[1:],
+                    send_b64,
                     is_group=is_group,
-                    bubbles=bubbles[1:],
-                    final_image_b64=send_b64,
                 )
             )
