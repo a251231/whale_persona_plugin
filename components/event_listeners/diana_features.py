@@ -1289,10 +1289,20 @@ async def send_music_to_wechat(receiver: str, song: dict[str, Any]) -> tuple[boo
 # 8. 微信引用回复解析（Quote / <refermsg>）与多气泡拟真跟发
 # ==============================================================================
 
-_ENV_BOT_WXID = os.getenv("BOT_WXID", "").strip().lower()
-BOT_WXIDS_AND_NAMES = tuple(
-    x for x in (_ENV_BOT_WXID, "大肥鱼", "鲸鱼娘", "小鲸鱼", "肥鱼") if x
-)
+def _get_bot_wxids_and_names() -> tuple[str, ...]:
+    env_wxid = os.getenv("BOT_WXID", "").strip().lower()
+    if not env_wxid:
+        try:
+            sec_file = os.getenv("WHALE_SECRETS_FILE", "/app/data/whale_secrets.json")
+            if os.path.exists(sec_file):
+                with open(sec_file, "r", encoding="utf-8") as f:
+                    env_wxid = str(json.load(f).get("bot_wxid", "") or "").strip().lower()
+        except Exception:
+            pass
+    return tuple(x for x in (env_wxid, "大肥鱼", "鲸鱼娘", "小鲸鱼", "肥鱼") if x)
+
+
+BOT_WXIDS_AND_NAMES = _get_bot_wxids_and_names()
 
 
 def _clean_referred_content(raw_ref: str) -> str:

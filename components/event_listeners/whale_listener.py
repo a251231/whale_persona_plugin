@@ -33,11 +33,27 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-DEFAULT_SF_API_KEY = os.getenv("SILICONFLOW_API_KEY", "")
+SECRETS_FILE = os.getenv("WHALE_SECRETS_FILE", "/app/data/whale_secrets.json")
+
+
+def _load_local_secrets() -> dict[str, str]:
+    try:
+        if os.path.exists(SECRETS_FILE):
+            with open(SECRETS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return {str(k): str(v) for k, v in data.items() if v}
+    except Exception:
+        pass
+    return {}
+
+
+_LOCAL_SECRETS = _load_local_secrets()
+DEFAULT_API_KEY = os.getenv("DEEPSEEK_API_KEY", "") or _LOCAL_SECRETS.get("deepseek_api_key", "")
+DEFAULT_SF_API_KEY = os.getenv("SILICONFLOW_API_KEY", "") or _LOCAL_SECRETS.get("siliconflow_api_key", "")
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
-DEFAULT_BOT_UUID = os.getenv("TARGET_BOT_UUID", "")
+DEFAULT_BOT_UUID = os.getenv("TARGET_BOT_UUID", "") or _LOCAL_SECRETS.get("target_bot_uuid", "")
 SILICONFLOW_ASR_URL = "https://api.siliconflow.cn/v1/audio/transcriptions"
 SILICONFLOW_ASR_MODEL = "FunAudioLLM/SenseVoiceSmall"
 STATE_FILE = os.getenv("WHALE_STATE_FILE", "/app/data/whale_persona_state.json")
@@ -1510,9 +1526,13 @@ class WhaleListener(EventListener):
         try:
             cfg = self.plugin.get_config() or {}
             val = str(cfg.get(key, "") or "").strip()
-            return val if val else default
+            if val:
+                return val
         except Exception:
+            pass
+        if default:
             return default
+        return str(_load_local_secrets().get(key, "") or "").strip()
 
     def _get_config_int(self, key: str, default: int) -> int:
         try:
