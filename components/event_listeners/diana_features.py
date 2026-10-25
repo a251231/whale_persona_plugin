@@ -7,11 +7,13 @@ from datetime import datetime
 import hashlib
 import html
 import io
+import ipaddress
 import json
 import logging
 import os
 import random
 import re
+import socket
 import time
 import urllib.parse
 import zipfile
@@ -351,13 +353,50 @@ ALL_MEME_CATEGORIES = [
     "飘了", "OK", "不要", "猫爪", "加载", "惊吓", "晕", "早上好", "搞笑",
 ]
 
+STOLEN_MEMES_FILE = os.getenv("WHALE_STOLEN_MEMES_FILE", "/app/data/whale_stolen_memes.json")
+
+
+def load_stolen_memes(legacy_state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Loads stolen memes from dedicated JSON file (and migrates any legacy inline stolen_memes)."""
+    memes: list[dict[str, Any]] = []
+    try:
+        if os.path.exists(STOLEN_MEMES_FILE):
+            with open(STOLEN_MEMES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    memes = data
+    except Exception as e:
+        logger.warning("Failed to load stolen memes file: %s", e)
+
+    if legacy_state and isinstance(legacy_state.get("stolen_memes"), list):
+        legacy_list = legacy_state.pop("stolen_memes", [])
+        existing_md5 = {m.get("md5") for m in memes if isinstance(m, dict)}
+        for item in legacy_list:
+            if isinstance(item, dict) and item.get("md5") not in existing_md5:
+                memes.append(item)
+        if legacy_list:
+            save_stolen_memes(memes[-50:])
+    return memes[-50:]
+
+
+def save_stolen_memes(memes: list[dict[str, Any]]) -> None:
+    try:
+        os.makedirs(os.path.dirname(STOLEN_MEMES_FILE), exist_ok=True)
+        tmp = f"{STOLEN_MEMES_FILE}.{os.getpid()}.{random.randint(10000, 99999)}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(memes[-50:], f, ensure_ascii=False)
+        os.replace(tmp, STOLEN_MEMES_FILE)
+    except Exception as e:
+        logger.warning("Failed to save stolen memes: %s", e)
+
 
 async def steal_incoming_sticker(
     xml_text: str,
     state: dict[str, Any],
+    stolen_list: list[dict[str, Any]],
     hint_tag: str | None = None,
 ) -> bool:
-    """Downloads a clean static JPEG of an incoming WeChat sticker and saves it to stolen_memes."""
+    """Downloads a clean static JPEG of an incoming WeChat sticker and persists it to STOLEN_MEMES_FILE."""
     if not state.get("steal_meme_enabled", True) or Image is None:
         return False
 
@@ -371,12 +410,15 @@ async def steal_incoming_sticker(
     m_md5 = re.search(r'md5="([^"]+)"', xml_text or "")
     sticker_md5 = m_md5.group(1).strip() if m_md5 else ""
 
-    stolen_list: list[dict[str, Any]] = state.setdefault("stolen_memes", [])
     if sticker_md5 and any(item.get("md5") == sticker_md5 for item in stolen_list):
         if hint_tag:
+            updated = False
             for item in stolen_list:
                 if item.get("md5") == sticker_md5 and hint_tag not in item.get("tags", []):
                     item.setdefault("tags", []).append(hint_tag)
+                    updated = True
+            if updated:
+                await asyncio.to_thread(save_stolen_memes, stolen_list)
         return False
 
     try:
@@ -416,7 +458,8 @@ async def steal_incoming_sticker(
         }
     )
     if len(stolen_list) > 50:
-        state["stolen_memes"] = stolen_list[-50:]
+        del stolen_list[:-50]
+    await asyncio.to_thread(save_stolen_memes, stolen_list)
     return True
 
 
@@ -424,9 +467,9 @@ def pick_stolen_or_official_meme(
     tag: str,
     official_b64: str | None,
     state: dict[str, Any],
+    stolen_list: list[dict[str, Any]],
 ) -> str | None:
     """With 45% probability when stolen memes exist, picks a matching stolen sticker."""
-    stolen_list: list[dict[str, Any]] = state.get("stolen_memes") or []
     if not stolen_list or not state.get("steal_meme_enabled", True):
         return official_b64
 
@@ -571,10 +614,35 @@ async def search_web_parallel(queries: list[str], search_api_key: str = "") -> s
     return "\n\n".join(out) if out else "未获取到搜索结果"
 
 
+def _is_safe_public_url(url: str) -> bool:
+    """Blocks SSRF attempts against loopback, private RFC1918, or cloud metadata IPs."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = (parsed.hostname or "").strip().lower()
+        if not host or host in ("localhost", "0.0.0.0") or host.endswith(".local") or host.endswith(".internal"):
+            return False
+        for info in socket.getaddrinfo(host, None):
+            ip_str = info[4][0]
+            ip_obj = ipaddress.ip_address(ip_str)
+            if (
+                ip_obj.is_private
+                or ip_obj.is_loopback
+                or ip_obj.is_link_local
+                or ip_obj.is_multicast
+                or ip_obj.is_reserved
+            ):
+                return False
+        return True
+    except Exception:
+        return False
+
+
 async def read_webpage_content(url: str) -> str:
     u = (url or "").strip()
-    if not u.startswith("http"):
-        return "无效的 URL"
+    if not _is_safe_public_url(u):
+        return "无效或受限的 URL（仅允许访问公网 HTTP/HTTPS 页面）"
     try:
         async with httpx.AsyncClient(
             timeout=12.0,
@@ -609,6 +677,30 @@ async def read_webpage_content(url: str) -> str:
 # ==============================================================================
 
 URL_REGEX = re.compile(r"https?://[^\s<>\"'）)】\]]+")
+SUPPORTED_PARSE_DOMAINS = (
+    "bilibili.com/",
+    "b23.tv/",
+    "x.com/",
+    "twitter.com/",
+    "youtube.com/",
+    "youtu.be/",
+    "xiaohongshu.com/",
+    "xhslink.com/",
+    "douyin.com/",
+)
+
+
+def has_supported_media_link_or_card(raw_text: str) -> bool:
+    s = (raw_text or "").strip()
+    if not s:
+        return False
+    if ("<appmsg" in s or s.startswith("<?xml")) and ("<type>5</type>" in s or "<type>6</type>" in s):
+        return True
+    m = URL_REGEX.search(s)
+    if not m:
+        return False
+    low = m.group(0).lower()
+    return any(d in low for d in SUPPORTED_PARSE_DOMAINS)
 
 
 async def _download_image_as_jpeg_b64(url: str) -> str | None:
@@ -936,15 +1028,18 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
         if ext in (".xlsx", ".xlsm"):
             import openpyxl
             wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=True, read_only=True)
-            parts = []
-            for sheet_name in wb.sheetnames[:5]:
-                ws = wb[sheet_name]
-                parts.append(f"【工作表：{sheet_name}】")
-                for row in list(ws.iter_rows(values_only=True))[:80]:
-                    vals = [str(v).strip() for v in row if v is not None and str(v).strip()]
-                    if vals:
-                        parts.append(" | ".join(vals))
-            return filename, "\n".join(parts)[:12000]
+            try:
+                parts = []
+                for sheet_name in wb.sheetnames[:5]:
+                    ws = wb[sheet_name]
+                    parts.append(f"【工作表：{sheet_name}】")
+                    for row in list(ws.iter_rows(values_only=True))[:80]:
+                        vals = [str(v).strip() for v in row if v is not None and str(v).strip()]
+                        if vals:
+                            parts.append(" | ".join(vals))
+                return filename, "\n".join(parts)[:12000]
+            finally:
+                wb.close()
 
         # 4. PowerPoint (.pptx)
         if ext == ".pptx":

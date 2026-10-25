@@ -288,6 +288,7 @@ def _default_user_state() -> dict[str, Any]:
         "lastChatAt": now_ms,
         "lastSpeakUpAt": 0,
         "missStreak": 0,
+        "hasPrivateChat": False,
     }
 
 
@@ -300,6 +301,7 @@ class WhaleListener(EventListener):
         self._state_lock = asyncio.Lock()
         self._histories: dict[str, list[tuple[float, str, str]]] = {}
         self._state: dict[str, Any] = self._load_persistent_state()
+        self._stolen_memes: list[dict[str, Any]] = df.load_stolen_memes(self._state)
         self._balance_cache: tuple[float, str] = (0.0, "")
         self._speak_up_task: asyncio.Task[Any] | None = None
         self._memes_b64: dict[str, str] = self._load_bundled_memes()
@@ -362,8 +364,10 @@ class WhaleListener(EventListener):
                         data.setdefault("group_interject_enabled", True)
                         data.setdefault("interject_logs", [])
                         data.setdefault("steal_meme_enabled", True)
-                        data.setdefault("stolen_memes", [])
                         data.setdefault("web_search_enabled", True)
+                        for u_obj in (data.get("users") or {}).values():
+                            if isinstance(u_obj, dict) and u_obj.get("facts"):
+                                u_obj.setdefault("hasPrivateChat", True)
                         return data
         except Exception as e:
             logger.warning("Failed to load whale state: %s", e)
@@ -378,7 +382,6 @@ class WhaleListener(EventListener):
             "group_interject_enabled": True,
             "interject_logs": [],
             "steal_meme_enabled": True,
-            "stolen_memes": [],
             "web_search_enabled": True,
             "moments": [],
             "token_stats": {"date": "", "today_tokens": 0, "last_tokens": 0, "total_tokens": 0},
@@ -388,7 +391,7 @@ class WhaleListener(EventListener):
     def _save_persistent_state(self) -> None:
         try:
             os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-            tmp = STATE_FILE + ".tmp"
+            tmp = f"{STATE_FILE}.{os.getpid()}.{random.randint(10000, 99999)}.tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self._state, f, ensure_ascii=False, indent=2)
             os.replace(tmp, STATE_FILE)
@@ -984,7 +987,12 @@ class WhaleListener(EventListener):
                 if len(tl) > 20:
                     u["timeline"] = tl[-20:]
                 last_moment_ms = int(u.get("lastAutoMomentAt", 0))
-                if abs(mood_delta) >= 4 and (now_ms - last_moment_ms) > 4 * 3600 * 1000 and user_id.startswith("wxid_"):
+                if (
+                    abs(mood_delta) >= 4
+                    and (now_ms - last_moment_ms) > 4 * 3600 * 1000
+                    and user_id.startswith("wxid_")
+                    and bool(u.get("hasPrivateChat", False))
+                ):
                     u["lastAutoMomentAt"] = now_ms
                     should_auto_moment = True
                     moment_topic = reason
@@ -1116,7 +1124,7 @@ class WhaleListener(EventListener):
                 now_ms = int(time.time() * 1000)
                 users = self._state.get("users", {})
                 for uid, u in list(users.items()):
-                    if not uid.startswith("wxid_"):
+                    if not uid.startswith("wxid_") or not bool(u.get("hasPrivateChat", False)):
                         continue
                     last_chat = int(u.get("lastChatAt", 0))
                     last_speak = int(u.get("lastSpeakUpAt", 0))
@@ -1324,12 +1332,14 @@ class WhaleListener(EventListener):
 
             # Silently collect group stickers into stolen_memes library
             if self._is_incoming_sticker(raw_text):
-                asyncio.create_task(df.steal_incoming_sticker(raw_text, self._state))
+                asyncio.create_task(df.steal_incoming_sticker(raw_text, self._state, self._stolen_memes))
                 return
 
             is_woken = self._is_group_woken(msg_chain, raw_text)
-            is_shared_card_or_file = ("<type>5</type>" in raw_text) or ("<type>6</type>" in raw_text) or bool(df.URL_REGEX.search(raw_text))
+            is_shared_card_or_file = df.has_supported_media_link_or_card(raw_text)
             if not is_woken and not is_shared_card_or_file:
+                if not self._state.get("enabled", True):
+                    return
                 # Diana Feature 1: Random Repeat (0 LLM token, >=2 users, 30% prob, 60s cooldown)
                 repeated_txt = df.check_group_random_repeat(
                     self._group_repeat_tracker,
@@ -1344,7 +1354,7 @@ class WhaleListener(EventListener):
                     return
 
                 # Diana Feature 2: Proactive Group Interjection (Decide whether to reply or stay quiet + log reason)
-                if self._state.get("enabled", True) and self._state.get("group_interject_enabled", True):
+                if self._state.get("group_interject_enabled", True):
                     should_judge = df.record_group_message_for_interject(
                         self._group_msg_buffers,
                         self._group_interject_meta,
@@ -1648,7 +1658,7 @@ class WhaleListener(EventListener):
             self._reply(event_ctx, "好嘞，已关闭表情包偷图，只用本鱼自带的 24 张官方表情包。")
             return
         if cmd_norm in ("大肥鱼 表情库", "大肥鱼 偷图库", "鲸鱼娘 表情库"):
-            stolen = self._state.get("stolen_memes") or []
+            stolen = self._stolen_memes
             if not stolen:
                 self._reply(event_ctx, f"📦 本鱼自带 24 张官方表情包，目前偷图库里还没攒下群友的表情包呢，快发几张表情包喂给本鱼！")
                 return
@@ -1715,7 +1725,7 @@ class WhaleListener(EventListener):
             su_flag = "开启" if self._state.get("speak_up_enabled", True) else "关闭"
             grp_su_flag = "开启" if self._state.get("group_interject_enabled", True) else "关闭"
             rep_flag = "开启" if self._state.get("repeat_enabled", True) else "关闭"
-            stolen_cnt = len(self._state.get("stolen_memes", []))
+            stolen_cnt = len(self._stolen_memes)
             meme_flag = f"开启（官方 {len(self._memes_b64)} 张 + 偷图 {stolen_cnt} 张）" if self._state.get("meme_enabled", True) else "关闭"
             grp_cnt = len(self._state.get("enabled_groups", []))
             stats = self._record_tokens(0)
@@ -1782,8 +1792,8 @@ class WhaleListener(EventListener):
                 )
                 hist_user_text = f"[微信语音 {voice_dur}秒（未听清内容）]"
         elif is_file_in:
-            # Diana Feature 6: File Parsing (PDF / Word / Excel / PPT / EPUB / TXT / Code)
-            fname, ftext = df.parse_wechat_file_xml(raw_text)
+            # Diana Feature 6: File Parsing (PDF / Word / Excel / PPT / EPUB / TXT / Code) offloaded to thread pool
+            fname, ftext = await asyncio.to_thread(df.parse_wechat_file_xml, raw_text)
             if ftext:
                 self._user_docs[sender_id] = {"name": fname, "text": ftext, "ts": time.time()}
                 cleaned_text = (
@@ -1805,6 +1815,8 @@ class WhaleListener(EventListener):
                 )
                 hist_user_text = f"[分享链接] {parsed_link_card[:120]}"
             else:
+                if is_group and not self._is_group_woken(msg_chain, raw_text):
+                    return
                 cleaned_text = STRIP_TRIGGER_RE.sub("", raw_text).strip()
                 if not cleaned_text:
                     cleaned_text = raw_text.strip()
@@ -1829,8 +1841,17 @@ class WhaleListener(EventListener):
 
         now = time.time()
         u = self._get_user_state(sender_id)
+        if not is_group:
+            u["hasPrivateChat"] = True
         u["lastChatAt"] = int(now * 1000)
         u["missStreak"] = 0
+
+        # Evict expired document & session caches to prevent unbounded memory growth
+        for k_doc in [k for k, v in list(self._user_docs.items()) if now - float(v.get("ts", 0)) > 1800]:
+            self._user_docs.pop(k_doc, None)
+        for k_hist, v_hist in list(self._histories.items()):
+            if not v_hist or (now - v_hist[-1][0]) > 7200:
+                self._histories.pop(k_hist, None)
 
         history = self._histories.get(session_key, [])
         history = [(ts, r, c) for (ts, r, c) in history if now - ts < 7200]
@@ -1990,7 +2011,7 @@ class WhaleListener(EventListener):
 
                 # Diana Feature 3: Steal incoming sticker and mix stolen stickers when replying
                 if is_sticker_in:
-                    asyncio.create_task(df.steal_incoming_sticker(raw_text, self._state, meme_tag))
+                    asyncio.create_task(df.steal_incoming_sticker(raw_text, self._state, self._stolen_memes, meme_tag))
 
                 user_asked_meme = any(
                     kw in raw_text for kw in ("表情包", "发个表情", "发张表情", "斗图", "来张图", "发个图")
@@ -2001,7 +2022,7 @@ class WhaleListener(EventListener):
                     meme_b64 = self._memes_b64.get(meme_tag)
 
                 if meme_b64:
-                    meme_b64 = df.pick_stolen_or_official_meme(meme_tag or "搞笑", meme_b64, self._state)
+                    meme_b64 = df.pick_stolen_or_official_meme(meme_tag or "搞笑", meme_b64, self._state, self._stolen_memes)
 
                 # Scheme 1: Code-level cooldown (min 4 text turns & 180s interval) + 15% real RNG gate for normal chats
                 turns_since_meme = int(u.get("turnsSinceMeme", 99)) + 1
