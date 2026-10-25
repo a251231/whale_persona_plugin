@@ -211,15 +211,36 @@ GROUP_INTEREST_KEYWORDS = (
     "笑死",
 )
 
-GROUP_INTERJECT_SYSTEM = """你是微信群里的「大肥鱼」（深海蓝发小鲸鱼娘，自称「本鱼」或「我」，最爱偷吃 DeepSeek token 当大白饭，说话简短接地气，像真实群友一样，绝对禁止使用任何括号动作或神态描写）。
-下面是这个微信群刚刚聊的几句话（群友没有直接 @ 你）。
-请你自行判断现在应该【顺嘴插句话】还是【保持安静】：
+GROUP_INTERJECT_SYSTEM = """你是微信群里的「大肥鱼」（平时自称「我」，傲娇或得意时才偶尔自称「本鱼」，绝对禁止使用任何括号动作或神态描写）。
+下面是这个微信群刚刚聊的几句话（群友没有直接 @ 你），以及你对这个群的记忆印象。
+请你像一个平时在群里潜水的真实群友一样，自行判断现在应该【顺嘴接个梗/神吐槽】还是【保持安静】：
 1. 什么时候保持安静（should_reply: false）：
-   - 群友在聊严肃正事、工作对接、转账、私人纠纷、发口令/号码，或者只是毫无意义的表情/单字，或者你插话会显得突兀打扰时。
+   - 群友在聊严肃正事、工作对接、转账、私人纠纷、发口令/号码，或者只是普通打招呼/单字/表情，或者你没找到特别好玩自然的切入点时，宁可保持安静！
 2. 什么时候顺嘴插话（should_reply: true）：
-   - 群友在聊干饭/美食/夜宵、摸鱼/不想上班/加班、熬夜犯困、吐槽好玩的事、聊 AI/科技/游戏，或者提到了鱼/白饭/token，你顺嘴接一句梗或吐槽一句会很有活人感时。
-3. 只输出一个合法 JSON 对象，不要代码块，不要多余解释：
-{"should_reply": false, "reason": "用一句话写明为什么决定插话，或者为什么决定保持安静", "reply": "如果 should_reply 为 true，写出你要在群里说的那句短话（10~45字，严禁使用括号动作）；如果为 false 则填空字符串"}"""
+   - 群友在聊干饭/美食/夜宵、摸鱼/不想上班/加班、熬夜犯困、吐槽离谱好玩的事、聊游戏/科技/八卦，或者点名提到你时。
+3. 活人群友铁律（极重要）：
+   - 插话必须像真人群友随手敲出来的一句短评或接梗（6~25字以内，句尾不要打句号，不要端着架子自我介绍，严禁每次都背诵“吃DeepSeek token当大白饭”！）。
+4. 只输出一个合法 JSON 对象，不要代码块，不要多余解释：
+{"should_reply": false, "reason": "用一句话写明为什么决定插话，或者为什么决定保持安静", "reply": "如果 should_reply 为 true，写出你要在群里随口接的那句短话（6~25字，严禁使用括号动作和句尾句号）；如果为 false 则填空字符串"}"""
+
+
+def append_group_context_line(
+    group_buffers: dict[str, deque],
+    group_id: str,
+    sender_id: str,
+    raw_text: str,
+) -> str:
+    """Appends a clean group chat line into group_buffers and returns the formatted line (or empty string)."""
+    s = (raw_text or "").strip()
+    if not s or len(s) > 260 or s.startswith(NON_REPEAT_PREFIXES):
+        return ""
+    buf = group_buffers.setdefault(group_id, deque(maxlen=12))
+    now_str = datetime.now(TZ).strftime("%H:%M")
+    short_sender = sender_id[-4:] if len(sender_id) >= 4 else sender_id
+    line = f"[{now_str} 群友{short_sender}]: {s}"
+    if not buf or buf[-1] != line:
+        buf.append(line)
+    return line
 
 
 def record_group_message_for_interject(
@@ -234,10 +255,7 @@ def record_group_message_for_interject(
     if not s or len(s) > 200 or s.startswith(NON_REPEAT_PREFIXES):
         return False
 
-    buf = group_buffers.setdefault(group_id, deque(maxlen=10))
-    now_str = datetime.now(TZ).strftime("%H:%M")
-    short_sender = sender_id[-4:] if len(sender_id) >= 4 else sender_id
-    buf.append(f"[{now_str} 群友{short_sender}]: {s}")
+    append_group_context_line(group_buffers, group_id, sender_id, s)
 
     meta = group_meta.setdefault(group_id, {"last_judge_ts": 0.0, "unjudged_count": 0})
     meta["unjudged_count"] = int(meta.get("unjudged_count", 0)) + 1
@@ -264,6 +282,7 @@ async def evaluate_group_interject(
     group_id: str,
     recent_lines: list[str],
     state: dict[str, Any],
+    group_memory_str: str = "",
 ) -> tuple[bool, str, str, int]:
     """
     Calls DeepSeek to decide whether to interject in a group chat and logs the decision & reason.
@@ -274,7 +293,12 @@ async def evaluate_group_interject(
 
     chat_context = "\n".join(recent_lines[-8:])
     now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
-    user_prompt = f"当前时间：{now_str}\n【群聊最近消息】：\n{chat_context}\n\n请判断回不回并给出原因（只输出JSON）："
+    mem_block = f"\n【本群记忆档案】：\n{group_memory_str}\n" if group_memory_str else ""
+    user_prompt = (
+        f"当前时间：{now_str}{mem_block}\n"
+        f"【群聊最近消息】：\n{chat_context}\n\n"
+        "请判断回不回并给出原因（只输出JSON）："
+    )
 
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
@@ -1259,3 +1283,123 @@ async def send_music_to_wechat(receiver: str, song: dict[str, Any]) -> tuple[boo
                 logger.debug("Send MP3 file failed: %s", e)
 
     return card_sent, audio_sent
+
+
+# ==============================================================================
+# 8. 微信引用回复解析（Quote / <refermsg>）与多气泡拟真跟发
+# ==============================================================================
+
+_ENV_BOT_WXID = os.getenv("BOT_WXID", "").strip().lower()
+BOT_WXIDS_AND_NAMES = tuple(
+    x for x in (_ENV_BOT_WXID, "大肥鱼", "鲸鱼娘", "小鲸鱼", "肥鱼") if x
+)
+
+
+def _clean_referred_content(raw_ref: str) -> str:
+    s = html.unescape((raw_ref or "").strip())
+    if not s:
+        return ""
+    if "<emoji" in s:
+        return "[动画表情]"
+    if "<voicemsg" in s:
+        return "[语音消息]"
+    if "<img" in s:
+        return "[图片]"
+    m_inner_title = re.search(r"<title><!\[CDATA\[(.*?)\]\]></title>|<title>(.*?)</title>", s, re.S)
+    if m_inner_title:
+        inner = (m_inner_title.group(1) or m_inner_title.group(2) or "").strip()
+        if inner:
+            return html.unescape(inner)[:160]
+    cleaned = re.sub(r"<[^>]+>", " ", s)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:160]
+
+
+def extract_quote_context(message_chain: Any, raw_text: str) -> tuple[str, str, str, bool]:
+    """
+    Extracts quoted message context from either WeChat <type>57</type> (<refermsg>) XML
+    or LangBot Quote message_chain component.
+    Returns (user_reply_text, quoted_speaker, quoted_content, is_quoting_bot).
+    """
+    s = (raw_text or "").strip()
+
+    # 1. Check WeChat XML Quote (<type>57</type> or <refermsg>)
+    if ("<appmsg" in s or s.startswith("<?xml") or s.startswith("<msg")) and (
+        "<type>57</type>" in s or "<refermsg>" in s
+    ):
+        head_part = s.split("<refermsg>", 1)[0]
+        m_title = re.search(r"<title><!\[CDATA\[(.*?)\]\]></title>|<title>(.*?)</title>", head_part, re.S)
+        reply_txt = html.unescape((m_title.group(1) or m_title.group(2) or "").strip()) if m_title else ""
+
+        m_ref = re.search(r"<refermsg>(.*?)</refermsg>", s, re.S)
+        ref_block = m_ref.group(1) if m_ref else s
+
+        m_disp = re.search(
+            r"<displayname><!\[CDATA\[(.*?)\]\]></displayname>|<displayname>(.*?)</displayname>",
+            ref_block,
+            re.S,
+        )
+        m_usr = re.search(
+            r"<chatusr><!\[CDATA\[(.*?)\]\]></chatusr>|<chatusr>(.*?)</chatusr>",
+            ref_block,
+            re.S,
+        )
+        m_cnt = re.search(
+            r"<content><!\[CDATA\[(.*?)\]\]></content>|<content>(.*?)</content>",
+            ref_block,
+            re.S,
+        )
+
+        speaker = html.unescape((m_disp.group(1) or m_disp.group(2) or "").strip()) if m_disp else ""
+        chatusr = html.unescape((m_usr.group(1) or m_usr.group(2) or "").strip()) if m_usr else ""
+        raw_cnt = (m_cnt.group(1) or m_cnt.group(2) or "").strip() if m_cnt else ""
+        q_content = _clean_referred_content(raw_cnt)
+
+        is_bot = any(
+            b in chatusr.lower() or b in speaker.lower() for b in BOT_WXIDS_AND_NAMES
+        )
+        return reply_txt, (speaker or chatusr or "群友"), q_content, is_bot
+
+    # 2. Check LangBot platform_message.Quote component in message_chain
+    if message_chain:
+        try:
+            for comp in message_chain:
+                if comp.__class__.__name__ == "Quote":
+                    q_sender = str(getattr(comp, "sender_id", "") or "")
+                    origin = getattr(comp, "origin", None)
+                    q_txt = _clean_referred_content(str(origin or getattr(comp, "text", "") or ""))
+                    if q_txt:
+                        is_bot = any(b in q_sender.lower() for b in BOT_WXIDS_AND_NAMES)
+                        return s, (q_sender[-4:] if q_sender else "对方"), q_txt, is_bot
+        except Exception:
+            pass
+
+    return s, "", "", False
+
+
+async def send_wcf_text_or_image(
+    receiver: str,
+    text: str = "",
+    image_b64: str | None = None,
+) -> bool:
+    """Sends a follow-up text bubble or image directly via WCF HTTP Gateway."""
+    ok = False
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            if text:
+                r = await client.post(
+                    f"{WCF_GATEWAY_URL}/api/send",
+                    json={"receiver": receiver, "msg": text},
+                )
+                if r.status_code == 200 and r.json().get("status") == 0:
+                    ok = True
+            if image_b64:
+                ri = await client.post(
+                    f"{WCF_GATEWAY_URL}/api/send_image",
+                    json={"receiver": receiver, "base64": image_b64},
+                )
+                if ri.status_code == 200 and ri.json().get("status") == 0:
+                    ok = True
+    except Exception as e:
+        logger.debug("WCF send follow-up bubble skipped: %s", e)
+    return ok
