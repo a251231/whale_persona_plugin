@@ -1397,12 +1397,32 @@ class WhaleListener(EventListener):
             self._save_persistent_state()
 
     async def _send_proactive_wechat(self, target_id: str, text: str, image_b64: str | None = None) -> bool:
+        bubbles = self._split_reply_bubbles(text) if text else []
+        send_img = image_b64 if self._state.get("meme_enabled", True) else None
+        if not bubbles and not send_img:
+            return False
+
+        # Prefer direct WCF gateway delivery (supports multi-bubble typing rhythm reliably in background tasks)
+        if bubbles:
+            ok_first = await df.send_wcf_text_or_image(
+                target_id, bubbles[0], send_img if len(bubbles) == 1 else None
+            )
+            if ok_first:
+                if len(bubbles) > 1:
+                    await self._send_followup_bubbles(target_id, bubbles[1:], send_img)
+                return True
+        elif send_img:
+            if await df.send_wcf_text_or_image(target_id, "", send_img):
+                return True
+
+        # Fallback to LangBot plugin send_message API
         try:
+            joined_text = "\n".join(bubbles) if bubbles else ""
             comps: list[Any] = []
-            if text:
-                comps.append(platform_message.Plain(text=text))
-            if image_b64 and self._state.get("meme_enabled", True):
-                comps.append(platform_message.Image(base64=image_b64))
+            if joined_text:
+                comps.append(platform_message.Plain(text=joined_text))
+            if send_img:
+                comps.append(platform_message.Image(base64=send_img))
             if not comps:
                 return False
             chain = platform_message.MessageChain(comps)
@@ -1425,22 +1445,22 @@ class WhaleListener(EventListener):
 
         u = self._get_user_state(user_id)
         now_dt = datetime.now(TZ)
-        now_str = now_dt.strftime("%Y-%m-%d %H:%M（%A）")
+        weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        now_str = f"{now_dt.strftime('%Y-%m-%d %H:%M')}（{weekdays[now_dt.weekday()]}）"
         mood_sec = self._build_mood_section(u)
+        intimacy_sec = self._build_intimacy_section(u)
         mem_sec = self._recall_memories(u, "")
-        bal_str = await self._get_balance_str(api_key, base_url)
-        stats = self._record_tokens(0)
 
         sys_prompt = (
             f"{LIVE_PERSONA_BASE if self._state.get('mode', 'live') == 'live' else SWEET_PERSONA_BASE}\n\n"
             f"## 二、当前实时感知\n"
             f"- 当前时间：{now_str}\n"
-            f"- 粮仓余额：{bal_str}（今日已吃白饭：{stats.get('today_tokens', 0)} tokens）\n"
+            f"- 你们的关系阶段：{intimacy_sec}\n"
             f"- 鱼的心情：\n{mood_sec}\n"
             f"- 鱼的记忆：\n{mem_sec}\n\n"
             "## 三、当前特殊情境（dsh-speak-up 主动搭话）\n"
-            "现在对方有一阵子没在微信上理你了，是你自己突然想找对方搭句话（不是被派活）。"
-            "请结合当前时间（比如饭点、下午摸鱼、或者深夜）、你此刻的心情或记忆，像真人发微信一样主动跟对方起个话头（1~2句短话，20~60字，严禁使用任何括号动作描写！可在末尾附带一个 `[表情: 偷看]` 或 `[表情: 干饭]` 等表情标签）。"
+            "现在对方有一阵子没在微信上理你了，是你自己突然想找对方搭句话（不是被派活）。\n"
+            "请结合当前时间（比如饭点、下午摸鱼、傍晚或深夜）、你此刻的心情或你们之前聊过的记忆，像真朋友在微信上随手发消息一样主动起个话头（1~2句短话，可用 `||` 拆成2条短气泡，严禁使用任何括号动作描写，不要机械背诵 token 数字！可在最末尾附带一个 `[表情: 偷看]` 或 `[表情: 干饭]` 等表情标签）。"
         )
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1764,10 +1784,16 @@ class WhaleListener(EventListener):
                         if should_rep and rep_txt:
                             cleaned_rep = self._clean_reply(rep_txt)
                             final_txt, _, _ = self._extract_text_and_meme(cleaned_rep)
-                            if final_txt:
+                            bubbles = self._split_reply_bubbles(final_txt)
+                            if bubbles:
+                                joined_log = " / ".join(bubbles)
                                 buf = self._group_msg_buffers.setdefault(launcher_id, deque(maxlen=12))
-                                buf.append(f"[{datetime.now(TZ).strftime('%H:%M')} 大肥鱼]: {final_txt}")
-                                self._reply(event_ctx, final_txt)
+                                buf.append(f"[{datetime.now(TZ).strftime('%H:%M')} 大肥鱼]: {joined_log}")
+                                self._reply(event_ctx, bubbles[0])
+                                if len(bubbles) > 1:
+                                    asyncio.create_task(
+                                        self._send_followup_bubbles(launcher_id, bubbles[1:], None)
+                                    )
                 return
             else:
                 # Also record woken group messages into the shared group context buffer
@@ -1920,12 +1946,18 @@ class WhaleListener(EventListener):
             return
 
         if cmd_norm in ("大肥鱼 搭话", "大肥鱼 找我说话"):
+            target_recv = launcher_id if is_group else sender_id
             reply_su, meme_b64 = await self._trigger_speak_up_for_user(sender_id, manual=True)
-            self._reply(
-                event_ctx,
-                reply_su or "这会儿还没配置好钥匙（DeepSeek API Key），或者正犯困呢，等会儿再找你唠",
-                meme_b64 if self._state.get("meme_enabled", True) else None,
-            )
+            send_meme = meme_b64 if self._state.get("meme_enabled", True) else None
+            if reply_su:
+                bubbles = self._split_reply_bubbles(reply_su)
+                if len(bubbles) > 1:
+                    self._reply(event_ctx, bubbles[0], None)
+                    asyncio.create_task(self._send_followup_bubbles(target_recv, bubbles[1:], send_meme))
+                else:
+                    self._reply(event_ctx, bubbles[0] if bubbles else reply_su, send_meme)
+            else:
+                self._reply(event_ctx, "这会儿还没配置好钥匙（DeepSeek API Key），或者正犯困呢，等会儿再找你唠")
             return
 
         # 4. Mood panel command (dsh-feiyu-mood)
