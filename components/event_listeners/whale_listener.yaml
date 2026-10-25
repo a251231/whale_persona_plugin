@@ -4,10 +4,10 @@ metadata:
   name: whale_listener
   label:
     en_US: Whale Persona Listener
-    zh_Hans: 大肥鱼活人感监听器
+    zh_Hans: 大肥鱼全能事件监听器
   description:
-    en_US: Full Dafeiyu live-persona suite with mood, fish memory & archive consolidation, token balance, speak-up, 24 official memes, and cyber moments.
-    zh_Hans: 集成大肥鱼活人版预设、鱼的心情、鱼的记忆（含八章节档案重整）、主动搭话、真实Token粮仓、24张官方表情包斗图与赛博朋友圈。
+    en_US: Full Dafeiyu + Diana suite
+    zh_Hans: 集成大肥鱼活人版、鱼的心情、八章节档案、表情包看图+偷图、语音识别、智能插话、联网搜索、链接与文件解析、点歌、随机复读
 spec: {}
 execution:
   python:

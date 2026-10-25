@@ -26,6 +26,11 @@ from langbot_plugin.api.definition.components.common.event_listener import Event
 from langbot_plugin.api.entities import context, events
 import langbot_plugin.api.entities.builtin.platform.message as platform_message
 
+try:
+    from . import diana_features as df
+except Exception:
+    import diana_features as df  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
@@ -298,6 +303,10 @@ class WhaleListener(EventListener):
         self._balance_cache: tuple[float, str] = (0.0, "")
         self._speak_up_task: asyncio.Task[Any] | None = None
         self._memes_b64: dict[str, str] = self._load_bundled_memes()
+        self._group_repeat_tracker: dict[str, dict[str, Any]] = {}
+        self._group_msg_buffers: dict[str, deque] = {}
+        self._group_interject_meta: dict[str, dict[str, Any]] = {}
+        self._user_docs: dict[str, dict[str, Any]] = {}
 
     async def initialize(self) -> None:
         await super().initialize()
@@ -348,6 +357,13 @@ class WhaleListener(EventListener):
                         data.setdefault("meme_enabled", True)
                         data.setdefault("moments", [])
                         data.setdefault("enabled_groups", [])
+                        data.setdefault("repeat_enabled", True)
+                        data.setdefault("repeat_config", {"min_users": 2, "prob": 0.30, "cooldown_sec": 60})
+                        data.setdefault("group_interject_enabled", True)
+                        data.setdefault("interject_logs", [])
+                        data.setdefault("steal_meme_enabled", True)
+                        data.setdefault("stolen_memes", [])
+                        data.setdefault("web_search_enabled", True)
                         return data
         except Exception as e:
             logger.warning("Failed to load whale state: %s", e)
@@ -357,6 +373,13 @@ class WhaleListener(EventListener):
             "speak_up_enabled": True,
             "meme_enabled": True,
             "enabled_groups": [],
+            "repeat_enabled": True,
+            "repeat_config": {"min_users": 2, "prob": 0.30, "cooldown_sec": 60},
+            "group_interject_enabled": True,
+            "interject_logs": [],
+            "steal_meme_enabled": True,
+            "stolen_memes": [],
+            "web_search_enabled": True,
             "moments": [],
             "token_stats": {"date": "", "today_tokens": 0, "last_tokens": 0, "total_tokens": 0},
             "users": {},
@@ -1191,6 +1214,8 @@ class WhaleListener(EventListener):
             or stripped.startswith("<msg><emoji")
             or "<voicemsg " in stripped
             or stripped.startswith("<msg><voicemsg")
+            or "<type>5</type>" in stripped
+            or "<type>6</type>" in stripped
         ):
             return False
         if stripped.startswith(IGNORE_PREFIXES):
@@ -1269,7 +1294,7 @@ class WhaleListener(EventListener):
         raw_no_at = re.sub(r"^(?:@[^\s\u2005]+[\s\u2005]*)+", "", raw_text.strip()).strip()
         cmd_norm = re.sub(r"\s+", " ", (raw_no_at or raw_text).strip())
 
-        # Group Chat Whitelist Gate (Scheme C: all groups silent by default; only whitelisted groups respond when @/woken)
+        # Group Chat Whitelist Gate (Scheme C + Diana Group Features)
         if is_group:
             enabled_groups: list[str] = self._state.setdefault("enabled_groups", [])
             if cmd_norm in ("大肥鱼 本群开启", "鲸鱼娘 本群开启", "大肥鱼 开启本群"):
@@ -1279,7 +1304,7 @@ class WhaleListener(EventListener):
                 resolved = self._resolve_meme_b64("OK")
                 self._reply(
                     event_ctx,
-                    "收到！本群已加入大肥鱼白名单。在本群里 @我 或开头喊「大肥鱼 <内容>」本鱼就会出来接话，平时绝不乱插嘴（发「大肥鱼 本群关闭」可随时移出白名单）。",
+                    "收到！本群已加入大肥鱼白名单。支持 @我 / 喊「大肥鱼」、智能插话、随机复读、链接与群文件解析、多曲库点歌（发「大肥鱼 本群关闭」可随时移出白名单）。",
                     resolved[1] if resolved else None,
                 )
                 return
@@ -1296,7 +1321,58 @@ class WhaleListener(EventListener):
                 return
             if launcher_id not in enabled_groups:
                 return
-            if not self._is_group_woken(msg_chain, raw_text):
+
+            # Silently collect group stickers into stolen_memes library
+            if self._is_incoming_sticker(raw_text):
+                asyncio.create_task(df.steal_incoming_sticker(raw_text, self._state))
+                return
+
+            is_woken = self._is_group_woken(msg_chain, raw_text)
+            is_shared_card_or_file = ("<type>5</type>" in raw_text) or ("<type>6</type>" in raw_text) or bool(df.URL_REGEX.search(raw_text))
+            if not is_woken and not is_shared_card_or_file:
+                # Diana Feature 1: Random Repeat (0 LLM token, >=2 users, 30% prob, 60s cooldown)
+                repeated_txt = df.check_group_random_repeat(
+                    self._group_repeat_tracker,
+                    self._state,
+                    launcher_id,
+                    sender_id,
+                    msg_chain,
+                    raw_text,
+                )
+                if repeated_txt:
+                    self._reply(event_ctx, repeated_txt)
+                    return
+
+                # Diana Feature 2: Proactive Group Interjection (Decide whether to reply or stay quiet + log reason)
+                if self._state.get("enabled", True) and self._state.get("group_interject_enabled", True):
+                    should_judge = df.record_group_message_for_interject(
+                        self._group_msg_buffers,
+                        self._group_interject_meta,
+                        launcher_id,
+                        sender_id,
+                        raw_text,
+                    )
+                    if should_judge:
+                        api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
+                        base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
+                        model = self._normalize_api_model(self._get_config_str("deepseek_model", DEFAULT_MODEL))
+                        recent_lines = list(self._group_msg_buffers.get(launcher_id, []))
+                        should_rep, rep_txt, _, used_tok = await df.evaluate_group_interject(
+                            api_key=api_key,
+                            base_url=base_url,
+                            model=model,
+                            group_id=launcher_id,
+                            recent_lines=recent_lines,
+                            state=self._state,
+                        )
+                        if used_tok:
+                            self._record_tokens(used_tok)
+                        self._save_persistent_state()
+                        if should_rep and rep_txt:
+                            cleaned_rep = self._clean_reply(rep_txt)
+                            final_txt, _, _ = self._extract_text_and_meme(cleaned_rep)
+                            if final_txt:
+                                self._reply(event_ctx, final_txt)
                 return
 
         # 1. Switch / Control commands
@@ -1523,9 +1599,110 @@ class WhaleListener(EventListener):
             self._reply(event_ctx, msg)
             return
 
+        # 6.5 Diana Enhanced Features Commands (Repeat, Group Interject Log, Stolen Memes, Music, Web Search)
+        if cmd_norm in ("大肥鱼 开启复读", "鲸鱼娘 开启复读"):
+            self._state["repeat_enabled"] = True
+            self._save_persistent_state()
+            self._reply(event_ctx, "随机复读机已开启！白名单群内满 2 人连续发相同纯文字时，本鱼按 30% 概率跟读（冷却 60 秒）。")
+            return
+        if cmd_norm in ("大肥鱼 关闭复读", "鲸鱼娘 关闭复读"):
+            self._state["repeat_enabled"] = False
+            self._save_persistent_state()
+            self._reply(event_ctx, "随机复读机已关闭，本鱼不当复读机啦。")
+            return
+        if cmd_norm.startswith("大肥鱼 复读设置 "):
+            nums = re.findall(r"\d+", cmd_norm)
+            if len(nums) >= 3:
+                min_u = max(2, min(10, int(nums[0])))
+                prob_pct = max(1, min(100, int(nums[1])))
+                cd_s = max(5, min(3600, int(nums[2])))
+                self._state["repeat_config"] = {"min_users": min_u, "prob": prob_pct / 100.0, "cooldown_sec": cd_s}
+                self._save_persistent_state()
+                self._reply(event_ctx, f"复读参数已更新：满 {min_u} 人连续相同纯文字、{prob_pct}% 概率跟读、冷却 {cd_s} 秒。")
+            else:
+                self._reply(event_ctx, "格式示例：「大肥鱼 复读设置 2人 30% 60秒」")
+            return
+
+        if cmd_norm in ("大肥鱼 开启群搭话", "大肥鱼 本群开启搭话"):
+            self._state["group_interject_enabled"] = True
+            self._save_persistent_state()
+            self._reply(event_ctx, "群聊智能主动插话已开启！在白名单群里不用 @，本鱼也会自己判断什么时候顺嘴接话、什么时候保持安静。")
+            return
+        if cmd_norm in ("大肥鱼 关闭群搭话", "大肥鱼 本群关闭搭话"):
+            self._state["group_interject_enabled"] = False
+            self._save_persistent_state()
+            self._reply(event_ctx, "群聊智能主动插话已关闭，现在白名单群里只有 @我 或喊「大肥鱼」时才回话。")
+            return
+        if cmd_norm in ("大肥鱼 搭话记录", "大肥鱼 插话记录", "大肥鱼 决策记录", "鲸鱼娘 搭话记录"):
+            self._reply(event_ctx, df.format_interject_logs(self._state))
+            return
+
+        if cmd_norm in ("大肥鱼 开启偷图", "鲸鱼娘 开启偷图"):
+            self._state["steal_meme_enabled"] = True
+            self._save_persistent_state()
+            self._reply(event_ctx, "表情包偷图模式已开启！聊天里见过的有趣表情包本鱼都会偷偷收进图库学起来。")
+            return
+        if cmd_norm in ("大肥鱼 关闭偷图", "鲸鱼娘 关闭偷图"):
+            self._state["steal_meme_enabled"] = False
+            self._save_persistent_state()
+            self._reply(event_ctx, "好嘞，已关闭表情包偷图，只用本鱼自带的 24 张官方表情包。")
+            return
+        if cmd_norm in ("大肥鱼 表情库", "大肥鱼 偷图库", "鲸鱼娘 表情库"):
+            stolen = self._state.get("stolen_memes") or []
+            if not stolen:
+                self._reply(event_ctx, f"📦 本鱼自带 24 张官方表情包，目前偷图库里还没攒下群友的表情包呢，快发几张表情包喂给本鱼！")
+                return
+            sample = random.choice(stolen)
+            tags_summary = "、".join(
+                f"{m.get('at', '')}[{','.join(m.get('tags') or ['搞笑'])}]" for m in stolen[-6:]
+            )
+            msg = (
+                f"📦 【大肥鱼表情包收藏库】\n"
+                f"• 官方内置：{len(self._memes_b64)} 张 | 偷图收藏：{len(stolen)}/50 张\n"
+                f"• 最近偷图：{tags_summary}\n"
+                f"（下面随机甩一张从你们这儿偷学来的表情包！）"
+            )
+            self._reply(event_ctx, msg, sample.get("b64"))
+            return
+
+        # Diana Feature 7: Multi-library Music Player (NetEase Cloud Music + QQ Music auto switch)
+        if (
+            cmd_norm.startswith("大肥鱼 点歌 ")
+            or cmd_norm.startswith("鲸鱼娘 点歌 ")
+            or cmd_norm.startswith("点歌 ")
+            or cmd_norm.startswith("来首歌 ")
+        ):
+            song_q = re.sub(r"^(?:大肥鱼\s*|鲸鱼娘\s*)?(?:点歌|来首歌)\s*", "", cmd_norm).strip()
+            if not song_q:
+                self._reply(event_ctx, "想听啥歌直说歌名呀，比如发：「大肥鱼 点歌 晴天 周杰伦」")
+                return
+            song = await df.search_and_fetch_music(song_q)
+            if not song:
+                self._reply(event_ctx, f"翻遍了网易云和 QQ 音乐都没搜到「{song_q}」，换个歌名或者加上歌手名再试试？")
+                return
+            target_recv = launcher_id if is_group else sender_id
+            card_ok, audio_ok = await df.send_music_to_wechat(target_recv, song)
+            cover_b64 = await df._download_image_as_jpeg_b64(song.get("cover_url") or "")
+            audio_note = (
+                "✅ 已同步将歌曲 MP3 音频文件直接发到聊天窗口，点开就能听！"
+                if audio_ok
+                else f"⚠️ 该曲目受版权限制无法直接提取 MP3 音频流，已为你提供 {song.get('source')} 歌曲来源页链接。"
+            )
+            msg = (
+                f"🎵 【大肥鱼点歌台 · {song.get('source')}】\n"
+                f"• 歌名：{song.get('title')}\n"
+                f"• 歌手：{song.get('artist')}\n"
+                + (f"• 专辑：{song.get('album')}\n" if song.get("album") else "")
+                + f"• 链接：{song.get('page_url')}\n"
+                + f"{audio_note}"
+            )
+            self._reply(event_ctx, msg, None if card_ok else cover_b64)
+            return
+
         # 7. Status & Reset commands
         if cmd_norm in ("大肥鱼 重置", "鲸鱼娘 重置", "清除记忆", "重置对话", "大肥鱼 清除记忆"):
             self._histories.pop(session_key, None)
+            self._user_docs.pop(sender_id, None)
             self._reply(event_ctx, "行啦，刚才聊的这几句翻篇了！不过长期档案本鱼可还留着呢（要彻底清空请发「大肥鱼 失忆」），想现在聊啥直说。")
             return
 
@@ -1536,26 +1713,29 @@ class WhaleListener(EventListener):
             enabled_flag = self._state.get("enabled", True)
             mode_name = "活人版（去括号短句/会怼人摸鱼）" if self._state.get("mode", "live") == "live" else "陪伴甜宠版"
             su_flag = "开启" if self._state.get("speak_up_enabled", True) else "关闭"
-            meme_flag = f"开启（内置 {len(self._memes_b64)} 张）" if self._state.get("meme_enabled", True) else "关闭"
+            grp_su_flag = "开启" if self._state.get("group_interject_enabled", True) else "关闭"
+            rep_flag = "开启" if self._state.get("repeat_enabled", True) else "关闭"
+            stolen_cnt = len(self._state.get("stolen_memes", []))
+            meme_flag = f"开启（官方 {len(self._memes_b64)} 张 + 偷图 {stolen_cnt} 张）" if self._state.get("meme_enabled", True) else "关闭"
             grp_cnt = len(self._state.get("enabled_groups", []))
             stats = self._record_tokens(0)
             arch_cnt = sum(len(v) for v in (u.get("archive") or {}).values())
             msg = (
-                f"🐋 大肥鱼（活人感全家桶 v0.3.0）\n"
+                f"🐋 大肥鱼（活人感全家桶 × Diana 全能版 v0.4.0）\n"
                 f"• 当前状态：{'在岗干饭中 🍚' if enabled_flag else '下班午睡中 💤'}\n"
                 f"• 人设模式：{mode_name}\n"
                 f"• 当前心情：{u.get('mood', 70)}/100（{self._mood_label(int(u.get('mood', 70)))}）\n"
                 f"• 短期上下文：{turns} 轮 | 记忆：{len(u.get('facts', []))} 条事实 / {arch_cnt} 条归档 / {len(u.get('events', []))} 条事件\n"
-                f"• 表情包斗图：{meme_flag} | 鱼塘朋友圈：{len(self._state.get('moments', []))} 条\n"
-                f"• 群聊白名单：已开启 {grp_cnt} 个群（默认所有群静默）\n"
-                f"• 今日偷吃白饭：{stats.get('today_tokens', 0)} tokens | 主动搭话：{su_flag}\n\n"
+                f"• 表情包库：{meme_flag}\n"
+                f"• 群白名单：已开 {grp_cnt} 个群 | 群智能插话：{grp_su_flag} | 随机复读：{rep_flag}\n"
+                f"• 全能扩展：联网搜索 + 链接解析(B站/X/小红书/抖音) + 文件解析(PDF/Office/EPUB) + 点歌\n"
+                f"• 今日偷吃白饭：{stats.get('today_tokens', 0)} tokens | 私聊搭话：{su_flag}\n\n"
                 f"📋 微信口令速查：\n"
+                f"- 大肥鱼 点歌 <歌名> | 大肥鱼 搜索 <问题>\n"
+                f"- 大肥鱼 搭话记录 | 大肥鱼 表情库 | 大肥鱼 复读设置 2 30 60\n"
                 f"- 大肥鱼 心情 | 大肥鱼 记忆 | 大肥鱼 整理档案\n"
-                f"- 大肥鱼 表情包 | 大肥鱼 表情 干饭\n"
                 f"- 大肥鱼 发朋友圈 | 大肥鱼 朋友圈 | 大肥鱼 点赞\n"
-                f"- 大肥鱼 粮仓 | 大肥鱼 记住 <内容> | 大肥鱼 搭话\n"
-                f"- 大肥鱼 本群开启 | 大肥鱼 本群关闭（群聊白名单控制）\n"
-                f"- 大肥鱼 切换 | 大肥鱼 重置 | 大肥鱼 失忆"
+                f"- 大肥鱼 本群开启 | 大肥鱼 本群关闭（群聊白名单控制）"
             )
             self._reply(event_ctx, msg)
             return
@@ -1568,8 +1748,12 @@ class WhaleListener(EventListener):
 
         is_sticker_in = self._is_incoming_sticker(raw_text)
         is_voice_in = self._is_incoming_voice(raw_text)
+        is_file_in = df.is_incoming_wechat_file(raw_text)
         vision_b64: str | None = None
+        parsed_link_card: str | None = None
+        parsed_link_img_b64: str | None = None
         hist_user_text: str = ""
+
         if is_sticker_in:
             if is_group:
                 return
@@ -1597,16 +1781,39 @@ class WhaleListener(EventListener):
                     "但里面几乎没听清说话声，只有一点背景动静或呼吸声。请用大肥鱼的活人口吻吐槽或追问一句！）"
                 )
                 hist_user_text = f"[微信语音 {voice_dur}秒（未听清内容）]"
-        else:
-            cleaned_text = STRIP_TRIGGER_RE.sub("", raw_text).strip()
-            if not cleaned_text:
-                cleaned_text = raw_text.strip()
-
-            if self._should_ignore_plugin_command(cleaned_text):
+        elif is_file_in:
+            # Diana Feature 6: File Parsing (PDF / Word / Excel / PPT / EPUB / TXT / Code)
+            fname, ftext = df.parse_wechat_file_xml(raw_text)
+            if ftext:
+                self._user_docs[sender_id] = {"name": fname, "text": ftext, "ts": time.time()}
+                cleaned_text = (
+                    f"（对方刚刚发来了一个文件《{fname}》，已为你提取出文件中的核心文本内容如下：\n"
+                    f"--------------------\n{ftext[:7000]}\n--------------------\n"
+                    "请用大肥鱼的活人口吻，先简明扼要地帮对方总结这份文件的重点内容，并问问对方具体想看哪一部分！）"
+                )
+                hist_user_text = f"[发送了文件《{fname}》]"
+            else:
+                self._reply(event_ctx, f"收到文件《{fname}》啦，但这会儿文件还在下载或者格式受限没能提取出文字，你可以直接把里面的关键段落发出来给本鱼看！")
                 return
-            if not is_group:
-                vision_b64 = await self._extract_image_b64_from_chain(getattr(event_ctx.event, "message_chain", None))
-            hist_user_text = cleaned_text
+        else:
+            # Check if message contains a Bilibili / X(Twitter) / YouTube / Xiaohongshu / Douyin link or WeChat shared card
+            parsed_link_card, parsed_link_img_b64 = await df.extract_and_parse_link(raw_text)
+            if parsed_link_card:
+                cleaned_text = (
+                    f"（对方刚刚分享了一个链接/卡片，已自动解析出详情如下：\n{parsed_link_card}\n"
+                    "请用大肥鱼的活人短句（1~2句话，不许打括号动作）对这个链接/视频/推文/主页内容顺嘴锐评或接梗一句！）"
+                )
+                hist_user_text = f"[分享链接] {parsed_link_card[:120]}"
+            else:
+                cleaned_text = STRIP_TRIGGER_RE.sub("", raw_text).strip()
+                if not cleaned_text:
+                    cleaned_text = raw_text.strip()
+
+                if self._should_ignore_plugin_command(cleaned_text):
+                    return
+                if not is_group:
+                    vision_b64 = await self._extract_image_b64_from_chain(getattr(event_ctx.event, "message_chain", None))
+                hist_user_text = cleaned_text
 
         if await self._is_duplicate(getattr(event_ctx, "query_id", None)):
             return
@@ -1649,6 +1856,15 @@ class WhaleListener(EventListener):
         mood_sec = self._build_mood_section(u)
         mem_sec = self._recall_memories(u, cleaned_text)
 
+        # Include cached file context if user uploaded a document within the last 30 minutes
+        doc_sec = ""
+        cached_doc = self._user_docs.get(sender_id)
+        if cached_doc and (now - float(cached_doc.get("ts", 0))) < 1800 and not is_file_in:
+            doc_sec = (
+                f"\n\n## 三、对方最近上传的文档缓存（《{cached_doc.get('name')}》，若对方追问文档内容请据此回答）\n"
+                f"{str(cached_doc.get('text', ''))[:4500]}"
+            )
+
         base_persona = LIVE_PERSONA_BASE if self._state.get("mode", "live") == "live" else SWEET_PERSONA_BASE
         dynamic_system_prompt = (
             f"{base_persona}\n\n"
@@ -1658,7 +1874,19 @@ class WhaleListener(EventListener):
             f"今天已喂给你 `{stats.get('today_tokens', 0)} tokens` 的白饭（上一口刚吃了 `{stats.get('last_tokens', 0)} tokens`）。\n"
             f"- **鱼的心情（dsh-feiyu-mood）**：\n{mood_sec}\n"
             f"- **鱼的记忆（dsh-fish-memory）**：\n{mem_sec}"
+            f"{doc_sec}"
         )
+
+        # If user explicitly used "大肥鱼 搜索 <问题>", pre-run parallel web search right away
+        if cmd_norm.startswith("大肥鱼 搜索 ") or cmd_norm.startswith("鲸鱼娘 搜索 "):
+            sq = re.sub(r"^(?:大肥鱼|鲸鱼娘)\s*搜索\s*", "", cmd_norm).strip()
+            if sq:
+                search_res = await df.search_web_parallel([sq])
+                cleaned_text = (
+                    f"对方让你联网搜索：「{sq}」\n"
+                    f"【并行联网检索结果】：\n{search_res}\n\n"
+                    "请结合以上最新检索结果，用大肥鱼的活人口吻准确回答对方！"
+                )
 
         messages: list[dict[str, Any]] = [{"role": "system", "content": dynamic_system_prompt}]
         for _, r, c in history:
@@ -1677,40 +1905,103 @@ class WhaleListener(EventListener):
             messages.append({"role": "user", "content": cleaned_text})
 
         try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
+            async with httpx.AsyncClient(timeout=50.0) as client:
+                req_payload: dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": 1.15,
+                    "max_tokens": 800,
+                }
+                # Enable Diana Feature 4 (Native Web Search & Webpage Reader Tool Calling) for text chats
+                if not vision_b64 and not parsed_link_card and not is_file_in and self._state.get("web_search_enabled", True):
+                    req_payload["tools"] = df.DEEPSEEK_SEARCH_TOOLS
+                    req_payload["tool_choice"] = "auto"
+
                 resp = await client.post(
                     f"{base_url}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "temperature": 1.15,
-                        "max_tokens": 800,
-                    },
+                    json=req_payload,
                 )
                 resp.raise_for_status()
                 data = resp.json()
                 used_tokens = int((data.get("usage") or {}).get("total_tokens", 0))
                 self._record_tokens(used_tokens)
-                self._save_persistent_state()
-                raw_reply = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                    .strip()
-                )
+
+                choice_msg = data.get("choices", [{}])[0].get("message", {}) or {}
+                tool_calls = choice_msg.get("tool_calls") or []
+
+                # Execute parallel web_search / read_webpage tool calls if requested by DeepSeek
+                if tool_calls:
+                    messages.append(choice_msg)
+                    for tc in tool_calls[:3]:
+                        fn = (tc.get("function") or {}).get("name", "")
+                        raw_args = (tc.get("function") or {}).get("arguments") or "{}"
+                        try:
+                            args_obj = json.loads(raw_args)
+                        except Exception:
+                            args_obj = {}
+                        if fn == "web_search":
+                            qs = args_obj.get("queries") or []
+                            if isinstance(qs, str):
+                                qs = [qs]
+                            tool_out = await df.search_web_parallel(qs)
+                        elif fn == "read_webpage":
+                            tool_out = await df.read_webpage_content(str(args_obj.get("url") or ""))
+                        else:
+                            tool_out = "未知工具"
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc.get("id", ""),
+                                "content": tool_out[:3500],
+                            }
+                        )
+                    resp2 = await client.post(
+                        f"{base_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": model,
+                            "messages": messages,
+                            "temperature": 1.0,
+                            "max_tokens": 800,
+                        },
+                    )
+                    resp2.raise_for_status()
+                    data2 = resp2.json()
+                    used2 = int((data2.get("usage") or {}).get("total_tokens", 0))
+                    self._record_tokens(used2)
+                    raw_reply = (
+                        data2.get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
+                        .strip()
+                    )
+                else:
+                    raw_reply = (choice_msg.get("content") or "").strip()
+
                 cleaned_reply = self._clean_reply(raw_reply)
-                reply_text, _, meme_b64 = self._extract_text_and_meme(cleaned_reply)
+                reply_text, meme_tag, meme_b64 = self._extract_text_and_meme(cleaned_reply)
+
+                # Diana Feature 3: Steal incoming sticker and mix stolen stickers when replying
+                if is_sticker_in:
+                    asyncio.create_task(df.steal_incoming_sticker(raw_text, self._state, meme_tag))
+
                 user_asked_meme = any(
                     kw in raw_text for kw in ("表情包", "发个表情", "发张表情", "斗图", "来张图", "发个图")
                 )
                 force_meme = bool(is_sticker_in or user_asked_meme)
                 if force_meme and not meme_b64 and self._memes_b64:
-                    fallback_tag = random.choice(["得意", "干饭", "猫爪", "偷看", "飘了"])
-                    meme_b64 = self._memes_b64.get(fallback_tag)
+                    meme_tag = random.choice(["得意", "干饭", "猫爪", "偷看", "飘了"])
+                    meme_b64 = self._memes_b64.get(meme_tag)
+
+                if meme_b64:
+                    meme_b64 = df.pick_stolen_or_official_meme(meme_tag or "搞笑", meme_b64, self._state)
 
                 # Scheme 1: Code-level cooldown (min 4 text turns & 180s interval) + 15% real RNG gate for normal chats
                 turns_since_meme = int(u.get("turnsSinceMeme", 99)) + 1
@@ -1727,9 +2018,14 @@ class WhaleListener(EventListener):
                 self._save_persistent_state()
         except Exception as exc:
             logger.warning("Whale persona DeepSeek API call failed: %s", exc)
+            if parsed_link_card:
+                self._reply(event_ctx, parsed_link_card, parsed_link_img_b64)
             return
 
-        if not reply_text and not meme_b64:
+        if parsed_link_card:
+            reply_text = f"{parsed_link_card}\n━━━━━━━━━━━━━━\n🐟 大肥鱼：{reply_text}" if reply_text else parsed_link_card
+
+        if not reply_text and not meme_b64 and not parsed_link_img_b64:
             return
 
         if not hist_user_text:
@@ -1751,5 +2047,5 @@ class WhaleListener(EventListener):
             )
         )
 
-        send_b64 = meme_b64 if self._state.get("meme_enabled", True) else None
+        send_b64 = parsed_link_img_b64 or (meme_b64 if self._state.get("meme_enabled", True) else None)
         self._reply(event_ctx, reply_text, send_b64)

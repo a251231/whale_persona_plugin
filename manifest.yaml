@@ -3,65 +3,59 @@ kind: Plugin
 metadata:
   author: a251231
   name: whale_persona_plugin
-  repository: "https://github.com/a251231/whale_persona_plugin"
-  version: 0.3.0
+  repository: https://github.com/a251231/whale_persona_plugin
+  version: 0.4.0
   description:
-    en_US: DeepSeek Dafeiyu Live-Persona Suite v0.3.0 (Live Persona + Mood + Fish Memory & Archive + Speak-Up + Token Rice + 24 Memes + Moments + Voice ASR)
-    zh_Hans: DeepSeek 大肥鱼活人感全家桶 v0.3.0（活人版预设 + 鱼的心情 + 鱼的记忆与档案重整 + 主动搭话 + 实时粮仓 + 24张专属表情包真看图斗图 + 鱼塘朋友圈 + SenseVoice语音听感）
+    en_US: DeepSeek Dafeiyu (Whale Girl) v0.4.0 Full Suite + Diana 7 Extensions (Group Interject, Web Search, Link & File Parser, Music, Stolen Memes, Random Repeat)
+    zh_Hans: DeepSeek 大肥鱼（活人感全家桶 × Diana 全能版 v0.4.0：心情/八章节档案/24表情包看图+偷图/朋友圈/语音听感/智能插话/联网搜索/链接与文件解析/多曲库点歌/随机复读）
   label:
-    en_US: Dafeiyu Live Persona Suite
-    zh_Hans: 大肥鱼（活人感全家桶版）
+    en_US: Whale Girl Persona (Dafeiyu Full Suite v0.4.0)
+    zh_Hans: 🐋 大肥鱼（活人感全家桶 × Diana 全能版 v0.4.0）
+  icon: assets/memes/ganfan.jpg
 spec:
   config:
     - name: deepseek_api_key
+      type: string
       label:
         en_US: DeepSeek API Key
-        zh_Hans: DeepSeek API Key
-      type: string
+        zh_Hans: DeepSeek API 密钥 (粮仓钥匙)
+      default: ""
       required: true
-      default: ""
     - name: siliconflow_api_key
-      label:
-        en_US: SiliconFlow API Key (Voice ASR SenseVoiceSmall)
-        zh_Hans: SiliconFlow API Key（用于微信语音识别 SenseVoiceSmall）
       type: string
-      required: false
+      label:
+        en_US: SiliconFlow API Key (Free SenseVoiceSmall ASR)
+        zh_Hans: 硅基流动 API 密钥 (免费 SenseVoice 微信语音转文字与语气识别)
       default: ""
+      required: false
     - name: deepseek_base_url
+      type: string
       label:
         en_US: DeepSeek Base URL
         zh_Hans: DeepSeek 接口地址
-      type: string
-      required: false
       default: "https://api.deepseek.com"
+      required: false
     - name: deepseek_model
+      type: string
       label:
         en_US: DeepSeek Model
-        zh_Hans: 模型名称
-      type: string
-      required: false
+        zh_Hans: 模型名称 (支持 deepseek-chat / deepseek-flash 即 DeepSeek-V4.1-Flash 多模态识图)
       default: "deepseek-chat"
+      required: false
     - name: target_bot_uuid
+      type: string
       label:
         en_US: Target Bot UUID
-        zh_Hans: 绑定指定机器人 UUID（留空则对所有关联机器人生效）
-      type: string
-      required: false
+        zh_Hans: 绑定机器人 UUID (留空则对所有机器人人生效)
       default: ""
+      required: false
     - name: max_history_turns
+      type: integer
       label:
         en_US: Max History Turns
-        zh_Hans: 最大短期上下文轮数
-      type: integer
-      required: false
+        zh_Hans: 短期对话记忆轮数
       default: 12
-    - name: speak_up_enabled
-      label:
-        en_US: Proactive Speak-Up Enabled
-        zh_Hans: 开启主动搭话 (dsh-speak-up)
-      type: boolean
       required: false
-      default: true
   components:
     EventListener:
       fromDirs:
