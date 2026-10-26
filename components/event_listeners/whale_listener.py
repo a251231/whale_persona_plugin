@@ -971,6 +971,12 @@ class WhaleListener(EventListener):
                 self._state["moments"] = moments_list[-30:]
             self._save_persistent_state()
 
+        # Also publish to real WeChat 4.1 Moments (朋友圈) asynchronously if WCF V4 gateway is active
+        try:
+            asyncio.create_task(df.publish_wcf_moment(cleaned, meme_b64))
+        except Exception:
+            pass
+
         card_text = (
             f"📸 【大肥鱼的朋友圈动态 #{moment_item['id']}】\n"
             f"🕒 {now_str}  |  心情：{mood_val}/100 ({self._mood_label(mood_val)})\n"
@@ -1207,7 +1213,18 @@ class WhaleListener(EventListener):
             logger.debug("Fetch sticker cdnurl failed: %s", e)
         return None
 
-    async def _extract_image_b64_from_chain(self, message_chain: Any) -> str | None:
+    async def _extract_image_b64_from_chain(self, message_chain: Any, raw_text: str = "") -> str | None:
+        if raw_text and "<img_b64>" in raw_text:
+            m_ib64 = re.search(r"<img_b64>(.*?)</img_b64>", raw_text, re.S)
+            if m_ib64:
+                b64_val = m_ib64.group(1).strip()
+                if "," in b64_val and b64_val.startswith("data:"):
+                    b64_val = b64_val.split(",", 1)[1]
+                try:
+                    raw_bytes = base64.b64decode(b64_val)
+                    return self._sticker_bytes_to_jpeg_b64(raw_bytes) or b64_val
+                except Exception:
+                    pass
         if not message_chain:
             return None
         try:
@@ -1661,15 +1678,20 @@ class WhaleListener(EventListener):
         if not message_chain:
             return ""
         parts: list[str] = []
+        has_image = False
         try:
             for comp in message_chain:
                 if isinstance(comp, platform_message.Plain):
                     t = str(getattr(comp, "text", "") or "")
                     if t.strip():
                         parts.append(t.strip())
+                elif isinstance(comp, platform_message.Image):
+                    has_image = True
         except Exception:
             pass
         if not parts:
+            if has_image:
+                return "[图片]"
             raw = str(message_chain or "").strip()
             return raw
         return "\n".join(parts).strip()
@@ -2636,7 +2658,7 @@ class WhaleListener(EventListener):
                 if self._should_ignore_plugin_command(cleaned_text):
                     return
                 if not is_group:
-                    vision_b64 = await self._extract_image_b64_from_chain(getattr(event_ctx.event, "message_chain", None))
+                    vision_b64 = await self._extract_image_b64_from_chain(getattr(event_ctx.event, "message_chain", None), raw_text)
 
                 if quote_content:
                     hist_user_text = f"[引用「{quote_speaker}: {quote_content[:60]}」] {cleaned_text}"

@@ -1134,19 +1134,26 @@ async def extract_and_parse_link(raw_text: str) -> tuple[str | None, str | None]
 
 def is_incoming_wechat_file(raw_text: str) -> bool:
     s = (raw_text or "").strip()
-    return ("<appmsg" in s or s.startswith("<?xml")) and "<type>6</type>" in s
+    return (("<appmsg" in s or s.startswith("<?xml")) and "<type>6</type>" in s) or "<file_b64>" in s
 
 
 def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
     """
-    Extracts filename and text content from WeChat <appmsg file_b64="..." ><type>6</type> XML.
+    Extracts filename and text content from WeChat <appmsg file_b64="..." ><type>6</type> XML
+    or <file_b64>...<file_name>... tags.
     Returns (filename, extracted_text).
     """
     s = raw_text or ""
     m_title = re.search(r"<title><!\[CDATA\[(.*?)\]\]></title>|<title>(.*?)</title>", s, re.S)
-    filename = html.unescape((m_title.group(1) or m_title.group(2) or "未命名文件").strip()) if m_title else "未命名文件"
+    m_fname = re.search(r"<file_name>(.*?)</file_name>", s, re.S)
+    if m_title:
+        filename = html.unescape((m_title.group(1) or m_title.group(2) or "未命名文件").strip())
+    elif m_fname:
+        filename = html.unescape((m_fname.group(1) or "未命名文件").strip())
+    else:
+        filename = "未命名文件"
 
-    m_b64 = re.search(r'file_b64="([^"]+)"', s)
+    m_b64 = re.search(r'file_b64="([^"]+)"', s) or re.search(r"<file_b64>([^<]+)</file_b64>", s)
     if not m_b64:
         return filename, ""
 
@@ -1440,9 +1447,9 @@ async def send_music_to_wechat(receiver: str, song: dict[str, Any]) -> tuple[boo
                 logger.debug("Send rich text card failed: %s", e)
 
         if audio_bytes:
+            b64_mp3 = base64.b64encode(audio_bytes).decode("ascii")
+            safe_fn = f"{title}-{artist}.mp3"
             try:
-                b64_mp3 = base64.b64encode(audio_bytes).decode("ascii")
-                safe_fn = f"{title}-{artist}.mp3"
                 rf = await client.post(
                     f"{WCF_GATEWAY_URL}/api/send_file",
                     json={
@@ -1456,7 +1463,25 @@ async def send_music_to_wechat(receiver: str, song: dict[str, Any]) -> tuple[boo
             except Exception as e:
                 logger.debug("Send MP3 file failed: %s", e)
 
+            if not audio_sent:
+                try:
+                    rv = await client.post(
+                        f"{WCF_GATEWAY_URL}/api/send_voice",
+                        json={
+                            "receiver": receiver,
+                            "base64": b64_mp3,
+                            "filename": safe_fn,
+                        },
+                    )
+                    if rv.status_code == 200 and rv.json().get("status") == 0:
+                        audio_sent = True
+                except Exception as e:
+                    logger.debug("Send voice fallback failed: %s", e)
+
     return card_sent, audio_sent
+
+
+send_wcf_music_and_audio = send_music_to_wechat
 
 
 # ==============================================================================
@@ -1821,3 +1846,56 @@ async def send_wcf_text_or_image(
     except Exception as e:
         logger.debug("WCF send follow-up bubble skipped: %s", e)
     return ok
+
+
+async def send_wcf_voice(
+    receiver: str,
+    audio_b64: str,
+    filename: str = "voice.mp3",
+) -> bool:
+    """Sends a native WeChat voice bubble (Type 34 SILK v3) via WCF V4 Gateway."""
+    try:
+        async with httpx.AsyncClient(timeout=35.0) as client:
+            r = await client.post(
+                f"{WCF_GATEWAY_URL}/api/send_voice",
+                json={
+                    "receiver": receiver,
+                    "base64": audio_b64,
+                    "filename": filename,
+                },
+            )
+            if r.status_code == 200 and r.json().get("status") == 0:
+                return True
+    except Exception as e:
+        logger.debug("WCF send_voice skipped: %s", e)
+    return False
+
+
+async def publish_wcf_moment(
+    text: str,
+    image_b64: str | None = None,
+    visibility: str = "public",
+) -> bool:
+    """Publishes a real WeChat Moment (朋友圈) via WCF V4 Gateway (/api/send_moment).
+    Silently returns False if the gateway is V3 or WeChat Moments is unavailable.
+    """
+    content = (text or "").strip()
+    images = [image_b64] if image_b64 else []
+    if not content and not images:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post(
+                f"{WCF_GATEWAY_URL}/api/send_moment",
+                json={
+                    "content": content,
+                    "images": images,
+                    "visibility": visibility or "public",
+                },
+            )
+            if r.status_code == 200 and r.json().get("status") == 0:
+                logger.info("Successfully published WeChat V4 Moment: %s", content[:40])
+                return True
+    except Exception as e:
+        logger.debug("WCF publish_moment skipped (V3 or unavailable): %s", e)
+    return False
