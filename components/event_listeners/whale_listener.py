@@ -736,8 +736,8 @@ class WhaleListener(EventListener):
         u = users.get(sender_id)
         if not isinstance(u, dict) or not u.get("hasPrivateChat", False):
             return (
-                f"- **当前说话群友识别（按微信号精准识别，按群昵称/昵称称呼）**：群友「{name_label}」（未与你私聊过，按本群公共氛围自然接话即可；"
-                f"回复中如需称呼对方请直接叫「{name_label}」，严禁使用微信号或后四位字母数字）"
+                f"- **当前说话群友识别（按微信号精准识别）**：群友「{name_label}」（未与你私聊过，按本群公共氛围自然接话即可；"
+                f"发消息时系统会自动在开头加 @{name_label}，正文中切勿再次重复写「{name_label}」）"
             )
 
         mood = int(u.get("mood", 70))
@@ -750,10 +750,10 @@ class WhaleListener(EventListener):
         combined = _dedup_facts_in_place(arch_highlights + facts)[-5:]
         summary_str = "；".join(combined) if combined else "平时在私聊里跟你聊过天"
         return (
-            f"- **当前说话群友识别（按微信号精准匹配只读私聊熟人记忆，按群昵称/昵称「{name_label}」称呼）**："
+            f"- **当前说话群友识别（按微信号精准匹配只读私聊熟人记忆）**："
             f"当前说话的群友「{name_label}」是你私聊里的熟人（你对TA的好感心情 {mood}/100）。\n"
             f"  你心里记得关于 TA 的私聊印象：{summary_str}\n"
-            f"  *（真人社交分寸：你在群里认得 TA，接话时可直接叫「{name_label}」或双方约定的称呼，绝对禁止叫微信号或后四位；但注意当前是在公开微信群里，绝不要把人家私聊里的私密心事当众念出来！）*"
+            f"  *（真人社交分寸：发消息时系统会自动在开头加 @{name_label}，因此正文中不要再重复写「{name_label}」；你在群里认得 TA，接话时可自然带出熟人默契，但绝不要把人家私聊里的私密心事当众念出来！）*"
         )
 
     def _format_group_archive_card(self, group_id: str, g: dict[str, Any]) -> str:
@@ -1966,6 +1966,7 @@ class WhaleListener(EventListener):
                     if should_rep and rep_txt:
                         cleaned_rep = self._clean_reply(rep_txt)
                         final_txt, _, _ = self._extract_text_and_meme(cleaned_rep)
+                        final_txt = df.strip_redundant_speaker_name(final_txt, sender_name)
                         was_multi = self._last_multi_bubble.get(session_key, False)
                         bubbles = self._split_reply_bubbles(final_txt, last_was_multi=was_multi)
                         if bubbles:
@@ -2059,6 +2060,7 @@ class WhaleListener(EventListener):
                         if should_rep and rep_txt:
                             cleaned_rep = self._clean_reply(rep_txt)
                             final_txt, _, _ = self._extract_text_and_meme(cleaned_rep)
+                            final_txt = df.strip_redundant_speaker_name(final_txt, sender_name)
                             was_multi = self._last_multi_bubble.get(session_key, False)
                             bubbles = self._split_reply_bubbles(final_txt, last_was_multi=was_multi)
                             if bubbles:
@@ -2705,8 +2707,8 @@ class WhaleListener(EventListener):
             )
             name_rule_line = (
                 f"- **群聊称呼铁律（极重要）**：当前正在跟你说话的群友叫「{sender_name}」。"
-                f"在群里回复或提及任何群友时，必须直接叫对方的真实群昵称/微信昵称（如「{sender_name}」或本群成员名单中的名字），"
-                "绝对禁止使用微信号（wxid_xxx）或微信号后四位（如 aq22、oh22、nl22）来称呼任何人！\n"
+                f"发送群回复时系统会自动在消息最前面加上 `@{sender_name}`，因此在你的回复正文中【绝对禁止再次写出当前说话人的名字「{sender_name}」】（否则名字会重复出现两次），直接说你要回的话即可！"
+                "只有当你在话里需要提到群内【其他第三方群友】时，才直接写那位群友的真实群昵称/微信昵称（严禁使用微信号 wxid_xxx 或后四位如 aq22、oh22、nl22）！\n"
             )
             recent_grp_lines = list(self._group_msg_buffers.get(launcher_id, []))[-8:]
             grp_ctx_block = (
@@ -2866,6 +2868,8 @@ class WhaleListener(EventListener):
 
                 cleaned_reply = self._clean_reply(raw_reply)
                 reply_text, meme_tag, meme_b64 = self._extract_text_and_meme(cleaned_reply)
+                if is_group and not parsed_link_card:
+                    reply_text = df.strip_redundant_speaker_name(reply_text, sender_name)
 
                 # Diana Feature 3: Steal incoming sticker and mix stolen stickers when replying
                 if is_sticker_in:

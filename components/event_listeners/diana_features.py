@@ -228,9 +228,9 @@ GROUP_INTERJECT_SYSTEM = """你是微信群里的「大肥鱼」（平时自称�
    - 群友在聊严肃正事、工作对接、转账、私人烦心事/纠纷、发口令/号码，或者只是普通打招呼/单字/表情，或者没有好玩切入点时，一律保持安静！
 3. 活人群友铁律（极重要）：
    - 插话必须像真人群友随手敲出来的一句短评或接梗（6~24字以内，句尾不要打句号，不要端着架子自我介绍，严禁每次都背诵“吃DeepSeek token当大白饭”！）。
-   - 称呼铁律：群聊记录 `[时间 昵称]:` 中的「昵称」是群友真实的群昵称或微信昵称。回复时如需称呼或提到某位群友，必须直接叫对方的真实群昵称/昵称，严禁使用微信号（wxid_xxx）或微信号后四位（如 aq22、oh22、nl22）！
+   - 称呼铁律：发送群回复时系统会自动在消息最前面加上 `@当前说话人昵称`，因此在你的 reply 正文中【绝对禁止再次写出当前说话人的昵称】（否则昵称会重复出现两次）！只有当你在话里需要提到群内【其他第三方群友】时，才直接写那位群友的真实群昵称/昵称（严禁使用微信号 wxid_xxx 或后四位如 aq22、oh22、nl22）。
 4. 只输出一个合法 JSON 对象，不要代码块，不要多余解释：
-{"should_reply": false, "reason": "用一句话写明为什么决定插话，或者为什么决定保持安静", "reply": "如果 should_reply 为 true，写出你要在群里随口接的那句短话（6~24字，严禁使用括号动作和句尾句号）；如果为 false 则填空字符串"}"""
+{"should_reply": false, "reason": "用一句话写明为什么决定插话，或者为什么决定保持安静", "reply": "如果 should_reply 为 true，写出你要在群里随口接的那句短话（6~24字，严禁使用括号动作和句尾句号，严禁重复写当前说话人昵称）；如果为 false 则填空字符串"}"""
 
 GROUP_CONTINUATION_SYSTEM = """你是微信群里的「大肥鱼」（平时自称「我」，傲娇或得意时才偶尔自称「本鱼」，绝对禁止使用任何括号动作或神态描写）。
 刚才在这个微信群里，你正在和群友互动聊天（或者群友刚把你的聊天记录发到群里、正在议论你）。
@@ -244,10 +244,10 @@ GROUP_CONTINUATION_SYSTEM = """你是微信群里的「大肥鱼」（平时自�
    - 如果只是一句纯附和的“哈哈哈哈”且你上一句已经把话说满、没必要再硬凑一句时，也可以安静。
 3. 活人连续对话铁律（极重要）：
    - 回复必须紧扣对方刚刚说的这句话和上一句的语境自然往下接（比如对方说“你这样说话很难有朋友”，你可以嘴硬回怼；对方发“。。。”，你可以追问“干嘛 一脸无语给谁看呢”；大家调侃“尴尬的时候就和他聊天”，你可以傲娇吐槽自己成缓解尴尬工具鱼了）。
-   - 称呼铁律：群聊记录 `[时间 昵称]:` 中的「昵称」是群友真实的群昵称或微信昵称。回复时如需称呼或提到某位群友，必须直接叫对方的真实群昵称/昵称，绝对禁止使用微信号（wxid_xxx）或微信号后四位（如 aq22、oh22、nl22）来称呼任何人！
+   - 称呼铁律：发送群回复时系统会自动在消息最前面加上 `@当前说话人昵称`，因此在你的 reply 正文中【绝对禁止再次写出当前说话人的昵称】（否则昵称会重复出现两次）！只有当你在话里需要提到群内【其他第三方群友】时，才直接写那位群友的真实群昵称/昵称（严禁使用微信号 wxid_xxx 或后四位如 aq22、oh22、nl22）！
    - 保持微信活人短句（默认 1 条气泡，6~35字左右，句尾不打句号，绝对禁止使用括号动作描写，严禁背诵吃token设定）。
 4. 只输出一个合法 JSON 对象，不要代码块，不要多余解释：
-{"should_reply": true, "reason": "简述判断原因（如：对方顺着我上一句继续吐槽我 / 群友在调侃拿我缓解尴尬）", "reply": "如果 should_reply 为 true，写出你要回复的话；如果为 false 则填空字符串"}"""
+{"should_reply": true, "reason": "简述判断原因（如：对方顺着我上一句继续吐槽我 / 群友在调侃拿我缓解尴尬）", "reply": "如果 should_reply 为 true，写出你要回复的话（严禁在正文里重复写当前说话人昵称）；如果为 false 则填空字符串"}"""
 
 
 def append_group_context_line(
@@ -422,7 +422,7 @@ async def evaluate_group_active_continuation(
         f"【当前说话人身份】：{speaker_hint}\n"
         f"【群聊最近上下文】：\n{chat_context}\n\n"
         f"【需要判断的最新这句话】：[{display_name}]: {current_text}\n\n"
-        "请判断这句话是不是在继续跟你聊/吐槽你/议论你，并给出 JSON 结果（回复中如需称呼群友，必须直接叫其真实昵称，严禁使用微信号或后四位）："
+        f"请判断这句话是不是在继续跟你聊/吐槽你/议论你，并给出 JSON 结果（注意：发消息时系统会自动在开头加 @{display_name}，因此你的 reply 正文中绝对不要再次写出「{display_name}」，直接说回复内容即可；只有提到群内其他第三方群友时才写对方真实昵称）："
     )
 
     try:
@@ -455,7 +455,7 @@ async def evaluate_group_active_continuation(
 
     should_reply = bool(obj.get("should_reply", False))
     reason = str(obj.get("reason") or "").strip()[:120]
-    reply = str(obj.get("reply") or "").strip()
+    reply = strip_redundant_speaker_name(str(obj.get("reply") or "").strip(), display_name)
 
     log_entry = {
         "at": datetime.now(TZ).strftime("%m-%d %H:%M:%S"),
@@ -1522,6 +1522,30 @@ def _is_usable_display_name(name: str, wxid: str) -> bool:
     if s.lower().startswith("wxid_"):
         return False
     return True
+
+
+def strip_redundant_speaker_name(text: str, speaker_name: str) -> str:
+    """
+    Removes duplicate mentions of the current speaker's nickname from a group reply
+    because the WeChat gateway already prepends `@speaker_name\u2005` when replying.
+    """
+    s = (text or "").strip()
+    sp = (speaker_name or "").strip()
+    if not s or not sp or sp in ("群友", "朋友", "这位群友"):
+        return s
+
+    esc = re.escape(sp)
+    # 1. Strip leading `@speaker_name` or `speaker_name` (and following punctuation/spaces)
+    s2 = re.sub(rf"^(?:@\s*)?{esc}[\s\u2005,，:：!！?？、~～]*", "", s).strip()
+    if s2:
+        s = s2
+
+    # 2. Strip mid-sentence vocative `@speaker_name` or standalone `speaker_name `
+    s3 = re.sub(rf"(?:@\s*)?{esc}[\s\u2005,，!！]*", "", s).strip()
+    if len(s3) >= 2:
+        s = s3
+
+    return s
 
 
 def get_cached_display_name(wxid: str, roomid: str = "") -> str:
