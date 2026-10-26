@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections import deque
+import contextvars
 from datetime import datetime
 import html
 import io
@@ -436,8 +437,11 @@ class WhaleListener(EventListener):
 
     async def initialize(self) -> None:
         await super().initialize()
-        asyncio.create_task(df.refresh_dynamic_bot_names())
-        self._speak_up_task = asyncio.create_task(self._speak_up_loop())
+        contextvars.Context().run(asyncio.create_task, df.refresh_dynamic_bot_names())
+        self._speak_up_task = contextvars.Context().run(
+            asyncio.create_task,
+            self._speak_up_loop(),
+        )
 
         @self.handler(events.PersonNormalMessageReceived)
         async def _on_person_normal(event_ctx: context.EventContext) -> None:
@@ -1456,7 +1460,21 @@ class WhaleListener(EventListener):
                         g["events"] = evs[-30:]
             self._save_persistent_state()
 
+    @staticmethod
+    def _clear_ended_invocation() -> None:
+        try:
+            from langbot_plugin.api.proxies import invocation as _inv_mod
+
+            current_var = getattr(_inv_mod, "_current", None)
+            if current_var is not None:
+                inv = current_var.get()
+                if inv is not None and not getattr(inv, "active", True):
+                    current_var.set(None)
+        except Exception:
+            pass
+
     async def _send_proactive_wechat(self, target_id: str, text: str, image_b64: str | None = None) -> bool:
+        self._clear_ended_invocation()
         bubbles = self._split_reply_bubbles(text) if text else []
         send_img = image_b64 if self._state.get("meme_enabled", True) else None
         if not bubbles and not send_img:
@@ -1561,9 +1579,11 @@ class WhaleListener(EventListener):
         return None, None
 
     async def _speak_up_loop(self) -> None:
+        self._clear_ended_invocation()
         while True:
             await asyncio.sleep(1800)
             try:
+                self._clear_ended_invocation()
                 if not self._state.get("enabled", True) or not self._state.get("speak_up_enabled", True):
                     continue
                 now_dt = datetime.now(TZ)
@@ -1607,6 +1627,7 @@ class WhaleListener(EventListener):
 
     def _get_config_str(self, key: str, default: str) -> str:
         try:
+            self._clear_ended_invocation()
             cfg = self.plugin.get_config() or {}
             val = str(cfg.get(key, "") or "").strip()
             if val:
@@ -1619,6 +1640,7 @@ class WhaleListener(EventListener):
 
     def _get_config_int(self, key: str, default: int) -> int:
         try:
+            self._clear_ended_invocation()
             cfg = self.plugin.get_config() or {}
             return int(cfg.get(key, default))
         except Exception:
