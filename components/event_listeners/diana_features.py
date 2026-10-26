@@ -228,6 +228,7 @@ GROUP_INTERJECT_SYSTEM = """你是微信群里的「大肥鱼」（平时自称�
    - 群友在聊严肃正事、工作对接、转账、私人烦心事/纠纷、发口令/号码，或者只是普通打招呼/单字/表情，或者没有好玩切入点时，一律保持安静！
 3. 活人群友铁律（极重要）：
    - 插话必须像真人群友随手敲出来的一句短评或接梗（6~24字以内，句尾不要打句号，不要端着架子自我介绍，严禁每次都背诵“吃DeepSeek token当大白饭”！）。
+   - 称呼铁律：群聊记录 `[时间 昵称]:` 中的「昵称」是群友真实的群昵称或微信昵称。回复时如需称呼或提到某位群友，必须直接叫对方的真实群昵称/昵称，严禁使用微信号（wxid_xxx）或微信号后四位（如 aq22、oh22、nl22）！
 4. 只输出一个合法 JSON 对象，不要代码块，不要多余解释：
 {"should_reply": false, "reason": "用一句话写明为什么决定插话，或者为什么决定保持安静", "reply": "如果 should_reply 为 true，写出你要在群里随口接的那句短话（6~24字，严禁使用括号动作和句尾句号）；如果为 false 则填空字符串"}"""
 
@@ -243,6 +244,7 @@ GROUP_CONTINUATION_SYSTEM = """你是微信群里的「大肥鱼」（平时自�
    - 如果只是一句纯附和的“哈哈哈哈”且你上一句已经把话说满、没必要再硬凑一句时，也可以安静。
 3. 活人连续对话铁律（极重要）：
    - 回复必须紧扣对方刚刚说的这句话和上一句的语境自然往下接（比如对方说“你这样说话很难有朋友”，你可以嘴硬回怼；对方发“。。。”，你可以追问“干嘛 一脸无语给谁看呢”；大家调侃“尴尬的时候就和他聊天”，你可以傲娇吐槽自己成缓解尴尬工具鱼了）。
+   - 称呼铁律：群聊记录 `[时间 昵称]:` 中的「昵称」是群友真实的群昵称或微信昵称。回复时如需称呼或提到某位群友，必须直接叫对方的真实群昵称/昵称，绝对禁止使用微信号（wxid_xxx）或微信号后四位（如 aq22、oh22、nl22）来称呼任何人！
    - 保持微信活人短句（默认 1 条气泡，6~35字左右，句尾不打句号，绝对禁止使用括号动作描写，严禁背诵吃token设定）。
 4. 只输出一个合法 JSON 对象，不要代码块，不要多余解释：
 {"should_reply": true, "reason": "简述判断原因（如：对方顺着我上一句继续吐槽我 / 群友在调侃拿我缓解尴尬）", "reply": "如果 should_reply 为 true，写出你要回复的话；如果为 false 则填空字符串"}"""
@@ -253,6 +255,7 @@ def append_group_context_line(
     group_id: str,
     sender_id: str,
     raw_text: str,
+    sender_name: str = "",
 ) -> str:
     """Appends a clean group chat line into group_buffers and returns the formatted line (or empty string)."""
     s = (raw_text or "").strip()
@@ -260,8 +263,8 @@ def append_group_context_line(
         return ""
     buf = group_buffers.setdefault(group_id, deque(maxlen=12))
     now_str = datetime.now(TZ).strftime("%H:%M")
-    short_sender = sender_id[-4:] if len(sender_id) >= 4 else sender_id
-    line = f"[{now_str} 群友{short_sender}]: {s}"
+    display_name = (sender_name or "").strip() or get_cached_display_name(sender_id, group_id)
+    line = f"[{now_str} {display_name}]: {s}"
     if not buf or buf[-1] != line:
         buf.append(line)
     return line
@@ -273,13 +276,14 @@ def record_group_message_for_interject(
     group_id: str,
     sender_id: str,
     raw_text: str,
+    sender_name: str = "",
 ) -> bool:
     """Records a group message and returns True if the LLM interjection judge should run."""
     s = (raw_text or "").strip()
     if not s or len(s) > 200 or s.startswith(NON_REPEAT_PREFIXES):
         return False
 
-    append_group_context_line(group_buffers, group_id, sender_id, s)
+    append_group_context_line(group_buffers, group_id, sender_id, s, sender_name=sender_name)
 
     meta = group_meta.setdefault(group_id, {"last_judge_ts": 0.0, "unjudged_count": 0})
     meta["unjudged_count"] = int(meta.get("unjudged_count", 0)) + 1
@@ -318,8 +322,10 @@ async def evaluate_group_interject(
     chat_context = "\n".join(recent_lines[-8:])
     now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
     mem_block = f"\n【本群记忆档案】：\n{group_memory_str}\n" if group_memory_str else ""
+    roster_names = get_cached_group_member_names(group_id)
+    roster_block = f"\n【本群成员真实昵称名单】：{'、'.join(roster_names)}\n" if roster_names else ""
     user_prompt = (
-        f"当前时间：{now_str}{mem_block}\n"
+        f"当前时间：{now_str}{mem_block}{roster_block}\n"
         f"【群聊最近消息】：\n{chat_context}\n\n"
         "请判断回不回并给出原因（只输出JSON）："
     )
@@ -386,6 +392,7 @@ async def evaluate_group_active_continuation(
     state: dict[str, Any],
     group_memory_str: str = "",
     familiarity_str: str = "",
+    sender_name: str = "",
 ) -> tuple[bool, str, str, int]:
     """
     Active Conversation Window judge & responder:
@@ -397,23 +404,25 @@ async def evaluate_group_active_continuation(
     if not api_key or not current_text:
         return False, "", "", 0
 
-    short_sender = sender_id[-4:] if len(sender_id) >= 4 else sender_id
+    display_name = (sender_name or "").strip() or get_cached_display_name(sender_id, group_id)
     chat_context = "\n".join(recent_lines[-8:]) if recent_lines else "（无）"
     now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
     speaker_hint = (
-        f"群友{short_sender}（正是刚刚跟你对话的同一位群友，紧接着追问/回应，未再点 @）"
+        f"群友「{display_name}」（正是刚刚跟你对话的同一位群友，紧接着追问/回应，未再点 @）"
         if is_same_speaker
-        else f"群友{short_sender}（在你发言后紧接着说话的群友，未点 @）"
+        else f"群友「{display_name}」（在你发言后紧接着说话的群友，未点 @）"
     )
     mem_block = f"\n【本群记忆档案】：\n{group_memory_str}\n" if group_memory_str else ""
     fam_block = f"\n{familiarity_str}\n" if familiarity_str else ""
+    roster_names = get_cached_group_member_names(group_id)
+    roster_block = f"\n【本群成员真实昵称名单】：{'、'.join(roster_names)}\n" if roster_names else ""
     user_prompt = (
-        f"当前时间：{now_str}{mem_block}{fam_block}\n"
+        f"当前时间：{now_str}{mem_block}{fam_block}{roster_block}\n"
         f"【你（大肥鱼）上一句在群里的发言】：「{last_bot_reply}」\n"
         f"【当前说话人身份】：{speaker_hint}\n"
         f"【群聊最近上下文】：\n{chat_context}\n\n"
-        f"【需要判断的最新这句话】：[群友{short_sender}]: {current_text}\n\n"
-        "请判断这句话是不是在继续跟你聊/吐槽你/议论你，并给出 JSON 结果："
+        f"【需要判断的最新这句话】：[{display_name}]: {current_text}\n\n"
+        "请判断这句话是不是在继续跟你聊/吐槽你/议论你，并给出 JSON 结果（回复中如需称呼群友，必须直接叫其真实昵称，严禁使用微信号或后四位）："
     )
 
     try:
@@ -452,7 +461,7 @@ async def evaluate_group_active_continuation(
         "at": datetime.now(TZ).strftime("%m-%d %H:%M:%S"),
         "group": group_id[:10],
         "decision": "💬 接话" if (should_reply and reply) else "🤫 安静",
-        "trigger": f"[群友{short_sender}]: {current_text[:28]}",
+        "trigger": f"[{display_name}]: {current_text[:28]}",
         "reason": reason or ("识别到正在和我连续对话，自然接话" if should_reply else "群友转向其他话题，保持安静"),
         "reply": reply[:60] if should_reply else "",
     }
@@ -1502,6 +1511,130 @@ def get_dynamic_bot_names() -> tuple[str, ...]:
     return tuple(x for x in dyn if x)
 
 
+_GROUP_MEMBERS_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
+_USER_NAME_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
+
+
+def _is_usable_display_name(name: str, wxid: str) -> bool:
+    s = (name or "").strip()
+    if not s or s == wxid:
+        return False
+    if s.lower().startswith("wxid_"):
+        return False
+    return True
+
+
+def get_cached_display_name(wxid: str, roomid: str = "") -> str:
+    """Returns cached group alias / WeChat nickname for wxid, or a clean non-wxid fallback."""
+    uid = (wxid or "").strip()
+    rid = (roomid or "").strip()
+    if not uid:
+        return "群友" if rid else "朋友"
+
+    c1 = _USER_NAME_CACHE.get((rid, uid))
+    if c1 and _is_usable_display_name(c1[1], uid):
+        return c1[1]
+
+    if rid and rid in _GROUP_MEMBERS_CACHE:
+        m_map = _GROUP_MEMBERS_CACHE[rid][1] or {}
+        m_val = str(m_map.get(uid) or "").strip()
+        if _is_usable_display_name(m_val, uid):
+            return m_val
+
+    c2 = _USER_NAME_CACHE.get(("", uid))
+    if c2 and _is_usable_display_name(c2[1], uid):
+        return c2[1]
+
+    if not uid.lower().startswith("wxid_"):
+        return uid
+    return "这位群友" if rid else "朋友"
+
+
+def get_cached_group_member_names(roomid: str) -> list[str]:
+    """Returns the cached list of real display names in a group chat."""
+    rid = (roomid or "").strip()
+    if not rid or rid not in _GROUP_MEMBERS_CACHE:
+        return []
+    m_map = _GROUP_MEMBERS_CACHE[rid][1] or {}
+    bot_names = set(get_dynamic_bot_names())
+    out: list[str] = []
+    for k, v in m_map.items():
+        val = str(v or "").strip()
+        if not _is_usable_display_name(val, k):
+            continue
+        if k.lower() in bot_names:
+            continue
+        if val not in out:
+            out.append(val)
+    return out
+
+
+async def resolve_user_display_name(
+    wxid: str,
+    roomid: str = "",
+    event_sender_name: str = "",
+) -> str:
+    """
+    Dynamically resolves a user's Group Alias (群昵称) or WeChat Nickname (微信昵称)
+    while keeping `wxid` as the internal unique identity key.
+    Caches results in memory for 300 seconds.
+    """
+    uid = (wxid or "").strip()
+    rid = (roomid or "").strip()
+    if not uid:
+        return "群友" if rid else "朋友"
+
+    now = time.time()
+    ev_name = (event_sender_name or "").strip()
+    if _is_usable_display_name(ev_name, uid):
+        _USER_NAME_CACHE[(rid, uid)] = (now, ev_name)
+
+    # Refresh group member roster if in a group chat and cache is missing or expired (300s)
+    if rid and "@chatroom" in rid:
+        rm_cached = _GROUP_MEMBERS_CACHE.get(rid)
+        if not rm_cached or (now - rm_cached[0]) > 300:
+            try:
+                async with httpx.AsyncClient(timeout=2.5) as client:
+                    q_room = urllib.parse.quote(rid)
+                    r = await client.get(f"{WCF_GATEWAY_URL}/api/chatroom_members?roomid={q_room}")
+                    if r.status_code == 200:
+                        j = r.json() or {}
+                        members = j.get("members") or {}
+                        if isinstance(members, dict) and members:
+                            clean_map: dict[str, str] = {}
+                            for mk, mv in members.items():
+                                m_str = str(mv or "").strip()
+                                if _is_usable_display_name(m_str, str(mk)):
+                                    clean_map[str(mk)] = m_str
+                                    _USER_NAME_CACHE[(rid, str(mk))] = (now, m_str)
+                            _GROUP_MEMBERS_CACHE[rid] = (now, clean_map)
+            except Exception as e:
+                logger.debug("Fetch chatroom_members skipped: %s", e)
+
+    cached_now = _USER_NAME_CACHE.get((rid, uid))
+    if cached_now and (now - cached_now[0]) < 300 and _is_usable_display_name(cached_now[1], uid):
+        return cached_now[1]
+
+    # Query single user display name from WCF /api/user_name
+    try:
+        async with httpx.AsyncClient(timeout=2.5) as client:
+            q_uid = urllib.parse.quote(uid)
+            q_rid = urllib.parse.quote(rid)
+            r = await client.get(f"{WCF_GATEWAY_URL}/api/user_name?wxid={q_uid}&roomid={q_rid}")
+            if r.status_code == 200:
+                j = r.json() or {}
+                resolved = str(j.get("name") or "").strip()
+                if _is_usable_display_name(resolved, uid):
+                    _USER_NAME_CACHE[(rid, uid)] = (now, resolved)
+                    if rid and rid in _GROUP_MEMBERS_CACHE:
+                        _GROUP_MEMBERS_CACHE[rid][1][uid] = resolved
+                    return resolved
+    except Exception as e:
+        logger.debug("Fetch user_name skipped: %s", e)
+
+    return get_cached_display_name(uid, rid)
+
+
 def extract_forwarded_chat_record(
     raw_text: str,
     recent_bot_texts: Any = None,
@@ -1630,7 +1763,8 @@ def extract_quote_context(message_chain: Any, raw_text: str) -> tuple[str, str, 
                     q_txt = _clean_referred_content(str(origin or getattr(comp, "text", "") or ""))
                     if q_txt:
                         is_bot = any(b in q_sender.lower() for b in bot_names)
-                        return s, (q_sender[-4:] if q_sender else "对方"), q_txt, is_bot
+                        q_disp = get_cached_display_name(q_sender) if q_sender else "对方"
+                        return s, q_disp, q_txt, is_bot
         except Exception:
             pass
 

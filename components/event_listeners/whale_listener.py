@@ -729,12 +729,16 @@ class WhaleListener(EventListener):
             lines.append(f"- [本群近期话题] {prefix}{e_txt}")
         return "\n".join(lines) if lines else "- （本群刚开启群聊档案，在大家水群聊天中自然熟悉本群氛围即可）"
 
-    def _recall_readonly_private_familiarity(self, sender_id: str) -> str:
-        """Read-only lookup of a group speaker's private chat memories (never writes back during group chat)."""
+    def _recall_readonly_private_familiarity(self, sender_id: str, sender_name: str = "") -> str:
+        """Read-only lookup of a group speaker's private chat memories by wxid (never writes back during group chat)."""
+        name_label = (sender_name or "").strip() or df.get_cached_display_name(sender_id)
         users = self._state.get("users") or {}
         u = users.get(sender_id)
         if not isinstance(u, dict) or not u.get("hasPrivateChat", False):
-            return "- **当前说话群友识别**：普通群友（未与你私聊过，按本群公共氛围自然接话即可，不单独建个人档）"
+            return (
+                f"- **当前说话群友识别（按微信号精准识别，按群昵称/昵称称呼）**：群友「{name_label}」（未与你私聊过，按本群公共氛围自然接话即可；"
+                f"回复中如需称呼对方请直接叫「{name_label}」，严禁使用微信号或后四位字母数字）"
+            )
 
         mood = int(u.get("mood", 70))
         facts = _dedup_facts_in_place(list(u.get("facts") or []))[-5:]
@@ -746,9 +750,10 @@ class WhaleListener(EventListener):
         combined = _dedup_facts_in_place(arch_highlights + facts)[-5:]
         summary_str = "；".join(combined) if combined else "平时在私聊里跟你聊过天"
         return (
-            f"- **当前说话群友识别（只读私聊熟人记忆）**：这位群友是你私聊里的熟人（你对TA的好感心情 {mood}/100）。\n"
+            f"- **当前说话群友识别（按微信号精准匹配只读私聊熟人记忆，按群昵称/昵称「{name_label}」称呼）**："
+            f"当前说话的群友「{name_label}」是你私聊里的熟人（你对TA的好感心情 {mood}/100）。\n"
             f"  你心里记得关于 TA 的私聊印象：{summary_str}\n"
-            f"  *（真人社交分寸：你在群里认得 TA，接话时可自然带出熟人默契或双方约定的称呼；但注意当前是在公开微信群里，绝不要把人家私聊里的私密心事当众念出来！）*"
+            f"  *（真人社交分寸：你在群里认得 TA，接话时可直接叫「{name_label}」或双方约定的称呼，绝对禁止叫微信号或后四位；但注意当前是在公开微信群里，绝不要把人家私聊里的私密心事当众念出来！）*"
         )
 
     def _format_group_archive_card(self, group_id: str, g: dict[str, Any]) -> str:
@@ -1814,10 +1819,23 @@ class WhaleListener(EventListener):
             return
 
         sender_id = str(getattr(event_ctx.event, "sender_id", "") or "user")
-        short_sender = sender_id[-4:] if len(sender_id) >= 4 else sender_id
         launcher_id = str(getattr(event_ctx.event, "launcher_id", "") or "chat")
         # Group chats share a group-level session context; private chats are per-person
         session_key = f"group:{launcher_id}" if is_group else f"person:{launcher_id}:{sender_id}"
+
+        ev_obj = event_ctx.event
+        ev_sender = getattr(ev_obj, "sender", None)
+        ev_raw_obj = getattr(ev_obj, "source_platform_object", None)
+        event_sender_name = str(
+            getattr(ev_obj, "sender_name", "")
+            or getattr(ev_sender, "member_name", "")
+            or getattr(ev_sender, "nickname", "")
+            or (ev_raw_obj.get("sender_name", "") if isinstance(ev_raw_obj, dict) else "")
+            or ""
+        ).strip()
+        sender_name = await df.resolve_user_display_name(
+            sender_id, launcher_id if is_group else "", event_sender_name
+        )
 
         asyncio.create_task(df.refresh_dynamic_bot_names())
 
@@ -1866,7 +1884,7 @@ class WhaleListener(EventListener):
             # Silently collect group stickers into stolen_memes library
             if self._is_incoming_sticker(raw_text):
                 df.append_group_context_line(
-                    self._group_msg_buffers, launcher_id, sender_id, "[动画表情]"
+                    self._group_msg_buffers, launcher_id, sender_id, "[动画表情]", sender_name=sender_name
                 )
                 asyncio.create_task(df.steal_incoming_sticker(raw_text, self._state, self._stolen_memes))
                 return
@@ -1888,6 +1906,7 @@ class WhaleListener(EventListener):
                     launcher_id,
                     sender_id,
                     f"[合并转发《{fwd_title}》]: {fwd_one_line}",
+                    sender_name=sender_name,
                 )
 
             is_fwd_woken = bool(
@@ -1908,14 +1927,14 @@ class WhaleListener(EventListener):
                 # Respect 30-min temporary quiet mode if triggered earlier
                 if time.time() < self._group_mute_until.get(launcher_id, 0.0):
                     df.append_group_context_line(
-                        self._group_msg_buffers, launcher_id, sender_id, effective_text
+                        self._group_msg_buffers, launcher_id, sender_id, effective_text, sender_name=sender_name
                     )
                     return
 
                 # Active Conversation Window: recognize multi-turn follow-ups & group discussion about Dafeiyu without requiring @
                 if self._should_check_active_continuation(launcher_id, sender_id, msg_chain, effective_text):
                     df.append_group_context_line(
-                        self._group_msg_buffers, launcher_id, sender_id, effective_text
+                        self._group_msg_buffers, launcher_id, sender_id, effective_text, sender_name=sender_name
                     )
                     conv = self._group_active_conv.get(launcher_id) or {}
                     api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
@@ -1924,7 +1943,7 @@ class WhaleListener(EventListener):
                     recent_lines = list(self._group_msg_buffers.get(launcher_id, []))
                     g_state = self._get_group_state(launcher_id)
                     g_mem_str = self._recall_group_memories(g_state, effective_text)
-                    fam_str = self._recall_readonly_private_familiarity(sender_id)
+                    fam_str = self._recall_readonly_private_familiarity(sender_id, sender_name)
                     is_same_sp = sender_id == str(conv.get("last_speaker_id", ""))
                     should_rep, rep_txt, _, used_tok = await df.evaluate_group_active_continuation(
                         api_key=api_key,
@@ -1939,6 +1958,7 @@ class WhaleListener(EventListener):
                         state=self._state,
                         group_memory_str=g_mem_str,
                         familiarity_str=fam_str,
+                        sender_name=sender_name,
                     )
                     if used_tok:
                         self._record_tokens(used_tok)
@@ -1953,7 +1973,7 @@ class WhaleListener(EventListener):
                             joined_log = " ".join(bubbles)
                             now_ts = time.time()
                             hist = self._histories.get(session_key, [])
-                            hist.append((now_ts, "user", f"[群友{short_sender}] {effective_text}"))
+                            hist.append((now_ts, "user", f"[{sender_name}] {effective_text}"))
                             hist.append((now_ts, "assistant", joined_log))
                             self._histories[session_key] = hist[-24:]
                             buf = self._group_msg_buffers.setdefault(launcher_id, deque(maxlen=12))
@@ -1965,7 +1985,7 @@ class WhaleListener(EventListener):
                                     base_url=base_url,
                                     model=model,
                                     group_id=launcher_id,
-                                    user_text=f"[群友{short_sender}] {effective_text}",
+                                    user_text=f"[{sender_name}] {effective_text}",
                                     reply_text=joined_log,
                                 )
                             )
@@ -2015,6 +2035,7 @@ class WhaleListener(EventListener):
                         launcher_id,
                         sender_id,
                         effective_text,
+                        sender_name=sender_name,
                     )
                     if should_judge:
                         api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
@@ -2060,7 +2081,7 @@ class WhaleListener(EventListener):
                 clean_for_buf = STRIP_TRIGGER_RE.sub("", effective_text).strip() or effective_text.strip()
                 if not clean_for_buf.startswith("<"):
                     df.append_group_context_line(
-                        self._group_msg_buffers, launcher_id, sender_id, clean_for_buf
+                        self._group_msg_buffers, launcher_id, sender_id, clean_for_buf, sender_name=sender_name
                     )
 
         # 1. Switch / Control commands
@@ -2521,7 +2542,11 @@ class WhaleListener(EventListener):
             if is_group:
                 if voice_text:
                     df.append_group_context_line(
-                        self._group_msg_buffers, launcher_id, sender_id, f"[语音] {voice_text}"
+                        self._group_msg_buffers,
+                        launcher_id,
+                        sender_id,
+                        f"[语音] {voice_text}",
+                        sender_name=sender_name,
                     )
                 if not voice_text or not any(w in voice_text for w in ("大肥鱼", "鲸鱼娘", "小鲸鱼", "肥鱼")):
                     return
@@ -2671,7 +2696,18 @@ class WhaleListener(EventListener):
             g_mood = int(g_state.get("mood", 75))
             g_reason = g_state.get("lastReason", "在群里看大家聊天")
             g_mem_sec = self._recall_group_memories(g_state, cleaned_text)
-            familiar_sec = self._recall_readonly_private_familiarity(sender_id)
+            familiar_sec = self._recall_readonly_private_familiarity(sender_id, sender_name)
+            member_names = df.get_cached_group_member_names(launcher_id)
+            roster_line = (
+                f"- **本群成员真实昵称名单**：{'、'.join(member_names)}\n"
+                if member_names
+                else ""
+            )
+            name_rule_line = (
+                f"- **群聊称呼铁律（极重要）**：当前正在跟你说话的群友叫「{sender_name}」。"
+                f"在群里回复或提及任何群友时，必须直接叫对方的真实群昵称/微信昵称（如「{sender_name}」或本群成员名单中的名字），"
+                "绝对禁止使用微信号（wxid_xxx）或微信号后四位（如 aq22、oh22、nl22）来称呼任何人！\n"
+            )
             recent_grp_lines = list(self._group_msg_buffers.get(launcher_id, []))[-8:]
             grp_ctx_block = (
                 "\n".join(recent_grp_lines)
@@ -2684,6 +2720,8 @@ class WhaleListener(EventListener):
                 f"- **当前真实时间**：{time_str}\n"
                 f"{grain_line}"
                 f"- **本群气氛心情**：{g_mood}/100（{g_reason}）\n"
+                f"{roster_line}"
+                f"{name_rule_line}"
                 f"{familiar_sec}\n"
                 f"- **本群专属群聊档案（群梗与近期话题）**：\n{g_mem_sec}\n"
                 f"- **群里刚刚聊的上下文（帮助你理解大家在讨论什么）**：\n{grp_ctx_block}"
@@ -2695,6 +2733,10 @@ class WhaleListener(EventListener):
             u["hasPrivateChat"] = True
             u["lastChatAt"] = int(now * 1000)
             u["missStreak"] = 0
+            if sender_name and sender_name not in ("朋友", "群友", "这位群友") and not sender_name.startswith("wxid_"):
+                u["nickname"] = sender_name
+            nick_val = str(u.get("nickname") or "").strip()
+            nick_line = f"- **对方微信昵称**：{nick_val}\n" if nick_val else ""
             meme_cooldown_state = u
             intimacy_sec = self._build_intimacy_section(u)
             mood_sec = self._build_mood_section(u)
@@ -2703,6 +2745,7 @@ class WhaleListener(EventListener):
                 f"{base_persona}\n\n"
                 f"## 二、当前私聊实时感知（系统每轮自动刷新，自然融入语气，不要机械背诵）\n"
                 f"- **当前真实时间**：{time_str}\n"
+                f"{nick_line}"
                 f"- **你们的亲密度与关系阶段**：{intimacy_sec}\n"
                 f"{grain_line}"
                 f"- **鱼的心情（dsh-feiyu-mood）**：\n{mood_sec}\n"
@@ -2721,7 +2764,7 @@ class WhaleListener(EventListener):
                     "请结合以上最新检索结果，用大肥鱼的活人口吻准确回答对方！"
                 )
 
-        user_msg_for_llm = f"[群友{short_sender}]: {cleaned_text}" if is_group else cleaned_text
+        user_msg_for_llm = f"[{sender_name}]: {cleaned_text}" if is_group else cleaned_text
 
         messages: list[dict[str, Any]] = [{"role": "system", "content": dynamic_system_prompt}]
         for _, r, c in history:
@@ -2875,7 +2918,7 @@ class WhaleListener(EventListener):
 
         if not hist_user_text:
             hist_user_text = "[发来了一张微信表情包]" if is_sticker_in else cleaned_text
-        hist_entry_user = f"[群友{short_sender}] {hist_user_text}" if is_group else hist_user_text
+        hist_entry_user = f"[{sender_name}] {hist_user_text}" if is_group else hist_user_text
         history.append((now, "user", hist_entry_user))
         history.append((now, "assistant", reply_flat))
         if len(history) > max_turns * 2:
