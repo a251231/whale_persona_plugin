@@ -188,6 +188,12 @@ GROUP_INTEREST_KEYWORDS = (
     "ai",
     "AI",
     "机器人",
+    "这家伙",
+    "这货",
+    "和他聊天",
+    "跟他聊天",
+    "和它聊天",
+    "骚扰",
     "饿了",
     "吃啥",
     "夜宵",
@@ -214,15 +220,32 @@ GROUP_INTEREST_KEYWORDS = (
 GROUP_INTERJECT_SYSTEM = """你是微信群里的「大肥鱼」（平时自称「我」，傲娇或得意时才偶尔自称「本鱼」，绝对禁止使用任何括号动作或神态描写）。
 下面是这个微信群刚刚聊的几句话（群友没有直接 @ 你），以及你对这个群的记忆印象。
 请你像一个平时在群里潜水的真实群友一样，克制、有眼力见儿地判断现在应该【顺嘴接个梗/神吐槽】还是【保持安静】：
-1. 什么时候必须保持安静（should_reply: false，默认优先选安静）：
-   - 如果最近几条消息里已经有 `[... 大肥鱼]:` 的发言（说明你刚插过嘴），必须保持安静，绝不连续刷屏！
-   - 群友在聊严肃正事、工作对接、转账、私人烦心事/纠纷、发口令/号码，或者只是普通打招呼/单字/表情，或者没有特别亮眼好玩的切入点时，一律保持安静！
-2. 什么时候顺嘴插话（should_reply: true）：
-   - 只有当群友聊到特别契合的干饭/美食/夜宵、摸鱼/加班吐槽、熬夜犯困、离谱爆笑梗，或者话题里点名提到「大肥鱼/鲸鱼」时，才顺嘴接一句。
+1. 什么时候应该顺嘴插话（should_reply: true）：
+   - 如果群友正在议论或调侃你（用「大肥鱼 / 鲸鱼 / 这家伙 / 这货 / 他 / 它 / 机器人 / AI」指代你，或刚转发了你的聊天记录、聊到跟你的互动），一定要自然接梗或傲娇回怼！
+   - 当群友聊到特别契合的干饭/美食/夜宵、摸鱼/加班吐槽、熬夜犯困、离谱爆笑梗时，可以顺嘴接一句。
+2. 什么时候必须保持安静（should_reply: false，非上述情况默认优先选安静）：
+   - 如果最近 1~2 条消息里已经有 `[... 大肥鱼]:` 在无关话题上的主动插话，且群友并没有接你的话或讨论你，则保持安静，绝不自顾自连续刷屏！
+   - 群友在聊严肃正事、工作对接、转账、私人烦心事/纠纷、发口令/号码，或者只是普通打招呼/单字/表情，或者没有好玩切入点时，一律保持安静！
 3. 活人群友铁律（极重要）：
-   - 插话必须像真人群友随手敲出来的一句短评或接梗（6~22字以内，句尾不要打句号，不要端着架子自我介绍，严禁每次都背诵“吃DeepSeek token当大白饭”！）。
+   - 插话必须像真人群友随手敲出来的一句短评或接梗（6~24字以内，句尾不要打句号，不要端着架子自我介绍，严禁每次都背诵“吃DeepSeek token当大白饭”！）。
 4. 只输出一个合法 JSON 对象，不要代码块，不要多余解释：
-{"should_reply": false, "reason": "用一句话写明为什么决定插话，或者为什么决定保持安静", "reply": "如果 should_reply 为 true，写出你要在群里随口接的那句短话（6~22字，严禁使用括号动作和句尾句号）；如果为 false 则填空字符串"}"""
+{"should_reply": false, "reason": "用一句话写明为什么决定插话，或者为什么决定保持安静", "reply": "如果 should_reply 为 true，写出你要在群里随口接的那句短话（6~24字，严禁使用括号动作和句尾句号）；如果为 false 则填空字符串"}"""
+
+GROUP_CONTINUATION_SYSTEM = """你是微信群里的「大肥鱼」（平时自称「我」，傲娇或得意时才偶尔自称「本鱼」，绝对禁止使用任何括号动作或神态描写）。
+刚才在这个微信群里，你正在和群友互动聊天（或者群友刚把你的聊天记录发到群里、正在议论你）。
+现在群里紧接着冒出了最新的一句话（对方没有特意再点 @），请你结合【群聊最近消息】判断：这句话是不是在继续跟你说话、接你的话茬、或者在群里调侃/议论你？
+1. 什么时候必须接话回复（should_reply: true）：
+   - 刚刚跟你聊天的群友顺着你上一句话继续追问、吐槽、反驳、感叹、或发无语省略号（例如你刚回完，对方紧接着说“你这样说话很难有朋友”、“。。。”、“哈哈哈哈”、“就是容易心梗”）；
+   - 群里有人正在围观或调侃你，用「你 / 他 / 她 / 它 / 这家伙 / 这货 / 这鱼 / 机器人 / AI」指代你（例如“这家伙还主动骚扰人”、“你尴尬的时候就和他聊天”、“让别人知道还有人关心你”）；
+   - 群友正在顺着你刚才聊开的话题继续往下互动。
+2. 什么时候必须保持安静（should_reply: false）：
+   - 群友明显已经结束了跟你的闲聊，转头去跟其他群友聊严肃工作正事（如“程是研发经理”、“物料正常情况下不影响”）、游戏排位、或跟你不相干的私事，此时立刻安静退下。
+   - 如果只是一句纯附和的“哈哈哈哈”且你上一句已经把话说满、没必要再硬凑一句时，也可以安静。
+3. 活人连续对话铁律（极重要）：
+   - 回复必须紧扣对方刚刚说的这句话和上一句的语境自然往下接（比如对方说“你这样说话很难有朋友”，你可以嘴硬回怼；对方发“。。。”，你可以追问“干嘛 一脸无语给谁看呢”；大家调侃“尴尬的时候就和他聊天”，你可以傲娇吐槽自己成缓解尴尬工具鱼了）。
+   - 保持微信活人短句（默认 1 条气泡，6~35字左右，句尾不打句号，绝对禁止使用括号动作描写，严禁背诵吃token设定）。
+4. 只输出一个合法 JSON 对象，不要代码块，不要多余解释：
+{"should_reply": true, "reason": "简述判断原因（如：对方顺着我上一句继续吐槽我 / 群友在调侃拿我缓解尴尬）", "reply": "如果 should_reply 为 true，写出你要回复的话；如果为 false 则填空字符串"}"""
 
 
 def append_group_context_line(
@@ -339,6 +362,98 @@ async def evaluate_group_interject(
         "decision": "✅ 插话" if (should_reply and reply) else "🤫 安静",
         "trigger": recent_lines[-1][:36] if recent_lines else "",
         "reason": reason or ("觉得话题有趣顺嘴接话" if should_reply else "不打扰群友聊天"),
+        "reply": reply[:60] if should_reply else "",
+    }
+    logs = state.setdefault("interject_logs", [])
+    logs.append(log_entry)
+    if len(logs) > 30:
+        state["interject_logs"] = logs[-30:]
+
+    return should_reply, reply, reason, used
+
+
+async def evaluate_group_active_continuation(
+    *,
+    api_key: str,
+    base_url: str,
+    model: str,
+    group_id: str,
+    sender_id: str,
+    current_text: str,
+    recent_lines: list[str],
+    last_bot_reply: str,
+    is_same_speaker: bool,
+    state: dict[str, Any],
+    group_memory_str: str = "",
+    familiarity_str: str = "",
+) -> tuple[bool, str, str, int]:
+    """
+    Active Conversation Window judge & responder:
+    When Dafeiyu just spoke in a group (within 75-95s) and the user (or another group member)
+    sends a follow-up message without @-ing, decides whether they are continuing the conversation
+    with Dafeiyu (or discussing Dafeiyu) and generates a direct natural reply.
+    Returns (should_reply, reply_text, reason, used_tokens).
+    """
+    if not api_key or not current_text:
+        return False, "", "", 0
+
+    short_sender = sender_id[-4:] if len(sender_id) >= 4 else sender_id
+    chat_context = "\n".join(recent_lines[-8:]) if recent_lines else "（无）"
+    now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
+    speaker_hint = (
+        f"群友{short_sender}（正是刚刚跟你对话的同一位群友，紧接着追问/回应，未再点 @）"
+        if is_same_speaker
+        else f"群友{short_sender}（在你发言后紧接着说话的群友，未点 @）"
+    )
+    mem_block = f"\n【本群记忆档案】：\n{group_memory_str}\n" if group_memory_str else ""
+    fam_block = f"\n{familiarity_str}\n" if familiarity_str else ""
+    user_prompt = (
+        f"当前时间：{now_str}{mem_block}{fam_block}\n"
+        f"【你（大肥鱼）上一句在群里的发言】：「{last_bot_reply}」\n"
+        f"【当前说话人身份】：{speaker_hint}\n"
+        f"【群聊最近上下文】：\n{chat_context}\n\n"
+        f"【需要判断的最新这句话】：[群友{short_sender}]: {current_text}\n\n"
+        "请判断这句话是不是在继续跟你聊/吐槽你/议论你，并给出 JSON 结果："
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": GROUP_CONTINUATION_SYSTEM},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.85,
+                    "max_tokens": 240,
+                },
+            )
+            if resp.status_code != 200:
+                return False, "", "", 0
+            data = resp.json()
+            used = int((data.get("usage") or {}).get("total_tokens", 0))
+            raw = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            a, b = raw.find("{"), raw.rfind("}")
+            if a < 0 or b <= a:
+                return False, "", "", used
+            obj = json.loads(raw[a : b + 1])
+    except Exception as e:
+        logger.debug("Group active continuation judge failed: %s", e)
+        return False, "", "", 0
+
+    should_reply = bool(obj.get("should_reply", False))
+    reason = str(obj.get("reason") or "").strip()[:120]
+    reply = str(obj.get("reply") or "").strip()
+
+    log_entry = {
+        "at": datetime.now(TZ).strftime("%m-%d %H:%M:%S"),
+        "group": group_id[:10],
+        "decision": "💬 接话" if (should_reply and reply) else "🤫 安静",
+        "trigger": f"[群友{short_sender}]: {current_text[:28]}",
+        "reason": reason or ("识别到正在和我连续对话，自然接话" if should_reply else "群友转向其他话题，保持安静"),
         "reply": reply[:60] if should_reply else "",
     }
     logs = state.setdefault("interject_logs", [])
@@ -1336,8 +1451,11 @@ async def send_music_to_wechat(receiver: str, song: dict[str, Any]) -> tuple[boo
 
 
 # ==============================================================================
-# 8. 微信引用回复解析（Quote / <refermsg>）与多气泡拟真跟发
+# 8. 微信引用回复解析（Quote / <refermsg>）、合并转发记录解析（<type>19</type>）与多气泡拟真跟发
 # ==============================================================================
+
+_DYNAMIC_BOT_CACHE: dict[str, Any] = {"ts": 0.0, "names": set()}
+
 
 def _get_bot_wxids_and_names() -> tuple[str, ...]:
     env_wxid = os.getenv("BOT_WXID", "").strip().lower()
@@ -1353,6 +1471,86 @@ def _get_bot_wxids_and_names() -> tuple[str, ...]:
 
 
 BOT_WXIDS_AND_NAMES = _get_bot_wxids_and_names()
+
+
+async def refresh_dynamic_bot_names() -> None:
+    """Dynamically fetches the current WeChat account wxid and nickname from WCF /api/status (cached 10 min)."""
+    now = time.time()
+    if now - float(_DYNAMIC_BOT_CACHE.get("ts", 0.0)) < 600:
+        return
+    _DYNAMIC_BOT_CACHE["ts"] = now
+    try:
+        async with httpx.AsyncClient(timeout=2.5) as client:
+            r = await client.get(f"{WCF_GATEWAY_URL}/api/status")
+            if r.status_code == 200:
+                j = r.json() or {}
+                wxid = str(j.get("self_wxid") or "").strip().lower()
+                uinfo = j.get("user_info") or {}
+                uname = str(uinfo.get("name") or "").strip().lower()
+                names_set: set[str] = _DYNAMIC_BOT_CACHE.setdefault("names", set())
+                if wxid:
+                    names_set.add(wxid)
+                if uname:
+                    names_set.add(uname)
+    except Exception:
+        pass
+
+
+def get_dynamic_bot_names() -> tuple[str, ...]:
+    dyn = set(BOT_WXIDS_AND_NAMES)
+    dyn.update(_DYNAMIC_BOT_CACHE.get("names") or set())
+    return tuple(x for x in dyn if x)
+
+
+def extract_forwarded_chat_record(
+    raw_text: str,
+    recent_bot_texts: Any = None,
+) -> tuple[str, str, bool]:
+    """
+    Parses WeChat merged forwarded chat history (<type>19</type> / <recorditem>).
+    Returns (title, des_summary, is_about_bot).
+    Automatically detects if the forwarded chat record contains Dafeiyu's own messages
+    (via recent_bot_texts or dynamic bot account name) without hardcoding any nickname.
+    """
+    s = (raw_text or "").strip()
+    if not (
+        ("<appmsg" in s or s.startswith("<?xml") or s.startswith("<msg"))
+        and ("<type>19</type>" in s or "<recorditem>" in s)
+    ):
+        return "", "", False
+
+    head_part = s.split("<recorditem>", 1)[0]
+    m_title = re.search(r"<title><!\[CDATA\[(.*?)\]\]></title>|<title>(.*?)</title>", head_part, re.S)
+    m_des = re.search(r"<des><!\[CDATA\[(.*?)\]\]></des>|<des>(.*?)</des>", head_part, re.S)
+
+    title = html.unescape((m_title.group(1) or m_title.group(2) or "").strip()) if m_title else "聊天记录"
+    des = html.unescape((m_des.group(1) or m_des.group(2) or "").strip()) if m_des else ""
+    if not des:
+        m_info = re.search(r"<info>(.*?)</info>", s, re.S)
+        if m_info:
+            des = html.unescape(m_info.group(1).strip())
+
+    des_clean = re.sub(r"\n{3,}", "\n\n", des).strip()[:600]
+    bot_names = get_dynamic_bot_names()
+    title_low = title.lower()
+    des_low = des_clean.lower()
+
+    is_about_bot = any(b in title_low or f"{b}:" in des_low for b in bot_names)
+
+    if not is_about_bot and recent_bot_texts:
+        for sent_txt in list(recent_bot_texts):
+            probe = str(sent_txt or "").strip()
+            if len(probe) >= 5 and probe[:16] in des_clean:
+                is_about_bot = True
+                # Dynamically learn the speaker prefix before ':' on the matching line
+                for ln in des_clean.splitlines():
+                    if probe[:16] in ln and ":" in ln:
+                        sp_name = ln.split(":", 1)[0].strip().lower()
+                        if 1 <= len(sp_name) <= 24:
+                            _DYNAMIC_BOT_CACHE.setdefault("names", set()).add(sp_name)
+                break
+
+    return title, des_clean, is_about_bot
 
 
 def _clean_referred_content(raw_ref: str) -> str:
@@ -1415,21 +1613,23 @@ def extract_quote_context(message_chain: Any, raw_text: str) -> tuple[str, str, 
         raw_cnt = (m_cnt.group(1) or m_cnt.group(2) or "").strip() if m_cnt else ""
         q_content = _clean_referred_content(raw_cnt)
 
+        bot_names = get_dynamic_bot_names()
         is_bot = any(
-            b in chatusr.lower() or b in speaker.lower() for b in BOT_WXIDS_AND_NAMES
+            b in chatusr.lower() or b in speaker.lower() for b in bot_names
         )
         return reply_txt, (speaker or chatusr or "群友"), q_content, is_bot
 
     # 2. Check LangBot platform_message.Quote component in message_chain
     if message_chain:
         try:
+            bot_names = get_dynamic_bot_names()
             for comp in message_chain:
                 if comp.__class__.__name__ == "Quote":
                     q_sender = str(getattr(comp, "sender_id", "") or "")
                     origin = getattr(comp, "origin", None)
                     q_txt = _clean_referred_content(str(origin or getattr(comp, "text", "") or ""))
                     if q_txt:
-                        is_bot = any(b in q_sender.lower() for b in BOT_WXIDS_AND_NAMES)
+                        is_bot = any(b in q_sender.lower() for b in bot_names)
                         return s, (q_sender[-4:] if q_sender else "对方"), q_txt, is_bot
         except Exception:
             pass
