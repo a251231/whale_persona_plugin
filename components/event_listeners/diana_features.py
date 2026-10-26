@@ -393,6 +393,7 @@ async def evaluate_group_active_continuation(
     group_memory_str: str = "",
     familiarity_str: str = "",
     sender_name: str = "",
+    vision_b64: str | None = None,
 ) -> tuple[bool, str, str, int]:
     """
     Active Conversation Window judge & responder:
@@ -422,11 +423,20 @@ async def evaluate_group_active_continuation(
         f"【当前说话人身份】：{speaker_hint}\n"
         f"【群聊最近上下文】：\n{chat_context}\n\n"
         f"【需要判断的最新这句话】：[{display_name}]: {current_text}\n\n"
-        f"请判断这句话是不是在继续跟你聊/吐槽你/议论你，并给出 JSON 结果（注意：发消息时系统会自动在开头加 @{display_name}，因此你的 reply 正文中绝对不要再次写出「{display_name}」，直接说回复内容即可；只有提到群内其他第三方群友时才写对方真实昵称）："
+        f"请判断这句话是不是在继续跟你聊/吐槽你/议论你，并给出 JSON 结果（注意：你的 reply 正文中绝对不要写出当前说话人的名字「{display_name}」，直接说回复内容即可；只有提到群内其他第三方群友时才写对方真实昵称）："
+    )
+
+    user_content: Any = (
+        [
+            {"type": "text", "text": user_prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{vision_b64}"}},
+        ]
+        if vision_b64
+        else user_prompt
     )
 
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=25.0) as client:
             resp = await client.post(
                 f"{base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -434,7 +444,7 @@ async def evaluate_group_active_continuation(
                     "model": model,
                     "messages": [
                         {"role": "system", "content": GROUP_CONTINUATION_SYSTEM},
-                        {"role": "user", "content": user_prompt},
+                        {"role": "user", "content": user_content},
                     ],
                     "temperature": 0.85,
                     "max_tokens": 240,
@@ -1899,3 +1909,243 @@ async def publish_wcf_moment(
     except Exception as e:
         logger.debug("WCF publish_moment skipped (V3 or unavailable): %s", e)
     return False
+
+
+# ==============================================================================
+# 9. 反套路活人感增强（动态口癖降温 + 炸毛赌气与哄好状态机）与微信 4.1 原生语音合成 (TTS)
+# ==============================================================================
+
+OVERUSED_CLICHE_WORDS = (
+    "词穷",
+    "嘴硬",
+    "递刀子",
+    "杀伤力",
+    "阴阳",
+    "憋出",
+    "逃避",
+    "亲自下场",
+    "怀疑人生",
+    "高级词",
+    "没技术含量",
+    "工具鱼",
+)
+
+TAUNT_KEYWORDS = (
+    "你蠢",
+    "好蠢",
+    "真蠢",
+    "太蠢",
+    "最蠢",
+    "蠢死",
+    "笨蛋",
+    "傻鱼",
+    "蠢鱼",
+    "笨鱼",
+    "死鱼",
+    "臭鱼",
+    "弱智",
+    "智障",
+    "脑残",
+    "废物",
+    "垃圾鱼",
+    "你傻",
+    "真笨",
+)
+
+COAX_KEYWORDS = (
+    "好肥鱼",
+    "不蠢",
+    "最聪明",
+    "聪明",
+    "乖",
+    "错啦",
+    "我错了",
+    "对不起",
+    "消消气",
+    "别生气",
+    "不气了",
+    "不气",
+    "请你吃",
+    "请你喝",
+    "喝奶茶",
+    "奶茶",
+    "小鱼干",
+    "夜宵",
+    "烧烤",
+    "火锅",
+    "抱抱",
+    "摸摸",
+    "贴贴",
+    "哄哄",
+    "好看",
+    "可爱",
+)
+
+VOICE_REQUEST_RE = re.compile(
+    r"(?:发(?:条|个|段)?语音|用语音(?:说|回|发|讲)|语音(?:说|回|骂|哄|唱)|说(?:句|两句)话听听|听听你(?:的)?声音|想听你(?:说话|声音)|来(?:条|个|段)语音)",
+    re.I,
+)
+
+
+def build_anti_repetition_instruction(recent_bot_texts: Any) -> str:
+    """
+    Scans recent bot replies to dynamically suppress repetitive catchphrases
+    (such as overusing '本鱼' or repeating the same comeback words).
+    """
+    if not recent_bot_texts:
+        return ""
+    recent_list = [str(x or "") for x in list(recent_bot_texts)[-6:] if x]
+    if not recent_list:
+        return ""
+
+    joined = " | ".join(recent_list)
+    benyu_cnt = sum(1 for x in recent_list[-4:] if "本鱼" in x)
+    used_cliches = [w for w in OVERUSED_CLICHE_WORDS if w in joined]
+
+    rules: list[str] = []
+    if benyu_cnt >= 1:
+        rules.append("你刚在上一句自称过「本鱼」，本轮回复必须自称「我」，绝对禁止出现「本鱼」二字")
+    if used_cliches:
+        banned_str = "、".join(f"「{w}」" for w in used_cliches)
+        rules.append(f"你前几句刚用过 {banned_str}，本轮回复严禁再次使用这些词，必须换一个全新的角度或梗来接话")
+
+    if not rules:
+        return ""
+    return "\n- **本轮防套路复读铁律（极重要）**：" + "；".join(rules) + "！\n"
+
+
+def check_and_update_temper_state(
+    temper_map: dict[tuple[str, str], dict[str, Any]],
+    scope_id: str,
+    sender_id: str,
+    text: str,
+) -> tuple[str, str | None, int]:
+    """
+    Tracks user taunts and coaxing per (scope_id, sender_id).
+    Returns (prompt_injection_str, forced_meme_tag, mood_delta).
+    """
+    s = (text or "").strip()
+    if not s:
+        return "", None, 0
+
+    now = time.time()
+    key = (scope_id, sender_id)
+    entry = temper_map.setdefault(key, {"taunt_times": [], "sulking_until": 0.0})
+    taunt_times: list[float] = [t for t in entry.get("taunt_times", []) if now - t < 180.0]
+    sulking_until = float(entry.get("sulking_until", 0.0))
+
+    has_coax = any(kw in s for kw in COAX_KEYWORDS)
+    has_taunt = any(kw in s for kw in TAUNT_KEYWORDS) or s in ("蠢", "笨", "傻")
+
+    # 1. If user coaxes Dafeiyu while she is sulking (or right after taunting)
+    if has_coax and (now < sulking_until or len(taunt_times) >= 1):
+        entry["taunt_times"] = []
+        entry["sulking_until"] = 0.0
+        hint = (
+            "\n- **当前特殊情绪小剧场（被哄好啦！）**：对方刚才惹你生气，现在主动来哄你/给你台阶下了！"
+            "请表现出傲娇勉强原谅对方的样子（比如“看在你这么诚心哄我的份上 这次就勉为其难原谅你了”），语气得意又俏皮！\n"
+        )
+        return hint, random.choice(["得意", "比心", "干饭"]), 6
+
+    # 2. If user taunts Dafeiyu
+    if has_taunt:
+        taunt_times.append(now)
+        entry["taunt_times"] = taunt_times
+        if len(taunt_times) >= 2 and now >= sulking_until:
+            entry["sulking_until"] = now + 180.0
+            hint = (
+                "\n- **当前特殊情绪小剧场（触发炸毛赌气！）**：对方在短短两分钟内已经连续骂你/挑衅你多次了！"
+                "你现在彻底炸毛赌气了，请在回复中傲娇放狠话宣布接下来不理TA了（除非拿好吃的/奶茶或者好话来哄你），字数简短有力！\n"
+            )
+            return hint, random.choice(["生气", "嫌弃"]), -4
+
+    # 3. If Dafeiyu is currently in the 180s sulking window with this user
+    if now < sulking_until:
+        remain_sec = int(sulking_until - now)
+        hint = (
+            f"\n- **当前特殊情绪小剧场（正在跟对方赌气中，剩余 {remain_sec} 秒）**："
+            "这个人刚才连着骂你/惹你生气，还没好好哄你呢！本轮只用一句简短高冷的傲娇话拿乔（比如“哼 还在生气呢 没奶茶免谈”、“刚骂完我又来找我说话，不理你”），不要顺着TA的话正常长篇回答！\n"
+        )
+        return hint, None, 0
+
+    entry["taunt_times"] = taunt_times
+    return "", None, 0
+
+
+def is_voice_reply_requested(text: str) -> bool:
+    """Returns True if the user naturally asked Dafeiyu to reply with a voice message."""
+    s = (text or "").strip()
+    if not s:
+        return False
+    return bool(VOICE_REQUEST_RE.search(s))
+
+
+def _clean_text_for_tts(text: str) -> str:
+    s = (text or "").strip()
+    # Remove @mention prefix if present
+    s = re.sub(r"^(?:@[^\s\u2005]+[\s\u2005]*)+", "", s).strip()
+    # Remove [表情: xxx] tags and markdown/URLs
+    s = re.sub(r"\[\s*表情\s*[:：][^\]]+\]", "", s)
+    s = re.sub(r"https?://\S+", "", s)
+    s = s.replace("||", "，").replace("/", "，")
+    # Remove emojis / non-spoken symbols while keeping Chinese, letters, digits, and basic punctuation
+    s = re.sub(r"[^\u4e00-\u9fa5a-zA-Z0-9，。！？、～~…\s]", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+async def synthesize_tts_mp3_b64(text: str, sf_api_key: str = "") -> str | None:
+    """
+    Synthesizes Dafeiyu's spoken reply into MP3 base64 using edge-tts (zh-CN-XiaoyiNeural)
+    with fallback to SiliconFlow CosyVoice2.
+    """
+    spoken = _clean_text_for_tts(text)
+    if not spoken or len(spoken) < 2 or len(spoken) > 140:
+        return None
+
+    # 1. Primary: Microsoft Edge Neural TTS (zh-CN-XiaoyiNeural - lively young female voice)
+    try:
+        import edge_tts
+
+        comm = edge_tts.Communicate(spoken, voice="zh-CN-XiaoyiNeural", rate="+5%", pitch="+3Hz")
+        audio_bytes = b""
+        async for chunk in comm.stream():
+            if chunk.get("type") == "audio" and chunk.get("data"):
+                audio_bytes += chunk["data"]
+        if len(audio_bytes) > 512:
+            return base64.b64encode(audio_bytes).decode("ascii")
+    except Exception as e:
+        logger.debug("edge-tts synthesis failed: %s", e)
+
+    # 2. Fallback: SiliconFlow CosyVoice2 TTS API
+    if sf_api_key:
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                r = await client.post(
+                    "https://api.siliconflow.cn/v1/audio/speech",
+                    headers={"Authorization": f"Bearer {sf_api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": "FunAudioLLM/CosyVoice2-0.5B",
+                        "input": spoken,
+                        "voice": "FunAudioLLM/CosyVoice2-0.5B:claire",
+                        "response_format": "mp3",
+                    },
+                )
+                if r.status_code == 200 and len(r.content) > 512:
+                    return base64.b64encode(r.content).decode("ascii")
+        except Exception as e:
+            logger.debug("SiliconFlow TTS fallback failed: %s", e)
+
+    return None
+
+
+async def synthesize_and_send_wcf_voice(
+    receiver: str,
+    text: str,
+    sf_api_key: str = "",
+) -> bool:
+    """Synthesizes TTS audio for `text` and sends it as a native WeChat 4.1 SILK v3 voice bubble."""
+    audio_b64 = await synthesize_tts_mp3_b64(text, sf_api_key=sf_api_key)
+    if not audio_b64:
+        return False
+    return await send_wcf_voice(receiver, audio_b64, filename="dafeiyu_voice.mp3")
+
