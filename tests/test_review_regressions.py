@@ -21,7 +21,7 @@ from components.event_listeners import diana_features as df
 from components.event_listeners import whale_listener as wl
 
 
-class ListenerRegressions(unittest.IsolatedAsyncioTestCase):
+class ListenerHarness(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         state = {
             "enabled": True, "enabled_groups": ["room-A", "room-B"],
@@ -97,6 +97,8 @@ class ListenerRegressions(unittest.IsolatedAsyncioTestCase):
     def prompt(self):
         return json.dumps(self.payload()["messages"], ensure_ascii=False)
 
+
+class ListenerRegressions(ListenerHarness):
     async def test_private_document_is_not_recalled_in_group(self):
         await self.upload("PRIVATE-DOC-SENTINEL")
         await self.ask("大肥鱼 总结刚才的文件", group=True, room="room-A")

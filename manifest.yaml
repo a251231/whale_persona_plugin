@@ -49,6 +49,13 @@ spec:
         zh_Hans: 绑定机器人 UUID (留空则对所有机器人人生效)
       default: ""
       required: false
+    - name: owner_ids
+      type: string
+      label:
+        en_US: Owner IDs (comma-separated)
+        zh_Hans: 主人账号 ID（逗号分隔，仅主人私聊可修改全局自动朋友圈）
+      default: ""
+      required: false
     - name: max_history_turns
       type: integer
       label:

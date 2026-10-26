@@ -278,6 +278,9 @@ def record_group_message_for_interject(
     sender_id: str,
     raw_text: str,
     sender_name: str = "",
+    *,
+    cooldown_sec: int = 240,
+    min_messages: int = 8,
 ) -> bool:
     """Records a group message and returns True if the LLM interjection judge should run."""
     s = (raw_text or "").strip()
@@ -290,12 +293,12 @@ def record_group_message_for_interject(
     meta["unjudged_count"] = int(meta.get("unjudged_count", 0)) + 1
 
     now = time.time()
-    # Cooldown: at least 240 seconds (4 minutes) between LLM evaluations per group
-    if now - float(meta.get("last_judge_ts", 0.0)) < 240:
+    # 每群独立冷却；关键词也必须遵守当前档位的冷却时间。
+    if now - float(meta.get("last_judge_ts", 0.0)) < cooldown_sec:
         return False
 
     has_kw = any(kw in s for kw in GROUP_INTEREST_KEYWORDS)
-    if has_kw or int(meta.get("unjudged_count", 0)) >= 8:
+    if has_kw or int(meta.get("unjudged_count", 0)) >= min_messages:
         meta["last_judge_ts"] = now
         meta["unjudged_count"] = 0
         return True
