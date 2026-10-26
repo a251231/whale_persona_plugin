@@ -7,6 +7,7 @@ from datetime import datetime
 import hashlib
 import html
 import io
+from itertools import islice
 import ipaddress
 import json
 import logging
@@ -581,8 +582,8 @@ async def steal_incoming_sticker(
         return False
 
     try:
-        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
-            r = await client.get(cdn_url)
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            r = await _get_public_url(client, cdn_url)
             if r.status_code != 200 or not r.content:
                 return False
             raw_bytes = r.content
@@ -789,7 +790,10 @@ def _is_safe_public_url(url: str) -> bool:
         host = (parsed.hostname or "").strip().lower()
         if not host or host in ("localhost", "0.0.0.0") or host.endswith(".local") or host.endswith(".internal"):
             return False
-        for info in socket.getaddrinfo(host, None):
+        addresses = socket.getaddrinfo(host, None)
+        if not addresses:
+            return False
+        for info in addresses:
             ip_str = info[4][0]
             ip_obj = ipaddress.ip_address(ip_str)
             if (
@@ -798,6 +802,7 @@ def _is_safe_public_url(url: str) -> bool:
                 or ip_obj.is_link_local
                 or ip_obj.is_multicast
                 or ip_obj.is_reserved
+                or not ip_obj.is_global
             ):
                 return False
         return True
@@ -805,25 +810,37 @@ def _is_safe_public_url(url: str) -> bool:
         return False
 
 
+async def _get_public_url(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
+    """逐跳检查公网地址，禁止客户端自动跟随到内网或无限重定向。"""
+    request = client.build_request("GET", url, **kwargs)
+    for _ in range(6):
+        if not await asyncio.to_thread(_is_safe_public_url, str(request.url)):
+            raise ValueError("无效或受限的 URL（仅允许访问公网 HTTP/HTTPS 页面）")
+        response = await client.send(request, follow_redirects=False)
+        if response.next_request is None:
+            return response
+        request = response.next_request
+    raise httpx.TooManyRedirects("公网请求重定向次数超限", request=request)
+
+
 async def read_webpage_content(url: str) -> str:
     u = (url or "").strip()
-    if not _is_safe_public_url(u):
+    if not await asyncio.to_thread(_is_safe_public_url, u):
         return "无效或受限的 URL（仅允许访问公网 HTTP/HTTPS 页面）"
     try:
         async with httpx.AsyncClient(
             timeout=12.0,
-            follow_redirects=True,
             headers={"User-Agent": USER_AGENT},
         ) as client:
             # Try Jina Reader first for clean markdown
             try:
-                rj = await client.get(f"https://r.jina.ai/{u}", timeout=8.0)
+                rj = await _get_public_url(client, f"https://r.jina.ai/{u}", timeout=8.0)
                 if rj.status_code == 200 and len(rj.text.strip()) > 100:
                     return rj.text.strip()[:3500]
             except Exception:
                 pass
 
-            r = await client.get(u)
+            r = await _get_public_url(client, u)
             if r.status_code != 200:
                 return f"网页访问返回状态码 {r.status_code}"
             if BeautifulSoup is not None:
@@ -844,16 +861,28 @@ async def read_webpage_content(url: str) -> str:
 
 URL_REGEX = re.compile(r"https?://[^\s<>\"'）)】\]]+")
 SUPPORTED_PARSE_DOMAINS = (
-    "bilibili.com/",
-    "b23.tv/",
-    "x.com/",
-    "twitter.com/",
-    "youtube.com/",
-    "youtu.be/",
-    "xiaohongshu.com/",
-    "xhslink.com/",
-    "douyin.com/",
+    "bilibili.com",
+    "b23.tv",
+    "x.com",
+    "twitter.com",
+    "youtube.com",
+    "youtu.be",
+    "xiaohongshu.com",
+    "xhslink.com",
+    "douyin.com",
 )
+
+
+def _supported_parse_domain(url: str) -> str:
+    """只匹配真实主机及其子域名，不接受路径、查询参数或相似域名。"""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
+            return ""
+        host = (parsed.hostname or "").lower().rstrip(".")
+        return next((d for d in SUPPORTED_PARSE_DOMAINS if host == d or host.endswith("." + d)), "")
+    except ValueError:
+        return ""
 
 
 def has_supported_media_link_or_card(raw_text: str) -> bool:
@@ -865,8 +894,7 @@ def has_supported_media_link_or_card(raw_text: str) -> bool:
     m = URL_REGEX.search(s)
     if not m:
         return False
-    low = m.group(0).lower()
-    return any(d in low for d in SUPPORTED_PARSE_DOMAINS)
+    return bool(_supported_parse_domain(m.group(0)))
 
 
 async def _download_image_as_jpeg_b64(url: str) -> str | None:
@@ -875,10 +903,9 @@ async def _download_image_as_jpeg_b64(url: str) -> str | None:
     try:
         async with httpx.AsyncClient(
             timeout=10.0,
-            follow_redirects=True,
             headers={"User-Agent": USER_AGENT, "Referer": url},
         ) as client:
-            r = await client.get(url)
+            r = await _get_public_url(client, url)
             if r.status_code == 200 and r.content:
                 if Image is not None:
                     img = Image.open(io.BytesIO(r.content)).convert("RGB")
@@ -896,12 +923,11 @@ async def _parse_bilibili_url(url: str) -> tuple[str | None, str | None]:
     try:
         async with httpx.AsyncClient(
             timeout=10.0,
-            follow_redirects=True,
             headers={"User-Agent": USER_AGENT},
         ) as client:
             final_url = url
-            if "b23.tv" in url:
-                r_redir = await client.get(url)
+            if _supported_parse_domain(url) == "b23.tv":
+                r_redir = await _get_public_url(client, url)
                 final_url = str(r_redir.url)
 
             m_bv = re.search(r"(BV[0-9A-Za-z]{10})", final_url)
@@ -914,7 +940,7 @@ async def _parse_bilibili_url(url: str) -> tuple[str | None, str | None]:
             else:
                 return None, None
 
-            r = await client.get("https://api.bilibili.com/x/web-interface/view", params=params)
+            r = await _get_public_url(client, "https://api.bilibili.com/x/web-interface/view", params=params)
             j = r.json()
             if j.get("code") != 0 or not j.get("data"):
                 return None, None
@@ -958,13 +984,13 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
         if user_handle.lower() in ("home", "explore", "search", "i", "intent", "settings", "hashtag"):
             return None, None
 
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
+        async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": USER_AGENT}) as client:
             # Case A: Tweet status link
             if len(path_parts) >= 3 and path_parts[1].lower() == "status":
                 tweet_id = re.sub(r"\D", "", path_parts[2])
                 if not tweet_id:
                     return None, None
-                r = await client.get(f"https://api.fxtwitter.com/{user_handle}/status/{tweet_id}")
+                r = await _get_public_url(client, f"https://api.fxtwitter.com/{user_handle}/status/{tweet_id}")
                 if r.status_code != 200:
                     return None, None
                 tw = (r.json() or {}).get("tweet") or {}
@@ -997,7 +1023,7 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
                 return card, img_b64
 
             # Case B: X / Twitter User Profile Page
-            r = await client.get(f"https://api.fxtwitter.com/{user_handle}")
+            r = await _get_public_url(client, f"https://api.fxtwitter.com/{user_handle}")
             if r.status_code != 200:
                 return None, None
             u_info = (r.json() or {}).get("user") or {}
@@ -1028,14 +1054,13 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
 
 async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None]:
     try:
-        low = url.lower()
+        domain = _supported_parse_domain(url)
         async with httpx.AsyncClient(
             timeout=10.0,
-            follow_redirects=True,
             headers={"User-Agent": USER_AGENT},
         ) as client:
-            if "youtube.com/" in low or "youtu.be/" in low:
-                r = await client.get("https://noembed.com/embed", params={"url": url})
+            if domain in ("youtube.com", "youtu.be"):
+                r = await _get_public_url(client, "https://noembed.com/embed", params={"url": url})
                 if r.status_code == 200:
                     d = r.json()
                     title = d.get("title")
@@ -1051,7 +1076,7 @@ async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None
                         return card, img_b64
 
             # Xiaohongshu / Douyin / General meta extraction
-            r = await client.get(url)
+            r = await _get_public_url(client, url)
             if r.status_code != 200 or BeautifulSoup is None:
                 return None, None
             soup = BeautifulSoup(r.text, "html.parser")
@@ -1070,8 +1095,8 @@ async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None
                 return None, None
 
             platform_tag = (
-                "小红书" if ("xiaohongshu.com" in str(r.url) or "xhslink.com" in low) else
-                "抖音" if ("douyin.com" in str(r.url)) else
+                "小红书" if domain in ("xiaohongshu.com", "xhslink.com") else
+                "抖音" if domain == "douyin.com" else
                 "网页链接"
             )
             img_b64 = await _download_image_as_jpeg_b64(img_url)
@@ -1126,13 +1151,13 @@ async def extract_and_parse_link(raw_text: str) -> tuple[str | None, str | None]
     if not m:
         return None, None
     url = m.group(0).rstrip(".,，。!！?？;；")
-    low = url.lower()
+    domain = _supported_parse_domain(url)
 
-    if "bilibili.com/" in low or "b23.tv/" in low:
+    if domain in ("bilibili.com", "b23.tv"):
         return await _parse_bilibili_url(url)
-    if "x.com/" in low or "twitter.com/" in low:
+    if domain in ("x.com", "twitter.com"):
         return await _parse_twitter_url(url)
-    if any(d in low for d in ("youtube.com/", "youtu.be/", "xiaohongshu.com/", "xhslink.com/", "douyin.com/")):
+    if domain in ("youtube.com", "youtu.be", "xiaohongshu.com", "xhslink.com", "douyin.com"):
         return await _parse_youtube_or_social_url(url)
 
     return None, None
@@ -1219,7 +1244,7 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
             from pptx import Presentation
             prs = Presentation(io.BytesIO(raw_bytes))
             parts = []
-            for idx, slide in enumerate(prs.slides[:40], 1):
+            for idx, slide in enumerate(islice(prs.slides, 40), 1):
                 s_lines = []
                 for shape in slide.shapes:
                     if getattr(shape, "has_text_frame", False):

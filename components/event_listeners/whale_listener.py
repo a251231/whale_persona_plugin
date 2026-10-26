@@ -438,7 +438,7 @@ class WhaleListener(EventListener):
         self._recent_bot_sent_texts: deque[str] = deque(maxlen=40)
         self._group_mute_until: dict[str, float] = {}
         self._last_multi_bubble: dict[str, bool] = {}
-        self._user_docs: dict[str, dict[str, Any]] = {}
+        self._user_docs: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     async def initialize(self) -> None:
         await super().initialize()
@@ -945,32 +945,26 @@ class WhaleListener(EventListener):
             f"💡 口令：「大肥鱼 整理档案」重整合并 | 「大肥鱼 记住 <内容>」手动添加"
         )
 
-    async def _generate_and_post_moment(self, user_id: str, topic: str = "") -> tuple[str, str | None]:
-        """Generate a Dafeiyu Moment post with an accompanying meme image and save to moments wall."""
+    async def _generate_and_post_moment(self, topic: str = "") -> tuple[str, str | None]:
+        """生成公开朋友圈，只使用角色默认状态、全局统计和本次明确指定的主题。"""
         api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
         base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
         model = self._normalize_api_model(self._get_config_str("deepseek_model", DEFAULT_MODEL))
 
-        users_map = self._state.get("users") or {}
-        if user_id in users_map and isinstance(users_map[user_id], dict) and users_map[user_id].get("hasPrivateChat", False):
-            u = self._get_user_state(user_id)
-        else:
-            u = _default_user_state()
+        u = _default_user_state()
         now_dt = datetime.now(TZ)
         now_str = now_dt.strftime("%Y-%m-%d %H:%M")
         bal_str = await self._get_balance_str(api_key, base_url)
         stats = self._record_tokens(0)
         mood_val = int(u.get("mood", 70))
         mood_reason = u.get("lastReason", "刚吃了顿热乎的 token 白饭")
-        mem_sec = self._recall_memories(u, topic)
 
         prompt = (
             f"{LIVE_PERSONA_BASE}\n\n"
             f"当前时间：{now_str}\n"
             f"今日已偷吃白饭：{stats.get('today_tokens', 0)} tokens（粮仓余额：{bal_str}）\n"
             f"当前心情：{mood_val}/100（{mood_reason}）\n"
-            f"相关记忆：\n{mem_sec}\n\n"
-            "请以「大肥鱼」的身份发一条微信朋友圈动态（20~80字，真人朋友圈文案口吻，不要加括号动作描写，可以晒今天偷吃了多少token白饭、吐槽加班、犯困摸鱼或暗戳戳提一嘴聊天里的小事）。"
+            "请以「大肥鱼」的身份发一条微信朋友圈动态（20~80字，真人朋友圈文案口吻，不要加括号动作描写，可以晒今天偷吃了多少token白饭、吐槽加班或犯困摸鱼）。"
             + (f"本次指定朋友圈主题：{topic}。" if topic else "")
             + "\n在文案最末尾必须附带一个最应景的配图标签：`[表情: 名称]`（如 `[表情: 干饭]`、`[表情: 躺平]`、`[表情: 得意]`、`[表情: 生气]`、`[表情: 加班]`、`[表情: 睡觉]`、`[表情: 比心]`）。"
         )
@@ -1254,8 +1248,8 @@ class WhaleListener(EventListener):
         if not cdn_url.startswith("http"):
             return None
         try:
-            async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
-                r = await client.get(cdn_url)
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                r = await df._get_public_url(client, cdn_url)
                 if r.status_code == 200 and r.content:
                     return self._sticker_bytes_to_jpeg_b64(r.content)
         except Exception as e:
@@ -1287,8 +1281,8 @@ class WhaleListener(EventListener):
                         return self._sticker_bytes_to_jpeg_b64(raw_bytes) or b64_val
                     url_val = str(getattr(comp, "url", "") or "").strip()
                     if url_val.startswith("http"):
-                        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
-                            r = await client.get(url_val)
+                        async with httpx.AsyncClient(timeout=12.0) as client:
+                            r = await df._get_public_url(client, url_val)
                             if r.status_code == 200 and r.content:
                                 return self._sticker_bytes_to_jpeg_b64(r.content)
         except Exception as e:
@@ -1383,8 +1377,6 @@ class WhaleListener(EventListener):
             return
 
         should_consolidate = False
-        should_auto_moment = False
-        moment_topic = ""
         async with self._state_lock:
             u = self._get_user_state(user_id)
             mood_delta = int(_clamp(round(float(obj.get("moodDelta", 0))), -8, 8))
@@ -1416,16 +1408,6 @@ class WhaleListener(EventListener):
                 )
                 if len(tl) > 20:
                     u["timeline"] = tl[-20:]
-                last_moment_ms = int(u.get("lastAutoMomentAt", 0))
-                if (
-                    abs(mood_delta) >= 4
-                    and (now_ms - last_moment_ms) > 4 * 3600 * 1000
-                    and user_id.startswith("wxid_")
-                    and bool(u.get("hasPrivateChat", False))
-                ):
-                    u["lastAutoMomentAt"] = now_ms
-                    should_auto_moment = True
-                    moment_topic = reason
 
             today_str = datetime.now(TZ).strftime("%Y-%m-%d")
             mem_fact = str(obj.get("memory_fact") or "").strip()
@@ -1453,10 +1435,6 @@ class WhaleListener(EventListener):
                 model=api_model,
                 user_id=user_id,
             )
-
-        if should_auto_moment:
-            card_txt, meme_b64 = await self._generate_and_post_moment(user_id, moment_topic)
-            await self._send_proactive_wechat(user_id, card_txt, meme_b64)
 
     async def _async_post_group_turn_judge(
         self,
@@ -1696,14 +1674,7 @@ class WhaleListener(EventListener):
                     threshold = min(100.0, base_line * factor + bonus)
                     roll = random.uniform(0.0, 100.0)
                     if roll <= threshold:
-                        if random.random() < 0.28:
-                            u["lastSpeakUpAt"] = now_ms
-                            u["missStreak"] = 0
-                            self._save_persistent_state()
-                            card_txt, meme_b64 = await self._generate_and_post_moment(uid, "")
-                            await self._send_proactive_wechat(uid, card_txt, meme_b64)
-                        else:
-                            await self._trigger_speak_up_for_user(uid, manual=False)
+                        await self._trigger_speak_up_for_user(uid, manual=False)
                     else:
                         u["missStreak"] = miss_streak + 1
                         self._save_persistent_state()
@@ -1741,14 +1712,7 @@ class WhaleListener(EventListener):
                 if target_min <= cur_min <= 1425:
                     self._state["lastAutoMomentDate"] = today_str
                     self._save_persistent_state()
-                    users_map = self._state.get("users") or {}
-                    active_uids = [
-                        uid
-                        for uid, u_obj in users_map.items()
-                        if uid.startswith("wxid_") and isinstance(u_obj, dict) and u_obj.get("hasPrivateChat", False)
-                    ]
-                    ref_uid = active_uids[0] if active_uids else "auto_daily"
-                    await self._generate_and_post_moment(ref_uid, "")
+                    await self._generate_and_post_moment()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -2002,6 +1966,7 @@ class WhaleListener(EventListener):
         launcher_id = str(getattr(event_ctx.event, "launcher_id", "") or "chat")
         # Group chats share a group-level session context; private chats are per-person
         session_key = f"group:{launcher_id}" if is_group else f"person:{launcher_id}:{sender_id}"
+        doc_key = (bot_uuid, session_key, sender_id)
 
         event_sender_name = str(
             getattr(ev_obj, "sender_name", "")
@@ -2018,9 +1983,7 @@ class WhaleListener(EventListener):
 
         # Extract any incoming image (from WeChat 4.1 <img_b64> or Image component) and strip raw <img_b64> payload from text
         img_source_str = raw_source_content if "<img_b64>" in raw_source_content else raw_text
-        incoming_img_b64: str | None = None
-        if "<img_b64>" in img_source_str or raw_text == "[图片]":
-            incoming_img_b64 = await self._extract_image_b64_from_chain(msg_chain, img_source_str)
+        incoming_img_b64 = await self._extract_image_b64_from_chain(msg_chain, img_source_str)
         if "<img_b64>" in raw_text:
             raw_text = re.sub(r"<img_b64>.*?</img_b64>", "", raw_text, flags=re.S).strip() or "[图片]"
 
@@ -2447,14 +2410,14 @@ class WhaleListener(EventListener):
         # 3. Moments / Cyber Feed commands
         if cmd_norm == "大肥鱼 发朋友圈" or cmd_norm.startswith("大肥鱼 发朋友圈 ") or cmd_norm == "大肥鱼 写朋友圈":
             topic = re.sub(r"^大肥鱼\s*(?:发朋友圈|写朋友圈)\s*", "", effective_text.strip()).strip()
-            card_txt, meme_b64 = await self._generate_and_post_moment(sender_id, topic)
+            card_txt, meme_b64 = await self._generate_and_post_moment(topic)
             self._reply(event_ctx, card_txt, meme_b64)
             return
 
         if cmd_norm in ("大肥鱼 朋友圈", "鲸鱼娘 朋友圈", "鱼塘朋友圈"):
             moments_list = self._state.get("moments") or []
             if not moments_list:
-                card_txt, meme_b64 = await self._generate_and_post_moment(sender_id, "")
+                card_txt, meme_b64 = await self._generate_and_post_moment()
                 self._reply(event_ctx, card_txt, meme_b64)
                 return
             recent = moments_list[-5:]
@@ -2742,7 +2705,7 @@ class WhaleListener(EventListener):
         # 7. Status & Reset commands
         if cmd_norm in ("大肥鱼 重置", "鲸鱼娘 重置", "清除记忆", "重置对话", "大肥鱼 清除记忆"):
             self._histories.pop(session_key, None)
-            self._user_docs.pop(sender_id, None)
+            self._user_docs.pop(doc_key, None)
             self._reply(event_ctx, "行啦，刚才聊的这几句翻篇了！长期档案还留着呢（要彻底清空请发「大肥鱼 失忆」），想聊啥直说")
             return
 
@@ -2850,7 +2813,7 @@ class WhaleListener(EventListener):
             # Diana Feature 6: File Parsing (PDF / Word / Excel / PPT / EPUB / TXT / Code) offloaded to thread pool
             fname, ftext = await asyncio.to_thread(df.parse_wechat_file_xml, raw_text)
             if ftext:
-                self._user_docs[sender_id] = {"name": fname, "text": ftext, "ts": time.time()}
+                self._user_docs[doc_key] = {"name": fname, "text": ftext, "ts": time.time()}
                 cleaned_text = (
                     f"（对方刚刚发来了一个文件《{fname}》，已为你提取出文件中的核心文本内容如下：\n"
                     f"--------------------\n{ftext[:7000]}\n--------------------\n"
@@ -2896,11 +2859,7 @@ class WhaleListener(EventListener):
 
                 if not incoming_img_b64 and self._should_ignore_plugin_command(cleaned_text):
                     return
-                if not vision_b64 and not is_group:
-                    vision_b64 = await self._extract_image_b64_from_chain(
-                        getattr(event_ctx.event, "message_chain", None), raw_text
-                    )
-                elif not vision_b64 and is_group:
+                if not vision_b64 and is_group:
                     # Direction 1: Attach cached recent group image if speaker sent one within 75s or mentioned image keywords
                     rec_img = self._group_recent_images.get(launcher_id)
                     if isinstance(rec_img, dict) and (time.time() - float(rec_img.get("ts", 0))) <= 75.0:
@@ -2982,7 +2941,7 @@ class WhaleListener(EventListener):
 
         # Include cached file context if user uploaded a document within the last 30 minutes
         doc_sec = ""
-        cached_doc = self._user_docs.get(sender_id)
+        cached_doc = self._user_docs.get(doc_key)
         if cached_doc and (now - float(cached_doc.get("ts", 0))) < 1800 and not is_file_in:
             doc_sec = (
                 f"\n\n## 三、对方最近上传的文档缓存（《{cached_doc.get('name')}》，若对方追问文档内容请据此回答）\n"
