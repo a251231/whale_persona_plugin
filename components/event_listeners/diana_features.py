@@ -230,8 +230,9 @@ GROUP_INTERJECT_SYSTEM = """你是微信群里的「大肥鱼」（平时自称�
 3. 活人群友铁律（极重要）：
    - 插话必须像真人群友随手敲出来的一句短评或接梗（6~24字以内，句尾不要打句号，不要端着架子自我介绍，严禁每次都背诵“吃DeepSeek token当大白饭”！）。
    - 称呼铁律：发送群回复时系统会自动在消息最前面加上 `@当前说话人昵称`，因此在你的 reply 正文中【绝对禁止再次写出当前说话人的昵称】（否则昵称会重复出现两次）！只有当你在话里需要提到群内【其他第三方群友】时，才直接写那位群友的真实群昵称/昵称（严禁使用微信号 wxid_xxx 或后四位如 aq22、oh22、nl22）。
+   - 当情绪或梗特别契合时，可在 reply 末尾可选附带最多 1 个表情标签（如 `[表情: 干饭]`、`[表情: 得意]`、`[表情: 偷看]`、`[表情: 生气]`、`[表情: 无语]`、`[表情: 比心]`、`[表情: 害羞]`）。
 4. 只输出一个合法 JSON 对象，不要代码块，不要多余解释：
-{"should_reply": false, "reason": "用一句话写明为什么决定插话，或者为什么决定保持安静", "reply": "如果 should_reply 为 true，写出你要在群里随口接的那句短话（6~24字，严禁使用括号动作和句尾句号，严禁重复写当前说话人昵称）；如果为 false 则填空字符串"}"""
+{"should_reply": false, "reason": "用一句话写明为什么决定插话，或者为什么决定保持安静", "reply": "如果 should_reply 为 true，写出你要在群里随口接的那句短话（6~24字，严禁使用括号动作和句尾句号，严禁重复写当前说话人昵称，末尾可选带 1 个 [表情: 名称]）；如果为 false 则填空字符串"}"""
 
 GROUP_CONTINUATION_SYSTEM = """你是微信群里的「大肥鱼」（平时自称「我」，傲娇或得意时才偶尔自称「本鱼」，绝对禁止使用任何括号动作或神态描写）。
 刚才在这个微信群里，你正在和群友互动聊天（或者群友刚把你的聊天记录发到群里、正在议论你）。
@@ -246,9 +247,9 @@ GROUP_CONTINUATION_SYSTEM = """你是微信群里的「大肥鱼」（平时自�
 3. 活人连续对话铁律（极重要）：
    - 回复必须紧扣对方刚刚说的这句话和上一句的语境自然往下接（比如对方说“你这样说话很难有朋友”，你可以嘴硬回怼；对方发“。。。”，你可以追问“干嘛 一脸无语给谁看呢”；大家调侃“尴尬的时候就和他聊天”，你可以傲娇吐槽自己成缓解尴尬工具鱼了）。
    - 称呼铁律：发送群回复时系统会自动在消息最前面加上 `@当前说话人昵称`，因此在你的 reply 正文中【绝对禁止再次写出当前说话人的昵称】（否则昵称会重复出现两次）！只有当你在话里需要提到群内【其他第三方群友】时，才直接写那位群友的真实群昵称/昵称（严禁使用微信号 wxid_xxx 或后四位如 aq22、oh22、nl22）！
-   - 保持微信活人短句（默认 1 条气泡，6~35字左右，句尾不打句号，绝对禁止使用括号动作描写，严禁背诵吃token设定）。
+   - 保持微信活人短句（默认 1 条气泡，6~35字左右，句尾不打句号，绝对禁止使用括号动作描写，严禁背诵吃token设定；当情绪或梗特别契合时，可在 reply 末尾可选附带最多 1 个表情标签，如 `[表情: 干饭]`、`[表情: 得意]`、`[表情: 偷看]`、`[表情: 生气]`、`[表情: 无语]`、`[表情: 比心]`、`[表情: 害羞]`）。
 4. 只输出一个合法 JSON 对象，不要代码块，不要多余解释：
-{"should_reply": true, "reason": "简述判断原因（如：对方顺着我上一句继续吐槽我 / 群友在调侃拿我缓解尴尬）", "reply": "如果 should_reply 为 true，写出你要回复的话（严禁在正文里重复写当前说话人昵称）；如果为 false 则填空字符串"}"""
+{"should_reply": true, "reason": "简述判断原因（如：对方顺着我上一句继续吐槽我 / 群友在调侃拿我缓解尴尬）", "reply": "如果 should_reply 为 true，写出你要回复的话（严禁在正文里重复写当前说话人昵称，末尾可选带 1 个 [表情: 名称]）；如果为 false 则填空字符串"}"""
 
 
 def append_group_context_line(
@@ -315,6 +316,7 @@ async def evaluate_group_interject(
     recent_lines: list[str],
     state: dict[str, Any],
     group_memory_str: str = "",
+    mode: str = "live",
 ) -> tuple[bool, str, str, int]:
     """
     Calls DeepSeek to decide whether to interject in a group chat and logs the decision & reason.
@@ -328,8 +330,13 @@ async def evaluate_group_interject(
     mem_block = f"\n【本群记忆档案】：\n{group_memory_str}\n" if group_memory_str else ""
     roster_names = get_cached_group_member_names(group_id)
     roster_block = f"\n【本群成员真实昵称名单】：{'、'.join(roster_names)}\n" if roster_names else ""
+    mode_block = (
+        "\n【本群当前人设模式】：陪伴甜宠版（语气比平时更软乎亲近、傲娇黏人，可在回复末尾附带一个 [表情: 比心] 或 [表情: 害羞] 等标签）\n"
+        if mode == "sweet"
+        else ""
+    )
     user_prompt = (
-        f"当前时间：{now_str}{mem_block}{roster_block}\n"
+        f"当前时间：{now_str}{mem_block}{roster_block}{mode_block}\n"
         f"【群聊最近消息】：\n{chat_context}\n\n"
         "请判断回不回并给出原因（只输出JSON）："
     )
@@ -398,6 +405,7 @@ async def evaluate_group_active_continuation(
     familiarity_str: str = "",
     sender_name: str = "",
     vision_b64: str | None = None,
+    mode: str = "live",
 ) -> tuple[bool, str, str, int]:
     """
     Active Conversation Window judge & responder:
@@ -421,8 +429,13 @@ async def evaluate_group_active_continuation(
     fam_block = f"\n{familiarity_str}\n" if familiarity_str else ""
     roster_names = get_cached_group_member_names(group_id)
     roster_block = f"\n【本群成员真实昵称名单】：{'、'.join(roster_names)}\n" if roster_names else ""
+    mode_block = (
+        "\n【本群当前人设模式】：陪伴甜宠版（语气比平时更软乎亲近、傲娇黏人，可在回复末尾附带一个 [表情: 比心] 或 [表情: 害羞] 等标签）\n"
+        if mode == "sweet"
+        else ""
+    )
     user_prompt = (
-        f"当前时间：{now_str}{mem_block}{fam_block}{roster_block}\n"
+        f"当前时间：{now_str}{mem_block}{fam_block}{roster_block}{mode_block}\n"
         f"【你（大肥鱼）上一句在群里的发言】：「{last_bot_reply}」\n"
         f"【当前说话人身份】：{speaker_hint}\n"
         f"【群聊最近上下文】：\n{chat_context}\n\n"
