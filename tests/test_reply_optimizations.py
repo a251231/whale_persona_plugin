@@ -114,14 +114,14 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         await self.ask("好想吃夜宵啊", group=True, room="room-A")
         judge.assert_awaited_once()
         self.assertEqual(judge.await_args.kwargs.get("mode"), "sweet")
-        hist = self.listener._histories.get("group:room-A", [])
+        hist = self.listener._histories.get("bot-A:group:room-A", [])
         self.assertTrue(any(role == "assistant" and "我也想吃夜宵" in content for _, role, content in hist))
 
     async def test_group_voice_followup_in_balanced_vs_quiet_profile(self):
         voice_xml = '<msg><voicemsg audio_b64="UklGRg==" voicelength="2400" length="4200" /></msg>'
 
         await self.ask("大肥鱼 设置 均衡", group=True, room="room-A")
-        self.listener._record_group_bot_activity("room-A", "wxid_test", "刚才聊了一句")
+        self.listener._record_group_bot_activity("bot-A:group:room-A", "wxid_test", "刚才聊了一句")
         with patch.object(
             self.listener,
             "_transcribe_incoming_voice",
@@ -133,7 +133,7 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         self.assertIn("那我们走吧", self.prompt())
 
         await self.ask("大肥鱼 设置 安静", group=True, room="room-A")
-        self.listener._record_group_bot_activity("room-A", "wxid_test", "刚才聊了一句")
+        self.listener._record_group_bot_activity("bot-A:group:room-A", "wxid_test", "刚才聊了一句")
         with patch.object(
             self.listener,
             "_transcribe_incoming_voice",
@@ -179,7 +179,7 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
     # 4. Per-`session_key` Async Session Lock (`_session_locks`)
     # ------------------------------------------------------------------
     async def test_concurrent_same_session_messages_preserve_both_turns_in_history(self):
-        session_key = "person:wxid_test:wxid_test"
+        session_key = "bot-A:person:wxid_test:wxid_test"
         lock_a = self.listener._get_session_lock(session_key)
         lock_b = self.listener._get_session_lock(session_key)
         self.assertIs(lock_a, lock_b)

@@ -69,7 +69,7 @@ class CommandSettingsRegressions(harness.ListenerHarness):
 
     async def test_quiet_profile_blocks_unprompted_continuation(self):
         await self.ask("大肥鱼 设置 安静", group=True, room="room-A")
-        self.listener._group_active_conv["room-A"] = {"last_speaker_id": "wxid_test", "last_bot_ts": time.time()}
+        self.listener._group_active_conv["bot-A:group:room-A"] = {"last_speaker_id": "wxid_test", "last_bot_ts": time.time()}
         judge = self._patch(df, "evaluate_group_active_continuation", AsyncMock(return_value=(False, "", "", 0)))
         await self.ask("接着刚才的话题", group=True, room="room-A")
         judge.assert_not_awaited()
@@ -171,7 +171,7 @@ class CommandSettingsRegressions(harness.ListenerHarness):
         for profile, room, calls in (("均衡", "room-A", 0), ("热闹", "room-B", 1)):
             with self.subTest(profile=profile):
                 await self.ask(f"大肥鱼 设置 {profile}", group=True, room=room)
-                self.listener._group_interject_meta[room] = {
+                self.listener._group_interject_meta[f"bot-A:group:{room}"] = {
                     "last_judge_ts": time.time() - 130, "unjudged_count": 7,
                 }
                 judge.reset_mock()
@@ -246,7 +246,7 @@ class CommandSettingsRegressions(harness.ListenerHarness):
         self.assertTrue(loaded["voice_reply_enabled"])
 
     async def test_persona_aliases_and_toggle_mode_commands(self):
-        session_key = "person:wxid_test:wxid_test"
+        session_key = "bot-A:person:wxid_test:wxid_test"
         self.listener._histories[session_key] = [(time.time(), "assistant", "毒舌旧回复")]
         res1 = self.reply(await self.ask("大肥鱼 设置 人格 甜宠"))
         self.assertIn("人格：甜宠", res1)

@@ -317,6 +317,7 @@ async def evaluate_group_interject(
     state: dict[str, Any],
     group_memory_str: str = "",
     mode: str = "live",
+    bot_uuid: str = "",
 ) -> tuple[bool, str, str, int]:
     """
     Calls DeepSeek to decide whether to interject in a group chat and logs the decision & reason.
@@ -376,6 +377,8 @@ async def evaluate_group_interject(
     log_entry = {
         "at": datetime.now(TZ).strftime("%m-%d %H:%M:%S"),
         "group": group_id[:10],
+        "group_id": group_id,
+        "bot_uuid": bot_uuid,
         "decision": "✅ 插话" if (should_reply and reply) else "🤫 安静",
         "trigger": recent_lines[-1][:36] if recent_lines else "",
         "reason": reason or ("觉得话题有趣顺嘴接话" if should_reply else "不打扰群友聊天"),
@@ -406,6 +409,7 @@ async def evaluate_group_active_continuation(
     sender_name: str = "",
     vision_b64: str | None = None,
     mode: str = "live",
+    bot_uuid: str = "",
 ) -> tuple[bool, str, str, int]:
     """
     Active Conversation Window judge & responder:
@@ -487,6 +491,8 @@ async def evaluate_group_active_continuation(
     log_entry = {
         "at": datetime.now(TZ).strftime("%m-%d %H:%M:%S"),
         "group": group_id[:10],
+        "group_id": group_id,
+        "bot_uuid": bot_uuid,
         "decision": "💬 接话" if (should_reply and reply) else "🤫 安静",
         "trigger": f"[{display_name}]: {current_text[:28]}",
         "reason": reason or ("识别到正在和我连续对话，自然接话" if should_reply else "群友转向其他话题，保持安静"),
@@ -500,8 +506,13 @@ async def evaluate_group_active_continuation(
     return should_reply, reply, reason, used
 
 
-def format_interject_logs(state: dict[str, Any]) -> str:
-    logs = state.get("interject_logs") or []
+def format_interject_logs(state: dict[str, Any], *, bot_uuid: str, group_id: str | None) -> str:
+    # 旧日志缺少完整隔离键，无法可靠归属，不参与任何会话的查询。
+    logs = [
+        item for item in (state.get("interject_logs") or [])
+        if bot_uuid and item.get("bot_uuid") == bot_uuid and item.get("group_id")
+        and (group_id is None or item.get("group_id") == group_id)
+    ]
     if not logs:
         return (
             "📋 【大肥鱼群聊主动搭话决策记录】\n"
@@ -1247,7 +1258,7 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
                 for sheet_name in wb.sheetnames[:5]:
                     ws = wb[sheet_name]
                     parts.append(f"【工作表：{sheet_name}】")
-                    for row in list(ws.iter_rows(values_only=True))[:80]:
+                    for row in ws.iter_rows(max_row=80, max_col=80, values_only=True):
                         vals = [str(v).strip() for v in row if v is not None and str(v).strip()]
                         if vals:
                             parts.append(" | ".join(vals))

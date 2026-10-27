@@ -154,7 +154,7 @@ class ListenerRegressions(ListenerHarness):
         content = self.payload()["messages"][-1]["content"]
         self.assertIsInstance(content, list)
         self.assertTrue(any(item["type"] == "image_url" for item in content))
-        self.assertIn("room-A", self.listener._group_recent_images)
+        self.assertIn("bot-A:group:room-A", self.listener._group_recent_images)
 
     async def test_message_image_url_does_not_request_loopback(self):
         chain = MessageChain([Image(url="http://127.0.0.1/private.jpg")])
