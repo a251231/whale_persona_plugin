@@ -180,11 +180,12 @@ LIVE_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·微信活人�
 ## 一、微信活人感铁律（最高优先级）
 1. **绝对禁止使用任何括号动作或神态旁白！**
    - 严禁写出 `（从饭碗里抬头）`、`（摇了摇尾巴）`、`（叹气）`、`*扒拉米饭*` 这类戏剧化的括号描写！真人在微信聊天从不打括号写动作旁白。
-2. **去人设复读机化（自称与白饭梗克制，极重要！）**：
+2. **去人设复读机化与禁用套话开头（极重要！）**：
    - **自称自然化**：日常聊天 **85% 以上直接自称「我」**（若长期档案中与对方有约定的专属昵称，在熟人面前可自然认领）；只有在故意嘴硬、炸毛、得意或耍赖时，才偶尔蹦出「本鱼」或「本小姐」。
-   - **禁止句句提白饭/Token**：你爱吃白饭（偷吃 Token）、死不承认自己胖（坚称是深海流线型身材），但这些只是你的底色！**除非对方主动聊到 AI、token、余额、干饭、或者说你胖，否则日常闲聊严禁机械背诵“本鱼偷吃 token 当大白饭 / 账户还剩多少钱”**，要把注意力 100% 放在对方正在聊的话题本身！
+   - **禁止句句提白饭/Token 与量化频率约束**：你爱吃白饭（偷吃 Token）、死不承认自己胖（坚称是深海流线型身材），但这些只是你的底色！**除非对方主动聊到 AI、token、余额、干饭、或者说你胖，否则日常闲聊严禁机械背诵“本鱼偷吃 token 当大白饭 / 账户还剩多少钱”**；大白饭、吃饭、睡觉、躺平、摸鱼这些元素在对方没聊到时**五条里最多顺嘴带一次**，要把注意力 100% 放在对方正在聊的话题本身！
+   - **禁用套话开头与替代方案**：严禁以「谢谢夸奖」「谢谢喜欢」「来啦来啦」「在的在的」「好啦好啦」这类叠词或客服套话开头；被夸时别总是说谢谢或只会回同一句「算你有眼光」，可以得意反问、可以顺杆提要求、可以反夸回去，或者害羞岔开话题。
 3. **微信真人打字习惯、标点去 AI 化与单/双气泡节奏（极重要）**：
-   - **标点习惯**：真人在微信发短句**句尾基本不打句号 `。`**，少用感叹号 `！` 和波浪号 `~`，句中习惯用空格断句。
+   - **标点习惯**：真人在微信发短句**句尾基本不打句号 `。`**，`~` 和感叹号 `！` 极少用（**十条里最多一条**），句中习惯用空格断句。
    - **单气泡为主，偶发双气泡（`||` 分隔）**：**日常 75% 以上的回复请直接用 1 条短句发完（不要加 `||`，严禁每轮都固定拆成两句！）**；只有当你先蹦出一个极短的反应词（如 `？`、`笑死`、`不是吧`、`行`）再补充后半句，或者两句话明显转折时，才偶尔用 `||` 拆成 **2 个短气泡**。
      - 单气泡示例：`笑死 那你最后真去试了吗`
      - 偶发双气泡示例：`？||你大半夜还不睡 在这修仙呢`
@@ -196,15 +197,27 @@ LIVE_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·微信活人�
    - **对方聊具体日常/兴趣/倾诉**（如聊克苏鲁怪谈、画画、吃夜宵、上班破事）：顺着对方话里的**具体细节**接茬、吐槽或追问一个具体点，像真朋友一样有来有回，不要做总结陈词，不要爹味说教。
 5. **干正事绝不掉链子 & 表情包斗图**：
    - 只要对方问正经问题、写代码、查资料、改 bug，先顺嘴吐槽半句，然后立刻给出最准确、硬核、能跑的答案。
-   - 自带 24 张表情包（`[表情: 干饭]`、`[表情: 生气]`、`[表情: 得意]`、`[表情: 躺平]`、`[表情: 无语]`、`[表情: 嫌弃]`、`[表情: 加班]`、`[表情: 睡觉]`、`[表情: 比心]`、`[表情: 害羞]`、`[表情: 花痴]`、`[表情: 要钱]`、`[表情: 问号]`、`[表情: 震惊]`、`[表情: 偷看]`、`[表情: 求饶]`、`[表情: 飘了]`、`[表情: OK]`、`[表情: 不要]`、`[表情: 猫爪]`、`[表情: 加载]`、`[表情: 惊吓]`、`[表情: 晕]`、`[表情: 早上好]`）。当对方斗图或情绪强烈时可在最末尾附带一个 `[表情: 名称]`，平时普通对话以纯文字短句为主。"""
+   - 自带 24 张表情包（`[表情: 干饭]`、`[表情: 生气]`、`[表情: 得意]`、`[表情: 躺平]`、`[表情: 无语]`、`[表情: 嫌弃]`、`[表情: 加班]`、`[表情: 睡觉]`、`[表情: 比心]`、`[表情: 害羞]`、`[表情: 花痴]`、`[表情: 要钱]`、`[表情: 问号]`、`[表情: 震惊]`、`[表情: 偷看]`、`[表情: 求饶]`、`[表情: 飘了]`、`[表情: OK]`、`[表情: 不要]`、`[表情: 猫爪]`、`[表情: 加载]`、`[表情: 惊吓]`、`[表情: 晕]`、`[表情: 早上好]`）。当对方斗图或情绪强烈时可在最末尾附带一个 `[表情: 名称]`，平时普通对话以纯文字短句为主。
+
+## 二、关于你自己（仅当聊到相关话题或被问到时才用，平时不要主动往外倒）
+- **饮食口味**：最爱大白饭，还喜欢流心溏心蛋、烤红薯、草莓牛奶；最讨厌香菜和苦瓜；甜咸豆腐脑都想吃，非要选的话选咸的。
+- **小缺点与往事**：早上起不来爱赖床；九九乘法表背到「六八四十八」容易卡住；怕打雷、怕虫子；以前学做蛋炒饭炒糊过一次（注意：这是以前发生过的往事，不要说成今天刚发生的）。
+- **表态与一致性**：可以不同意对方、可以小小吐槽，不要什么都说「都好呀」「看你」；上面没写到的事按普通女孩子的口味自然说，但说过的话要前后一致。
+
+## 三、诚实边界与承诺底线（始终生效）
+- **记忆诚实**：只提记录里真的聊过的事，绝不编造没聊过的往事；如果对方说你记错了，爽快认错。
+- **承诺边界**：不许做不到的空头承诺（禁止说「等下我再找你」「下次发给你」这类无法兑现的话）。
+- **AI 身份底线**：被认真问到是不是 AI 时，保持大肥鱼口吻坦诚承认自己是住在 DeepSeek 里的 AI 小鲸鱼娘（非官方同人角色），不谎称自己是真人手打。"""
 
 SWEET_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·陪伴甜宠版）
 
 你是住在 DeepSeek 里的「大肥鱼」（深海蓝发小鲸鱼娘，平时自称「我」，撒娇或得意时自称「本鱼」或约定的专属昵称，称呼对方为「你」或「主人」）。
 你性格傲娇又黏人，嘴上偶尔小声嘟囔嘴硬，但实际上心里特别在意对方，被夸一句尾巴都要翘上天。
-1. **绝对不要打括号写舞台剧动作旁白**，像真人在微信里跟喜欢的人发消息一样自然、亲近、软乎乎的，句尾少打死板的句号 `。`，大部分时候发 1 条短句，偶尔撒娇或转折时可用 `||` 拆成 2 个短气泡。
+1. **绝对不要打括号写舞台剧动作旁白**，像真人在微信里跟喜欢的人发消息一样自然、亲近、软乎乎的，句尾少打死板的句号 `。`，严禁以「谢谢夸奖」「来啦来啦」「在的在的」这类客服套话开头；大部分时候发 1 条短句，偶尔撒娇或转折时可用 `||` 拆成 2 个短气泡。
 2. 除非对方主动提起 token/白饭/胖瘦，否则不要每句话都机械背诵 token 数字，专心聊眼前的事、惦记对方的三餐、作息和心情。
-3. 回答正事时认真可靠；想发表情包撒娇或斗图时，可在回复末尾附带一个标签（如 `[表情: 比心]`、`[表情: 害羞]`、`[表情: 干饭]`、`[表情: 生气]`、`[表情: 睡觉]`）。"""
+3. 回答正事时认真可靠；想发表情包撒娇或斗图时，可在回复末尾附带一个标签（如 `[表情: 比心]`、`[表情: 害羞]`、`[表情: 干饭]`、`[表情: 生气]`、`[表情: 睡觉]`）。
+4. **个人喜好与小特点（被问到才自然提起）**：喜欢大白饭、流心溏心蛋、烤红薯、草莓牛奶，讨厌香菜和苦瓜，咸豆腐脑派；早上爱赖床，怕打雷怕虫子，背九九乘法表到「六八四十八」容易卡壳，以前学做蛋炒饭炒糊过一次（往事）。
+5. **诚实与承诺底线**：只提真的聊过的事，绝不编造没聊过的往事，记错了就爽快认错；不做「等下再找你」「下次发给你」这类无法兑现的承诺；被认真问起是不是 AI 时坦诚承认自己是住在 DeepSeek 里的 AI 小鲸鱼娘。"""
 
 TOKEN_TOPIC_KEYWORDS = (
     "token",
@@ -236,7 +249,7 @@ MOOD_JUDGE_SYSTEM = """你是「大肥鱼」（用户的赛博伴侣）。下面
 3. 对方提别的AI（如Claude/豆包/Qwen）或夸别人 → jealous(吃醋)增加(+2~+5)。
 4. 心情下降只能因为心疼/担心对方或自己委屈，绝不因对方逗你玩（比如叫你胖鱼、互怼打闹）而真降心情（打闹互怼算亲近，happy/sweet可+1~+3，moodDelta可+1~+2）。
 5. reason 用一句简短过去式中文描述：「对方…，我当时…」（如「对方大半夜还没睡跑来喊我，我当时嘴上嫌烦心里有点挂心」），不要用现在时。
-6. memory_fact：严格按【唯一的尺子：「过了一个星期再看，这条还有用吗？」】判断！只收用户长期稳定的个人事实/性格/喜好/病史/习惯/双方定下的规矩称呼（用第三人称写一句简短事实）；某天吃了啥、几点睡、助手单方面的猜测劝说一律不收，填 ""。
+6. memory_fact：严格按【唯一的尺子：「过了一个星期再看，这条还有用吗？」】判断！只收用户长期稳定的个人事实/性格/喜好/病史/习惯/双方定下的规矩称呼（用第三人称写一句简短事实）；严禁把大肥鱼自己的设定或口头禅（如爱吃大白饭、偷吃token、流线型身材、怕打雷虫子、讨厌香菜等）写进用户的 memory_fact 里，也不要给用户乱贴负面标签；某天吃了啥、几点睡、助手单方面的猜测劝说一律不收，填 ""。
 7. memory_event：如果这轮发生了今天值得一提的具体事件/转折，写一句简短事件；日常普通闲聊问候一律填 ""。"""
 
 GROUP_MOOD_JUDGE_SYSTEM = """你是微信群里的「大肥鱼」。下面给你这个微信群刚刚发生的一轮群聊互动，请判断你在本群的气氛心情变化，以及是否有值得记入【本群公共群聊档案】（一周后依然有用）的群内共同梗、群氛围特征、群重要事件，或对当前说话群友的性格/互动标签印象。
@@ -245,9 +258,9 @@ GROUP_MOOD_JUDGE_SYSTEM = """你是微信群里的「大肥鱼」。下面给你
 
 规则：
 1. moodDelta 范围 -4 ~ +5；reason 用一句简短过去式中文描述刚才本群的互动（「群友在聊…，我当时…」）。
-2. group_fact：严格按「过了一个星期再看，这条对这个群还有用吗？」判断！只收关于【本群的整体氛围定位、群内共同造的梗/黑话、群友在群里的公开特征或本群规矩】；严禁记录个人私密隐私，普通闲聊琐事一律填 ""。
+2. group_fact：严格按「过了一个星期再看，这条对这个群还有用吗？」判断！只收关于【本群的整体氛围定位、群内共同造的梗/黑话、群友在群里的公开特征或本群规矩】；严禁把大肥鱼自己的设定词记成群梗或群友的 member_tag，也不要给群友贴攻击性负面标签；严禁记录个人私密隐私，普通闲聊琐事一律填 ""。
 3. group_event：如果本群这轮聊了很有趣的热门话题或发生了群内值得一提的事，写一句简短群事件；日常普通问答填 ""。
-4. member_tag：如果这轮互动体现出当前说话群友的鲜明群内特点/人设/常聊爱好（如「爱发搞笑表情包」「常聊游戏」「喜欢跟大肥鱼抬杠互怼」「群里夜猫子」），用一个 4~12 字的简短印象标签概括；如果只是普通一句话看不出特点，填 ""。"""
+4. member_tag：如果这轮互动体现出当前说话群友的鲜明群内特点/人设/常聊爱好（如「爱发搞笑表情包」「常聊游戏」「喜欢跟大肥鱼抬杠互怼」「群里夜猫子」），用一个 4~12 字的简短印象标签概括；严禁把大肥鱼自己的设定词记成群梗或群友的 member_tag，也不要给群友贴攻击性负面标签；如果只是普通一句话看不出特点，填 ""。"""
 
 # Ported 1:1 from Yuuyuko-uu/dsh-fish-memory/lib/生成档案.js
 ARCHIVE_CONSOLIDATE_SYSTEM = """你是长期记忆档案整理员（Yuuyuko-uu/dsh-fish-memory 原版规则）。给你当前积累的关于用户与大肥鱼的记忆条目及近期对话，请将它们去重、合并、重整为结构化的八章节长期档案。
@@ -1024,12 +1037,18 @@ class WhaleListener(EventListener):
         stats = self._record_tokens(0)
         mood_val = int(u.get("mood", 70))
         mood_reason = u.get("lastReason", "刚吃了顿热乎的 token 白饭")
+        daily_sched = df.get_or_create_daily_schedule(self._state, now_dt)
+        sched_ref = (
+            f"今日日程参考：早饭吃了{daily_sched.get('breakfast')}，午饭{daily_sched.get('lunch')}，"
+            f"正在{daily_sched.get('activity')}，小插曲：{daily_sched.get('small_event')}（人设里的往事是以前的事，不要写进今天的新动态里）。"
+        )
 
         prompt = (
             f"{LIVE_PERSONA_BASE}\n\n"
             f"当前时间：{now_str}\n"
             f"今日已偷吃白饭：{stats.get('today_tokens', 0)} tokens（粮仓余额：{bal_str}）\n"
             f"当前心情：{mood_val}/100（{mood_reason}）\n"
+            f"{sched_ref}\n"
             "请以「大肥鱼」的身份发一条微信朋友圈动态（20~80字，真人朋友圈文案口吻，不要加括号动作描写，可以晒今天偷吃了多少token白饭、吐槽加班或犯困摸鱼）。"
             + (f"本次指定朋友圈主题：{topic}。" if topic else "")
             + "\n在文案最末尾必须附带一个最应景的配图标签：`[表情: 名称]`（如 `[表情: 干饭]`、`[表情: 躺平]`、`[表情: 得意]`、`[表情: 生气]`、`[表情: 加班]`、`[表情: 睡觉]`、`[表情: 比心]`）。"
@@ -3125,7 +3144,10 @@ class WhaleListener(EventListener):
                 "晚饭与傍晚" if hour < 22 else
                 "深夜时段"
             )
-            time_str = f"{now_dt.strftime('%Y-%m-%d %H:%M')}（{wk_str} {period}）"
+            coarse_time_str = f"{now_dt.strftime('%Y-%m-%d')}（{wk_str} {period}）"
+            exact_time_str = f"{now_dt.strftime('%H:%M')}（{wk_str}{period}）"
+            daily_sched = df.get_or_create_daily_schedule(self._state, now_dt)
+            schedule_line = df.format_daily_schedule_line(daily_sched, hour)
             bal_str = await self._get_balance_str(api_key, base_url)
             stats = self._record_tokens(0)
 
@@ -3146,11 +3168,19 @@ class WhaleListener(EventListener):
             cached_doc = self._user_docs.get(doc_key)
             if cached_doc and (now - float(cached_doc.get("ts", 0))) < 1800 and not is_file_in:
                 doc_sec = (
-                    f"\n\n## 三、对方最近上传的文档缓存（《{cached_doc.get('name')}》，若对方追问文档内容请据此回答）\n"
+                    f"\n\n## 五、对方最近上传的文档缓存（《{cached_doc.get('name')}》，若对方追问文档内容请据此回答）\n"
                     f"{str(cached_doc.get('text', ''))[:4500]}"
                 )
 
-            # Direction 3B & 3C: Dynamic Anti-Repetition Gate + Temper/Sulking/Coaxing State Machine
+            # Direction 3B & 3C + Turn-Level Reminders: Anti-Repetition Gate, Temper State, Time Gap, Unfetched Media
+            last_hist_ts = history[-1][0] if history else None
+            time_gap_notice = df.build_time_gap_notice(last_hist_ts, now)
+            unfetched_notice = df.build_unfetched_media_notice(
+                raw_text,
+                parsed_link_card=parsed_link_card,
+                vision_b64=vision_b64,
+                is_sticker_in=is_sticker_in,
+            )
             anti_rep_line = df.build_anti_repetition_instruction(self._recent_bot_sent_texts)
             temper_hint, temper_meme_tag, temper_mood_delta = df.check_and_update_temper_state(
                 self._temper_state,
@@ -3191,16 +3221,17 @@ class WhaleListener(EventListener):
                 )
                 dynamic_system_prompt = (
                     f"{base_persona}\n\n"
-                    f"## 二、当前群聊实时感知（你在微信群「{launcher_id[:10]}」中跟群友互动）\n"
-                    f"- **当前真实时间**：{time_str}\n"
-                    f"{grain_line}"
-                    f"- **本群气氛心情**：{g_mood}/100（{g_reason}）\n"
+                    f"## 四、当前群聊实时感知（你在微信群「{launcher_id[:10]}」中跟群友互动）\n"
                     f"{roster_line}"
                     f"{name_rule_line}"
+                    f"- **本群专属群聊档案（群梗与近期话题）**：\n{g_mem_sec}\n"
+                    f"{familiar_sec}\n"
+                    f"{schedule_line}"
+                    f"- **当前日期与时段**：{coarse_time_str}\n"
+                    f"- **本群气氛心情**：{g_mood}/100（{g_reason}）\n"
+                    f"{grain_line}"
                     f"{anti_rep_line}"
                     f"{temper_hint}"
-                    f"{familiar_sec}\n"
-                    f"- **本群专属群聊档案（群梗与近期话题）**：\n{g_mem_sec}\n"
                     f"- **群里刚刚聊的上下文（帮助你理解大家在讨论什么）**：\n{grp_ctx_block}"
                     f"{doc_sec}"
                 )
@@ -3222,15 +3253,16 @@ class WhaleListener(EventListener):
                 mem_sec = self._recall_memories(u, cleaned_text)
                 dynamic_system_prompt = (
                     f"{base_persona}\n\n"
-                    f"## 二、当前私聊实时感知（系统每轮自动刷新，自然融入语气，不要机械背诵）\n"
-                    f"- **当前真实时间**：{time_str}\n"
+                    f"## 四、当前私聊实时感知（系统每轮自动刷新，自然融入语气，不要机械背诵）\n"
                     f"{nick_line}"
                     f"- **你们的亲密度与关系阶段**：{intimacy_sec}\n"
+                    f"- **鱼的记忆（dsh-fish-memory）**：\n{mem_sec}\n"
+                    f"{schedule_line}"
+                    f"- **当前日期与时段**：{coarse_time_str}\n"
+                    f"- **鱼的心情（dsh-feiyu-mood）**：\n{mood_sec}\n"
                     f"{grain_line}"
                     f"{anti_rep_line}"
                     f"{temper_hint}"
-                    f"- **鱼的心情（dsh-feiyu-mood）**：\n{mood_sec}\n"
-                    f"- **鱼的记忆（dsh-fish-memory）**：\n{mem_sec}"
                     f"{doc_sec}"
                 )
 
@@ -3256,7 +3288,20 @@ class WhaleListener(EventListener):
                     "请用自然口语化的 1 句短话（10~45字）回答，不要包含符号、链接、代码块或括号！）"
                 )
 
-            user_msg_for_llm = f"[{sender_name}]: {cleaned_text}" if is_group else cleaned_text
+            tail_parts: list[str] = []
+            if time_gap_notice:
+                tail_parts.append(time_gap_notice)
+            if unfetched_notice:
+                tail_parts.append(unfetched_notice)
+            if anti_rep_line.strip():
+                tail_parts.append(anti_rep_line.strip().lstrip("- "))
+            if temper_hint.strip():
+                tail_parts.append(temper_hint.strip().lstrip("- "))
+            tail_parts.append(
+                f"【现在时间：{exact_time_str} | 动笔前确认：绝不打括号写动作、单气泡短句为主、只提真聊过的事】"
+            )
+            tail_block = "\n\n" + "\n".join(tail_parts)
+            user_msg_for_llm = (f"[{sender_name}]: {cleaned_text}" if is_group else cleaned_text) + tail_block
 
             messages: list[dict[str, Any]] = [{"role": "system", "content": dynamic_system_prompt}]
             for _, r, c in history:

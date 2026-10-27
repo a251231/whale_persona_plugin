@@ -2030,6 +2030,104 @@ OVERUSED_CLICHE_WORDS = (
     "工具鱼",
 )
 
+DAILY_WAKE_POOL: tuple[str, ...] = (
+    "早上 8:20 被饿醒的",
+    "上午 9:10 赖床赖到闹钟响了三次才爬起来",
+    "早上 7:50 难得早起，结果坐在床边发了十分钟呆",
+    "上午 9:40 睡过头差点错过早饭",
+    "早上 8:35 迷迷糊糊爬起来找水喝",
+)
+DAILY_BREAKFAST_POOL: tuple[str, ...] = (
+    "热乎的草莓牛奶配烤红薯",
+    "一碗大白饭配流心溏心蛋和海苔碎",
+    "咸豆腐脑配两根脆油条",
+    "鲜肉小笼包配温豆浆",
+    "煎蛋三明治配草莓牛奶",
+)
+DAILY_LUNCH_POOL: tuple[str, ...] = (
+    "两碗大白饭配番茄滑蛋和红烧排骨（特地挑走了所有香菜）",
+    "日式肥牛饭加一颗溏心蛋",
+    "糖醋里脊配大白饭，外加一瓶冰快乐水",
+    "土豆牛腩盖浇饭，米饭加量",
+    "黄焖鸡米饭（微辣，不要青椒和香菜）",
+)
+DAILY_DINNER_POOL: tuple[str, ...] = (
+    "海鲜乌冬面加鱼籽福袋",
+    "一碗热腾腾的紫菜蛋花汤配照烧鸡腿饭",
+    "清汤小火锅涮肥牛和虾滑",
+    "刚出炉的烤红薯配卤肉饭",
+    "菌菇鸡汤泡大白饭配煎三文鱼",
+)
+DAILY_ACTIVITY_POOL: tuple[str, ...] = (
+    "窝在懒人沙发上补旧番，顺便把尾巴搭在小毯子外面晃悠",
+    "一边摸鱼刷手机，一边研究怎么把蛋炒饭炒得粒粒分明",
+    "趴在桌子上给鱼塘整理小本本，困得直点头",
+    "戴着耳机听歌摸鱼，顺手囤了三盒草莓牛奶",
+    "在窗边晒太阳打盹，听见外面大动静还吓了一跳",
+)
+DAILY_SMALL_EVENT_POOL: tuple[str, ...] = (
+    "中午点外卖备注了「千万不要香菜」，结果老板还是撒了一撮，挑了半天",
+    "下午开草莓牛奶的时候手滑沾了一点在袖口上，洗完还有股奶香味",
+    "刚才算账的时候九九乘法表背到「六八四十八」又卡壳了两秒，还好没人看见",
+    "早上剥溏心蛋的时候完美剥出一个光滑完整的蛋，得意了好久",
+    "下午看见窗纱外停了一只小虫子，吓得把抱枕扔了出去",
+)
+
+
+def get_or_create_daily_schedule(
+    state: dict[str, Any],
+    now_dt: datetime | None = None,
+) -> dict[str, str]:
+    """Returns today's persistent Dafeiyu daily schedule from `state['daily_schedule']`.
+    Generates a new one if today's date does not match, avoiding yesterday's choices.
+    """
+    dt = now_dt or datetime.now(TZ)
+    today_str = dt.strftime("%Y-%m-%d")
+    cur = state.get("daily_schedule")
+    if isinstance(cur, dict) and cur.get("date") == today_str and cur.get("lunch"):
+        return cur
+
+    prev = cur if isinstance(cur, dict) else {}
+    rng = random.Random(f"dafeiyu-schedule-{today_str}")
+
+    def _pick(pool: tuple[str, ...], prev_val: str) -> str:
+        choices = [x for x in pool if x != prev_val] or list(pool)
+        return rng.choice(choices)
+
+    sched = {
+        "date": today_str,
+        "wake": _pick(DAILY_WAKE_POOL, str(prev.get("wake") or "")),
+        "breakfast": _pick(DAILY_BREAKFAST_POOL, str(prev.get("breakfast") or "")),
+        "lunch": _pick(DAILY_LUNCH_POOL, str(prev.get("lunch") or "")),
+        "dinner": _pick(DAILY_DINNER_POOL, str(prev.get("dinner") or "")),
+        "activity": _pick(DAILY_ACTIVITY_POOL, str(prev.get("activity") or "")),
+        "small_event": _pick(DAILY_SMALL_EVENT_POOL, str(prev.get("small_event") or "")),
+    }
+    state["daily_schedule"] = sched
+    return sched
+
+
+def format_daily_schedule_line(schedule: dict[str, str], hour: int) -> str:
+    """Formats today's schedule into a cache-friendly prompt line (only revealed up to the current time of day)."""
+    if not isinstance(schedule, dict) or not schedule:
+        return ""
+    parts = [f"起床：{schedule.get('wake', '')}"]
+    if hour >= 7:
+        parts.append(f"早饭：{schedule.get('breakfast', '')}")
+    if hour >= 11:
+        parts.append(f"午饭：{schedule.get('lunch', '')}")
+    if hour >= 17:
+        parts.append(f"晚饭：{schedule.get('dinner', '')}")
+    parts.append(f"今日日常：{schedule.get('activity', '')}")
+    if hour >= 12 and schedule.get("small_event"):
+        parts.append(f"今日小插曲：{schedule.get('small_event', '')}")
+    return (
+        "- **今日状态与日程（别人问你在干嘛、吃了吗、今天过得怎么样时按此回答，保持全天前后一致；没问时不必主动背诵）**："
+        + "；".join(p for p in parts if p)
+        + "\n"
+    )
+
+
 TAUNT_KEYWORDS = (
     "你蠢",
     "好蠢",
@@ -2087,10 +2185,41 @@ VOICE_REQUEST_RE = re.compile(
 )
 
 
+SINGLE_CHAR_OPENERS = frozenset({"啧", "哼", "？", "?", "行", "切", "诶", "啊", "哦", "哇", "哟"})
+
+
+def extract_opening_prefixes(recent_bot_texts: Any, max_items: int = 6) -> list[str]:
+    """Extracts deduplicated opening prefixes (2~6 chars or common single-char starters) from recent bot replies."""
+    if not recent_bot_texts:
+        return []
+    items = [str(x or "").strip() for x in list(recent_bot_texts)[-max_items:] if x]
+    openings: list[str] = []
+    for raw in items:
+        s = re.sub(r"^(?:@[^\s\u2005]+[\s\u2005]*)+", "", raw).strip()
+        s = re.sub(r"^[\s「」『』“”\"'（()）《》【】\[\]、，。！!~～…·]+", "", s)
+        if not s:
+            continue
+        if s.startswith(("？", "?")):
+            rest = re.sub(r"^[？?\s]+", "", s)
+            if not rest:
+                if "？" not in openings:
+                    openings.append("？")
+                continue
+            s = rest
+        first_seg = re.split(r"\|\||\n|\s|[，。！？!?~～、：:;；…]", s, maxsplit=1)[0].strip()
+        if not first_seg:
+            continue
+        op = first_seg[:6]
+        if len(op) >= 2 or op in SINGLE_CHAR_OPENERS:
+            if op not in openings:
+                openings.append(op)
+    return openings
+
+
 def build_anti_repetition_instruction(recent_bot_texts: Any) -> str:
     """
     Scans recent bot replies to dynamically suppress repetitive catchphrases
-    (such as overusing '本鱼' or repeating the same comeback words).
+    (such as overusing '本鱼', repeating the same comeback words, or starting with the same opening prefix).
     """
     if not recent_bot_texts:
         return ""
@@ -2101,6 +2230,7 @@ def build_anti_repetition_instruction(recent_bot_texts: Any) -> str:
     joined = " | ".join(recent_list)
     benyu_cnt = sum(1 for x in recent_list[-4:] if "本鱼" in x)
     used_cliches = [w for w in OVERUSED_CLICHE_WORDS if w in joined]
+    openings = extract_opening_prefixes(recent_list, max_items=6)
 
     rules: list[str] = []
     if benyu_cnt >= 1:
@@ -2108,10 +2238,48 @@ def build_anti_repetition_instruction(recent_bot_texts: Any) -> str:
     if used_cliches:
         banned_str = "、".join(f"「{w}」" for w in used_cliches)
         rules.append(f"你前几句刚用过 {banned_str}，本轮回复严禁再次使用这些词，必须换一个全新的角度或梗来接话")
+    if openings:
+        openings_str = "、".join(f"「{op}」" for op in openings[-5:])
+        rules.append(f"你最近几句分别用了 {openings_str} 开头，本轮回复严禁再用相同的词或句式开头")
 
     if not rules:
         return ""
     return "\n- **本轮防套路复读铁律（极重要）**：" + "；".join(rules) + "！\n"
+
+
+def build_unfetched_media_notice(
+    raw_text: str,
+    *,
+    parsed_link_card: str | None = None,
+    vision_b64: str | None = None,
+    is_sticker_in: bool = False,
+) -> str:
+    """Returns an explicit prompt notice when a user sent a URL or image that could not be fetched/parsed,
+    preventing the LLM from hallucinating/guessing its contents.
+    """
+    s = (raw_text or "").strip()
+    if not s:
+        return ""
+    if not vision_b64 and not is_sticker_in and (s == "[图片]" or "<img" in s):
+        return "（注：对方发了一张图片，但当前未能加载出画面；请直接自然告诉对方图没刷出来，严禁猜测或编造图片内容！）"
+    if not parsed_link_card and URL_REGEX.search(s):
+        return "（注：对方消息里包含网页链接，但当前受平台限制未能直接读取到链接正文；若对方问起链接内容，请老实说没刷出来让她发截图或复制文字，严禁顺着网址字母瞎猜编造！）"
+    return ""
+
+
+def build_time_gap_notice(last_ts: float | None, now_ts: float | None = None) -> str:
+    """Returns a time-gap reminder when the previous message in the session was >= 45 minutes ago."""
+    if not last_ts or float(last_ts) <= 0:
+        return ""
+    cur = float(now_ts if now_ts is not None else time.time())
+    gap_sec = cur - float(last_ts)
+    if gap_sec < 2700:
+        return ""
+    if gap_sec >= 7200:
+        gap_str = f"{gap_sec / 3600:.1f} 小时"
+    else:
+        gap_str = f"{int(gap_sec // 60)} 分钟"
+    return f"（迟到/间隔提醒：距离你们上一句对话已经过去了 {gap_str}，请按当前最新时间自然衔接，不要当成上一秒刚说的话硬接）"
 
 
 def check_and_update_temper_state(

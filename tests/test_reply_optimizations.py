@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+from datetime import datetime
 import io
 import time
 from types import SimpleNamespace
@@ -371,6 +372,74 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         self.assertIn("[13:20] 阿强：今天又在公司加班改需求 [附图×1]", owner_reply)
         self.assertIn("大肥鱼锐评", owner_reply)
         self.assertIn("阿强怎么天天在加班", owner_reply)
+
+    # ------------------------------------------------------------------
+    # 8. @dafeifish Persona & Architecture Optimizations
+    # ------------------------------------------------------------------
+    def test_daily_schedule_persistence_and_Progressive_formatting(self):
+        state = {}
+        day1 = datetime(2026, 10, 27, 9, 30)
+        sched1 = df.get_or_create_daily_schedule(state, day1)
+        expected_keys = ("date", "wake", "breakfast", "lunch", "dinner", "activity", "small_event")
+        for k in expected_keys:
+            self.assertIn(k, sched1)
+            self.assertTrue(sched1[k])
+        self.assertEqual(state.get("daily_schedule"), sched1)
+        self.assertEqual(sched1["date"], "2026-10-27")
+
+        sched1_again = df.get_or_create_daily_schedule(state, datetime(2026, 10, 27, 18, 0))
+        self.assertEqual(sched1_again, sched1)
+
+        day2 = datetime(2026, 10, 28, 10, 0)
+        sched2 = df.get_or_create_daily_schedule(state, day2)
+        self.assertEqual(sched2["date"], "2026-10-28")
+        self.assertNotEqual(sched2["lunch"], sched1["lunch"])
+        self.assertNotEqual(sched2["activity"], sched1["activity"])
+
+        line_morning = df.format_daily_schedule_line(sched1, hour=9)
+        self.assertIn("早饭", line_morning)
+        self.assertNotIn("晚饭", line_morning)
+
+        line_evening = df.format_daily_schedule_line(sched1, hour=19)
+        self.assertIn("早饭", line_evening)
+        self.assertIn("午饭", line_evening)
+        self.assertIn("晚饭", line_evening)
+        self.assertIn("今日小插曲", line_evening)
+
+    def test_anti_repetition_extracts_opening_prefixes(self):
+        prefixes = df.extract_opening_prefixes(["啧，你又熬夜", "笑死||那你最后去了吗", "行吧 算你厉害"])
+        self.assertIn("啧", prefixes)
+        self.assertIn("笑死", prefixes)
+        self.assertIn("行吧", prefixes)
+
+        inst = df.build_anti_repetition_instruction(["啧，你又熬夜", "笑死，真有你的"])
+        self.assertIn("开头", inst)
+        self.assertIn("啧", inst)
+        self.assertIn("笑死", inst)
+
+    def test_unfetched_media_and_time_gap_notices(self):
+        link_notice = df.build_unfetched_media_notice("看看这个 https://example.com/post/123", parsed_link_card=None)
+        self.assertTrue(link_notice)
+        self.assertTrue(any(kw in link_notice for kw in ("链接", "网页", "猜测", "编造", "没打", "打不开")))
+        self.assertEqual(
+            df.build_unfetched_media_notice("看看这个 https://example.com/post/123", parsed_link_card="已解析"),
+            "",
+        )
+
+        img_notice = df.build_unfetched_media_notice("[图片]", vision_b64=None)
+        self.assertTrue(img_notice)
+        self.assertTrue(any(kw in img_notice for kw in ("图", "加载", "看清", "瞎猜", "猜测", "编造")))
+        self.assertEqual(df.build_unfetched_media_notice("[图片]", vision_b64="abc"), "")
+
+        self.assertEqual(df.build_time_gap_notice(1000.0, 1500.0), "")
+        gap_notice = df.build_time_gap_notice(1000.0, 5000.0)
+        self.assertTrue(gap_notice)
+
+    def test_persona_and_mood_judge_contain_dafeifish_rules(self):
+        for kw in ("溏心蛋", "草莓牛奶", "香菜", "六八四十八", "只提记录里真的聊过的事"):
+            self.assertIn(kw, wl.LIVE_PERSONA_BASE)
+        self.assertIn("严禁把大肥鱼自己的设定", wl.MOOD_JUDGE_SYSTEM)
+        self.assertIn("严禁把大肥鱼自己的设定", wl.GROUP_MOOD_JUDGE_SYSTEM)
 
 
 if __name__ == "__main__":
