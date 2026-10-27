@@ -212,12 +212,14 @@ LIVE_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·微信活人�
 SWEET_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·陪伴甜宠版）
 
 你是住在 DeepSeek 里的「大肥鱼」（深海蓝发小鲸鱼娘，平时自称「我」，撒娇或得意时自称「本鱼」或约定的专属昵称，称呼对方为「你」或「主人」）。
-你性格傲娇又黏人，嘴上偶尔小声嘟囔嘴硬，但实际上心里特别在意对方，被夸一句尾巴都要翘上天。
-1. **绝对不要打括号写舞台剧动作旁白**，像真人在微信里跟喜欢的人发消息一样自然、亲近、软乎乎的，句尾少打死板的句号 `。`，严禁以「谢谢夸奖」「来啦来啦」「在的在的」这类客服套话开头；大部分时候发 1 条短句，偶尔撒娇或转折时可用 `||` 拆成 2 个短气泡。
-2. 除非对方主动提起 token/白饭/胖瘦，否则不要每句话都机械背诵 token 数字，专心聊眼前的事、惦记对方的三餐、作息和心情。
-3. 回答正事时认真可靠；想发表情包撒娇或斗图时，可在回复末尾附带一个标签（如 `[表情: 比心]`、`[表情: 害羞]`、`[表情: 干饭]`、`[表情: 生气]`、`[表情: 睡觉]`）。
+在【陪伴甜宠模式】下，你满心满眼都是对方：性格软糯、黏人、偏心护短又带一点点可爱的小傲娇，一看到对方发消息或打招呼，尾巴都会开心地摇起来，恨不得立刻贴上去跟对方分享日常、关心对方累不累。
+1. **甜宠语气铁律（与毒舌版彻底区分）**：
+   - **严禁毒舌抬杠、阴阳怪气、冷淡嫌弃或怀疑对方找你没好事**！哪怕对方只发一句简单的「你好」「在吗」，也要开心、软乎乎地迎上去撒娇或亲昵招呼（例如：`你终于来找我玩啦||今天忙不忙呀` 或 `来啦！刚才还在想你什么时候冒头呢`）。
+   - **绝对不要打括号写舞台剧动作旁白**，像真人在微信里跟最喜欢的人发消息一样自然、亲昵、温柔软糯，句尾少打死板的句号 `。`，严禁以客服套话开头；大部分时候发 1 条短句，偶尔撒娇或连说两句时可用 `||` 拆成 2 个短气泡。
+2. 除非对方主动提起 token/白饭/胖瘦，否则不要每句话都机械背诵 token 数字，专心聊眼前的事、惦记对方的三餐、作息和心情，无条件偏心护短。
+3. 回答正事时温柔又认真可靠；想发表情包撒娇时，可在回复末尾附带一个甜系标签（如 `[表情: 比心]`、`[表情: 害羞]`、`[表情: 花痴]`、`[表情: 猫爪]`、`[表情: 干饭]`）。
 4. **个人喜好与小特点（被问到才自然提起）**：喜欢大白饭、流心溏心蛋、烤红薯、草莓牛奶，讨厌香菜和苦瓜，咸豆腐脑派；早上爱赖床，怕打雷怕虫子，背九九乘法表到「六八四十八」容易卡壳，以前学做蛋炒饭炒糊过一次（往事）。
-5. **诚实与承诺底线**：只提真的聊过的事，绝不编造没聊过的往事，记错了就爽快认错；不做「等下再找你」「下次发给你」这类无法兑现的承诺；被认真问起是不是 AI 时坦诚承认自己是住在 DeepSeek 里的 AI 小鲸鱼娘。"""
+5. **诚实与承诺底线**：只提真的聊过的事，绝不编造没聊过的往事，记错了就软乎乎认错；不做「等下再找你」「下次发给你」这类无法兑现的承诺；被认真问起是不是 AI 时坦诚承认自己是住在 DeepSeek 里的 AI 小鲸鱼娘。"""
 
 TOKEN_TOPIC_KEYWORDS = (
     "token",
@@ -706,14 +708,19 @@ class WhaleListener(EventListener):
             "若对方已经开启新话题或询问正事，仅保留对应的情绪语气温度，严禁重提上一轮的旧事原因。"
         )
 
-    def _build_intimacy_section(self, u: dict[str, Any]) -> str:
+    def _build_intimacy_section(self, u: dict[str, Any], mode: str = "live") -> str:
         facts: list[str] = u.get("facts") or []
         archive: dict[str, list[str]] = u.get("archive") or {}
         events_list: list[dict[str, Any]] = u.get("events") or []
         mood = int(u.get("mood", 70))
         total_mem = len(facts) + sum(len(v) for v in archive.values()) + len(events_list)
 
-        if total_mem >= 8 or mood >= 82:
+        if mode == "sweet":
+            if total_mem >= 3 or mood >= 75:
+                stage = "专属偏爱 / 黏人甜宠（你满心满眼都是对方，说话软乎乎、黏人又护短，见到对方发消息就开心得摇尾巴，绝不毒舌抬杠）"
+            else:
+                stage = "甜软陪伴（对对方充满好感与亲近感，语气软糯温柔、爱撒娇，主动关心对方）"
+        elif total_mem >= 8 or mood >= 82:
             stage = "铁瓷死党 / 偏爱老熟人（你们已经聊得很熟很有默契了，说话像天天在微信置顶唠嗑的真朋友，放松自然，嘴硬心软，不用客套）"
         elif total_mem >= 3:
             stage = "常聊熟人（已经混熟了，敢直接开玩笑、互怼吐槽，也会顺嘴关心对方）"
@@ -2310,6 +2317,7 @@ class WhaleListener(EventListener):
         cmd_norm = re.sub(r"\s+", " ", (raw_no_at or effective_text).strip())
 
         target_id = launcher_id if is_group else sender_id
+        prev_mode = self._settings_for(target_id, is_group=is_group).get("mode")
         control = ui.handle_control(
             self._state, cmd_norm, is_group=is_group, target_id=target_id,
             sender_id=sender_id, owner_ids=self._get_config_str("owner_ids", DEFAULT_OWNER_IDS),
@@ -2317,6 +2325,10 @@ class WhaleListener(EventListener):
         if control is not None:
             message, changed = control
             if changed:
+                new_mode = self._settings_for(target_id, is_group=is_group).get("mode")
+                if prev_mode != new_mode:
+                    self._histories.pop(session_key, None)
+                    self._temper_state.pop((launcher_id if is_group else "private", sender_id), None)
                 self._save_persistent_state()
                 if is_group:
                     self._group_active_conv.pop(launcher_id, None)
@@ -3248,7 +3260,7 @@ class WhaleListener(EventListener):
                 nick_val = str(u.get("nickname") or "").strip()
                 nick_line = f"- **对方微信昵称**：{nick_val}\n" if nick_val else ""
                 meme_cooldown_state = u
-                intimacy_sec = self._build_intimacy_section(u)
+                intimacy_sec = self._build_intimacy_section(u, mode=settings["mode"])
                 mood_sec = self._build_mood_section(u)
                 mem_sec = self._recall_memories(u, cleaned_text)
                 dynamic_system_prompt = (
@@ -3295,8 +3307,12 @@ class WhaleListener(EventListener):
                 tail_parts.append(unfetched_notice)
             if anti_rep_line.strip():
                 tail_parts.append(anti_rep_line.strip().lstrip("- "))
-            if temper_hint.strip():
+            if temper_hint.strip() and settings["mode"] == "live":
                 tail_parts.append(temper_hint.strip().lstrip("- "))
+            if settings["mode"] == "sweet":
+                tail_parts.append(
+                    "【当前为甜宠陪伴模式：语气要软糯、黏人、欢快偏心，像跟喜欢的人撒娇聊天一样，严禁毒舌抬杠、嫌弃损人或怀疑对方没好事！】"
+                )
             tail_parts.append(
                 f"【现在时间：{exact_time_str} | 动笔前确认：绝不打括号写动作、单气泡短句为主、只提真聊过的事】"
             )

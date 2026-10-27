@@ -85,7 +85,8 @@ def effective_settings(state: dict[str, Any], scope: str) -> dict[str, Any]:
     settings = {key: state.get(key, default) for key, default in DEFAULTS.items()}
     overrides = (state.get("conversation_settings") or {}).get(scope) or {}
     settings.update(overrides)
-    settings["profile"] = overrides.get("profile", "自定义" if overrides else "沿用原设置")
+    has_profile_override = any(k in overrides for k in { key for p in PROFILES.values() for key in p })
+    settings["profile"] = overrides.get("profile", "自定义" if has_profile_override else "沿用原设置")
     return settings
 
 
@@ -141,17 +142,20 @@ def settings_text(state: dict[str, Any], scope: str, *, advanced: bool = False) 
     active = cfg["enabled"] and (not is_group or scope[6:] in state.get("enabled_groups", []))
     def flag(value: bool) -> str:
         return "开" if value else "关"
-    lines = [f"⚙️ {'本群' if is_group else '当前私聊'}设置", f"回应：{flag(active)} | 档位：{cfg['profile']}"]
+    mode_label = "活人" if cfg["mode"] == "live" else "甜宠"
+    lines = [
+        f"⚙️ {'本群' if is_group else '当前私聊'}设置",
+        f"回应：{flag(active)} | 档位：{cfg['profile']} | 人格：{mode_label}",
+    ]
     if is_group:
         lines.append(f"主动插话：{flag(cfg['group_interject_enabled'])} | 连续接话：{flag(cfg['continuation_enabled'])} | 复读：{flag(cfg['repeat_enabled'])}")
     else:
         lines.append(f"主动搭话：{flag(cfg['speak_up_enabled'])}")
     if not advanced:
-        lines.extend(["切换：大肥鱼 设置 安静 / 均衡 / 热闹", "更多：大肥鱼 设置 高级"])
+        lines.extend(["切换：大肥鱼 设置 安静 / 均衡 / 热闹 | 大肥鱼 切换模式", "更多：大肥鱼 设置 高级"])
         if not active:
             lines.append("启用：大肥鱼 设置 开启")
         return "\n".join(lines)
-    lines.append(f"人格：{'活人' if cfg['mode'] == 'live' else '甜宠'}")
     for item in SWITCHES:
         if item.scope == "global":
             lines.append(f"{item.label}：{flag(state.get(item.key, False))}（全局，仅主人私聊修改）")

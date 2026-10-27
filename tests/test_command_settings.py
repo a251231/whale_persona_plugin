@@ -246,14 +246,18 @@ class CommandSettingsRegressions(harness.ListenerHarness):
         self.assertTrue(loaded["voice_reply_enabled"])
 
     async def test_persona_aliases_and_toggle_mode_commands(self):
-        await self.ask("大肥鱼 设置 人格 甜宠")
-        self.assertIn("人格：甜宠", self.reply(await self.ask("大肥鱼 设置 高级")))
-        await self.ask("大肥鱼 设置 人格 毒舌")
-        self.assertIn("人格：活人", self.reply(await self.ask("大肥鱼 设置 高级")))
-        await self.ask("大肥鱼 切换模式")
-        self.assertIn("人格：甜宠", self.reply(await self.ask("大肥鱼 设置 高级")))
-        await self.ask("大肥鱼 切换人格")
-        self.assertIn("人格：活人", self.reply(await self.ask("大肥鱼 设置 高级")))
+        session_key = "person:wxid_test:wxid_test"
+        self.listener._histories[session_key] = [(time.time(), "assistant", "毒舌旧回复")]
+        res1 = self.reply(await self.ask("大肥鱼 设置 人格 甜宠"))
+        self.assertIn("人格：甜宠", res1)
+        self.assertIn("档位：沿用原设置", res1)
+        self.assertNotIn(session_key, self.listener._histories)
+        res2 = self.reply(await self.ask("大肥鱼 设置 人格 毒舌"))
+        self.assertIn("人格：活人", res2)
+        res3 = self.reply(await self.ask("大肥鱼 切换模式"))
+        self.assertIn("人格：甜宠", res3)
+        res4 = self.reply(await self.ask("大肥鱼 切换人格"))
+        self.assertIn("人格：活人", res4)
 
 
 if __name__ == "__main__":
