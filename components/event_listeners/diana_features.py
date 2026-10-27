@@ -2184,6 +2184,117 @@ async def generate_moment_comment(
     return cleaned[:48], used_tokens
 
 
+async def fetch_wcf_friend_requests() -> tuple[bool, dict[str, Any], str]:
+    """Queries pending and recently processed WeChat 4.1 friend requests via WCF V4 Gateway (GET /api/friend_requests).
+    Returns (ok, data_dict, error_message).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(f"{WCF_GATEWAY_URL}/api/friend_requests")
+            try:
+                raw_json = r.json()
+                data = raw_json if isinstance(raw_json, dict) else {}
+            except Exception:
+                data = {}
+            if r.status_code == 200 and data.get("status") == 0:
+                return True, data, ""
+            return False, data, str(data.get("message") or f"HTTP {r.status_code}")
+    except Exception as e:
+        logger.debug("WCF fetch_wcf_friend_requests skipped or unavailable: %s", e)
+        return False, {}, "微信网关暂未连接或不支持好友申请查询"
+
+
+async def accept_wcf_friend_request(request_id: str) -> tuple[bool, dict[str, Any], str]:
+    """Accepts a pending WeChat 4.1 friend request by request_id (fr_...) via POST /api/accept_friend.
+    Returns (ok, data_dict, error_message).
+    """
+    req_str = str(request_id or "").strip()
+    if not re.fullmatch(r"^fr_[0-9a-f]{32}$", req_str):
+        return False, {}, "无效的好友申请 ID（格式应为 fr_ 加 32 位十六进制字符）"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(
+                f"{WCF_GATEWAY_URL}/api/accept_friend",
+                json={"request_id": req_str},
+            )
+            try:
+                raw_json = r.json()
+                data = raw_json if isinstance(raw_json, dict) else {}
+            except Exception:
+                data = {}
+            ok = r.status_code == 200 and data.get("status") == 0 and bool(data.get("accepted"))
+            return ok, data, str(data.get("message") or "")
+    except Exception as e:
+        logger.debug("WCF accept_wcf_friend_request failed: %s", e)
+        return False, {}, "微信网关暂未连接或通过好友申请失败"
+
+
+async def set_wcf_friend_auto_accept(
+    enabled: bool,
+    keywords: list[str] | None = None,
+) -> bool:
+    """Syncs the automatic friend request acceptance setting and optional verification keywords to WCF Gateway."""
+    payload: dict[str, Any] = {"enabled": bool(enabled)}
+    if keywords is not None:
+        payload["keywords"] = [str(k).strip()[:128] for k in keywords if str(k).strip()][:32]
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(f"{WCF_GATEWAY_URL}/api/friend_auto_accept", json=payload)
+            return r.status_code == 200
+    except Exception as e:
+        logger.debug("WCF set_wcf_friend_auto_accept skipped: %s", e)
+        return False
+
+
+def format_wcf_friend_requests_digest(
+    data: dict[str, Any],
+    *,
+    local_enabled: bool = True,
+    local_keywords: list[str] | None = None,
+    max_items: int = 8,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Formats friend requests and auto-accept settings into a readable card for the owner."""
+    reqs_raw = data.get("requests") if isinstance(data, dict) else []
+    reqs = [r for r in (reqs_raw or []) if isinstance(r, dict)][:max_items]
+    kw_list = local_keywords if local_keywords is not None else (data.get("keywords") if isinstance(data, dict) else [])
+    kw_clean = [str(k).strip() for k in (kw_list or []) if str(k).strip()]
+    kw_str = "、".join(kw_clean) if kw_clean else "无限制（收到申请自动通过）"
+    status_str = "开启 ✅" if local_enabled else "关闭 ⏸️"
+
+    lines = [
+        "🤝 【大肥鱼 · 微信好友申请管理】",
+        f"• 自动同意好友：{status_str}",
+        f"• 验证词过滤：{kw_str}",
+    ]
+    if not reqs:
+        lines.append("• 近期申请记录：暂无待处理或近期收到的好友申请")
+    else:
+        lines.append(f"• 近期申请记录（共 {len(reqs)} 条）：")
+        status_map = {
+            "pending": "⏳待处理",
+            "accepted": "✅已通过",
+            "failed": "❌失败",
+            "rejected": "🚫已忽略",
+        }
+        for idx, item in enumerate(reqs, 1):
+            st = status_map.get(str(item.get("status") or "pending"), str(item.get("status") or "未知"))
+            nick = str(item.get("nickname") or "未知昵称").strip()
+            wxid = str(item.get("sender_id") or "").strip()
+            verif = re.sub(r"\s+", " ", str(item.get("verification") or "").strip())[:50] or "无验证留言"
+            req_id = str(item.get("request_id") or "").strip()
+            wxid_part = f" ({wxid})" if wxid else ""
+            lines.append(f"  {idx}. [{st}] {nick}{wxid_part}｜留言：「{verif}」｜ID: {req_id[:12]}...")
+
+    lines.extend([
+        "",
+        "💡 主人指令：",
+        "• 开关自动通过：大肥鱼 设置 自动同意好友 开启/关闭",
+        "• 手动同意申请：大肥鱼 同意好友 <序号或申请ID>",
+        "• 设置验证关键词：大肥鱼 好友验证词 <关键词1 关键词2>（发「大肥鱼 好友验证词 清空」恢复无限制）",
+    ])
+    return "\n".join(lines), reqs
+
+
 # ==============================================================================
 # 9. 反套路活人感增强（动态口癖降温 + 炸毛赌气与哄好状态机）与微信 4.1 原生语音合成 (TTS)
 # ==============================================================================

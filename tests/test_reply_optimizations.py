@@ -619,6 +619,98 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         self.assertIn("今晚自己烤了蛋挞，大成功！", sys_prompt)
         self.assertIn("这蛋挞烤得焦糖色绝了", sys_prompt)
 
+    async def test_friend_auto_accept_and_owner_friend_request_commands(self):
+        prior = self.listener._get_config_str
+        self.listener._get_config_str = lambda key, default: "wxid_owner" if key == "owner_ids" else prior(key, default)
+
+        req_id_1 = "fr_" + "a" * 32
+        req_id_2 = "fr_" + "b" * 32
+        mock_reqs_data = {
+            "status": 0,
+            "auto_accept": True,
+            "keywords": [],
+            "requests": [
+                {
+                    "request_id": req_id_1,
+                    "sender_id": "wxid_new_friend_1",
+                    "nickname": "深海小星",
+                    "verification": "你好大肥鱼，想加你好友",
+                    "scene": 3,
+                    "opcode": 2,
+                    "status": "pending",
+                },
+                {
+                    "request_id": req_id_2,
+                    "sender_id": "wxid_new_friend_2",
+                    "nickname": "路人乙",
+                    "verification": "推销广告",
+                    "scene": 3,
+                    "opcode": 2,
+                    "status": "pending",
+                },
+            ],
+        }
+        self._patch(df, "fetch_wcf_friend_requests", AsyncMock(return_value=(True, mock_reqs_data, "")))
+        mock_accept = self._patch(
+            df,
+            "accept_wcf_friend_request",
+            AsyncMock(
+                return_value=(
+                    True,
+                    {
+                        "status": 0,
+                        "accepted": True,
+                        "request_id": req_id_1,
+                        "sender_id": "wxid_new_friend_1",
+                        "nickname": "深海小星",
+                    },
+                    "ok",
+                )
+            ),
+        )
+        mock_set_cfg = self._patch(df, "set_wcf_friend_auto_accept", AsyncMock(return_value=True))
+        mock_proactive = self._patch(self.listener, "_send_proactive_wechat", AsyncMock(return_value=True))
+
+        # 1. Owner sets verification keyword "大肥鱼"
+        ctx_kw = await self.ask("大肥鱼 好友验证词 大肥鱼", group=False, room="wxid_owner", sender="wxid_owner")
+        kw_txt = "\n".join(getattr(c, "text", "") for c in (ctx_kw.event.reply_message_chain or []))
+        self.assertIn("已设置好友申请验证关键词：大肥鱼", kw_txt)
+        mock_set_cfg.assert_awaited_once_with(True, ["大肥鱼"])
+
+        # 2. Background check only auto-accepts req_id_1 (which contains "大肥鱼"), greets wxid_new_friend_1, and records fact
+        processed = await self.listener._check_and_process_friend_requests()
+        self.assertEqual(processed, 1)
+        mock_accept.assert_awaited_once_with(req_id_1)
+        mock_proactive.assert_awaited_once()
+        self.assertEqual(mock_proactive.await_args.args[0], "wxid_new_friend_1")
+        self.assertIn("大肥鱼", mock_proactive.await_args.args[1])
+        u_new = self.listener._state["users"].get("wxid_new_friend_1") or {}
+        self.assertTrue(u_new.get("hasPrivateChat"))
+        self.assertTrue(any("深海小星" in f for f in (u_new.get("facts") or [])))
+
+        # 3. Owner views friend requests and manually accepts #2
+        ctx_list = await self.ask("大肥鱼 好友申请", group=False, room="wxid_owner", sender="wxid_owner")
+        list_txt = "\n".join(getattr(c, "text", "") for c in (ctx_list.event.reply_message_chain or []))
+        self.assertIn("深海小星", list_txt)
+        self.assertIn("路人乙", list_txt)
+
+        mock_accept.reset_mock()
+        mock_accept.return_value = (
+            True,
+            {
+                "status": 0,
+                "accepted": True,
+                "request_id": req_id_2,
+                "sender_id": "wxid_new_friend_2",
+                "nickname": "路人乙",
+            },
+            "ok",
+        )
+        ctx_acc = await self.ask("大肥鱼 同意好友 2", group=False, room="wxid_owner", sender="wxid_owner")
+        acc_txt = "\n".join(getattr(c, "text", "") for c in (ctx_acc.event.reply_message_chain or []))
+        mock_accept.assert_awaited_once_with(req_id_2)
+        self.assertIn("已通过「路人乙」的好友申请", acc_txt)
+
 
 if __name__ == "__main__":
     unittest.main()

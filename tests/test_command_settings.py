@@ -151,6 +151,17 @@ class CommandSettingsRegressions(harness.ListenerHarness):
         with patch.object(wl.os.path, "exists", return_value=False):
             state = wl.WhaleListener._load_persistent_state(self.listener)
         self.assertFalse(state["auto_moments_enabled"])
+        self.assertTrue(state["auto_accept_friend_enabled"])
+
+    async def test_owner_can_toggle_auto_accept_friend_in_private(self):
+        prior = self.listener._get_config_str
+        self.listener._get_config_str = lambda key, default: "wxid_test" if key == "owner_ids" else prior(key, default)
+        res_off = self.reply(await self.ask("大肥鱼 关闭自动同意好友"))
+        self.assertFalse(self.listener._state["auto_accept_friend_enabled"])
+        self.assertIn("自动同意好友关闭", res_off)
+        res_on = self.reply(await self.ask("大肥鱼 设置 自动加好友 开启"))
+        self.assertTrue(self.listener._state["auto_accept_friend_enabled"])
+        self.assertIn("自动同意好友开启", res_on)
 
     async def test_lively_profile_judges_after_four_plain_messages(self):
         judge = self._patch(df, "evaluate_group_interject", AsyncMock(return_value=(False, "", "", 0)))

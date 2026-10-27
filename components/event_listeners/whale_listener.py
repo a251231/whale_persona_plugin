@@ -460,6 +460,7 @@ class WhaleListener(EventListener):
         self._speak_up_task: asyncio.Task[Any] | None = None
         self._auto_moments_task: asyncio.Task[Any] | None = None
         self._moments_interact_task: asyncio.Task[Any] | None = None
+        self._friend_accept_task: asyncio.Task[Any] | None = None
         self._memes_b64: dict[str, str] = self._load_bundled_memes()
         self._group_repeat_tracker: dict[str, dict[str, Any]] = {}
         self._group_msg_buffers: dict[str, deque] = {}
@@ -468,6 +469,7 @@ class WhaleListener(EventListener):
         self._group_recent_images: dict[str, dict[str, Any]] = {}
         self._private_recent_images: dict[str, dict[str, Any]] = {}
         self._owner_moments_cache: dict[str, list[dict[str, Any]]] = {}
+        self._owner_friend_requests_cache: dict[str, list[dict[str, Any]]] = {}
         self._chat_moment_check_ts: dict[str, float] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_lock_users: dict[str, int] = {}
@@ -494,7 +496,8 @@ class WhaleListener(EventListener):
             self._histories, self._group_msg_buffers, self._group_recent_images,
             self._private_recent_images, self._group_active_conv, self._group_repeat_tracker,
             self._group_interject_meta, self._group_mute_until, self._last_multi_bubble,
-            self._recent_bot_sent_texts, self._owner_moments_cache, self._chat_moment_check_ts,
+            self._recent_bot_sent_texts, self._owner_moments_cache, self._owner_friend_requests_cache,
+            self._chat_moment_check_ts,
         ):
             cache.pop(session_key, None)
         self._user_docs.pop(doc_key, None)
@@ -515,6 +518,10 @@ class WhaleListener(EventListener):
         self._moments_interact_task = contextvars.Context().run(
             asyncio.create_task,
             self._moments_auto_interact_loop(),
+        )
+        self._friend_accept_task = contextvars.Context().run(
+            asyncio.create_task,
+            self._friend_auto_accept_loop(),
         )
 
         @self.handler(events.PersonNormalMessageReceived)
@@ -571,6 +578,9 @@ class WhaleListener(EventListener):
                         data.setdefault("web_search_enabled", True)
                         data.setdefault("voice_reply_enabled", True)
                         data.setdefault("auto_moments_enabled", True)
+                        data.setdefault("auto_accept_friend_enabled", True)
+                        data.setdefault("friend_verify_keywords", [])
+                        data.setdefault("accepted_friend_requests", {})
                         data.setdefault("interacted_moments", {})
                         users_map = data.get("users") or {}
                         for uid in list(users_map.keys()):
@@ -605,6 +615,9 @@ class WhaleListener(EventListener):
             "web_search_enabled": True,
             "voice_reply_enabled": True,
             "auto_moments_enabled": False,
+            "auto_accept_friend_enabled": True,
+            "friend_verify_keywords": [],
+            "accepted_friend_requests": {},
             "moments": [],
             "interacted_moments": {},
             "token_stats": {"date": "", "today_tokens": 0, "last_tokens": 0, "total_tokens": 0},
@@ -1347,6 +1360,99 @@ class WhaleListener(EventListener):
                 res_meme[1] if res_meme else None,
             )
         return f"⚠️ 评论 #{index_num}「{nick}」的朋友圈未成功（{msg or status_code}），拟好的评论是：「{comment_txt}」", None
+
+    async def _handle_owner_friend_request_cmd(
+        self,
+        *,
+        is_group: bool,
+        sender_id: str,
+        session_key: str,
+        action: str,
+        arg: str = "",
+    ) -> tuple[str, str | None]:
+        """Handles owner-only commands for viewing, accepting, or configuring WeChat 4.1 friend requests."""
+        if is_group:
+            return "💡 群聊里不能管理好友申请哦，请由主人在私聊中使用~", None
+
+        owner_ids_raw = self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip()
+        owners = set(re.split(r"[,，;；\s]+", owner_ids_raw)) - {""}
+        if owners and sender_id not in owners:
+            return "哼，只有主人才能管理大肥鱼的微信好友申请哦~", None
+
+        local_enabled = bool(self._state.get("auto_accept_friend_enabled", True))
+        local_kw = list(self._state.get("friend_verify_keywords") or [])
+
+        if action == "keywords":
+            raw_arg = (arg or "").strip()
+            if raw_arg in ("清空", "无", "关闭", "全部", "clear", "none"):
+                new_kw: list[str] = []
+            else:
+                new_kw = [w.strip()[:64] for w in re.split(r"[,，;；\s]+", raw_arg) if w.strip()][:16]
+            async with self._state_lock:
+                self._state["friend_verify_keywords"] = new_kw
+                self._save_persistent_state()
+            await df.set_wcf_friend_auto_accept(local_enabled, new_kw)
+            if not new_kw:
+                return "✅ 已清空好友验证关键词过滤，当前所有入站好友申请将自动通过（需保持自动同意好友开启）。", None
+            return f"✅ 已设置好友申请验证关键词：{'、'.join(new_kw)}（仅验证留言包含任一关键词时自动通过）。", None
+
+        if action == "list":
+            ok, data, err_msg = await df.fetch_wcf_friend_requests()
+            if not ok and not data:
+                return (
+                    f"🤝 【大肥鱼 · 微信好友申请管理】\n"
+                    f"• 自动同意好友：{'开启 ✅' if local_enabled else '关闭 ⏸️'}\n"
+                    f"• 验证词过滤：{'、'.join(local_kw) if local_kw else '无限制（收到申请自动通过）'}\n"
+                    f"• 网关状态：{err_msg or '暂未连接'}",
+                    None,
+                )
+            digest, reqs = df.format_wcf_friend_requests_digest(
+                data, local_enabled=local_enabled, local_keywords=local_kw
+            )
+            self._owner_friend_requests_cache[session_key] = reqs
+            return digest, None
+
+        # action == "accept"
+        target_arg = (arg or "").strip()
+        req_id = ""
+        target_row: dict[str, Any] = {}
+        cached_reqs = self._owner_friend_requests_cache.get(session_key) or []
+        if not cached_reqs:
+            ok_f, f_data, _ = await df.fetch_wcf_friend_requests()
+            if ok_f and isinstance(f_data, dict):
+                cached_reqs = [r for r in (f_data.get("requests") or []) if isinstance(r, dict)][:8]
+                self._owner_friend_requests_cache[session_key] = cached_reqs
+
+        if target_arg.isdigit():
+            idx = int(target_arg)
+            if 1 <= idx <= len(cached_reqs):
+                target_row = cached_reqs[idx - 1]
+                req_id = str(target_row.get("request_id") or "").strip()
+            else:
+                return f"⚠️ 当前共有 {len(cached_reqs)} 条好友申请记录，请先发「大肥鱼 好友申请」确认序号后再试~", None
+        else:
+            req_id = target_arg
+            for r in cached_reqs:
+                if str(r.get("request_id") or "").startswith(req_id):
+                    req_id = str(r.get("request_id") or "")
+                    target_row = r
+                    break
+
+        if not req_id:
+            return "⚠️ 未找到对应的好友申请 ID，请先发送「大肥鱼 好友申请」查看列表~", None
+
+        ok, acc_data, err_msg = await df.accept_wcf_friend_request(req_id)
+        nick = str(acc_data.get("nickname") or target_row.get("nickname") or "新好友").strip()
+        f_wxid = str(acc_data.get("sender_id") or target_row.get("sender_id") or "").strip()
+        verif = str(target_row.get("verification") or "").strip()
+        if ok:
+            await self._greet_newly_accepted_friend(req_id, f_wxid, nick, verif)
+            res_meme = self._resolve_meme_b64("比心") or self._resolve_meme_b64("得意")
+            return (
+                f"✅ 已通过「{nick}」的好友申请" + (f"（{f_wxid}），并主动发消息打过招呼啦！" if f_wxid else "！"),
+                res_meme[1] if res_meme else None,
+            )
+        return f"⚠️ 通过好友申请失败（{err_msg or '申请可能已过期或已处理'}）。", None
 
     async def _get_balance_str(self, api_key: str, base_url: str) -> str:
         if not api_key:
@@ -2262,6 +2368,131 @@ class WhaleListener(EventListener):
             except Exception as e:
                 logger.debug("Moments auto interact loop error: %s", e)
 
+    async def _greet_newly_accepted_friend(
+        self,
+        req_id: str,
+        friend_wxid: str,
+        nickname: str = "",
+        verification: str = "",
+    ) -> bool:
+        """Records a newly accepted friend request, initializes their private user archive, and sends a natural greeting."""
+        now_sec = int(time.time())
+        now_ms = now_sec * 1000
+        clean_wxid = (friend_wxid or "").strip()
+        clean_nick = (nickname or "").strip()
+
+        async with self._state_lock:
+            acc_map = self._state.setdefault("accepted_friend_requests", {})
+            already = req_id in acc_map and bool(acc_map[req_id].get("greeted"))
+            acc_map[req_id] = {
+                "sender_id": clean_wxid,
+                "nickname": clean_nick,
+                "ts": now_sec,
+                "greeted": True,
+            }
+            if len(acc_map) > 200:
+                oldest = sorted(acc_map.keys(), key=lambda k: int((acc_map.get(k) or {}).get("ts") or 0))[:-150]
+                for ok_key in oldest:
+                    acc_map.pop(ok_key, None)
+
+            if clean_wxid and not clean_wxid.endswith("@chatroom"):
+                u = self._get_user_state(clean_wxid)
+                u["hasPrivateChat"] = True
+                u["lastChatAt"] = now_ms
+                if clean_nick and not clean_nick.startswith("wxid_"):
+                    _add_dedup_fact(
+                        u.setdefault("facts", []),
+                        f"对方通过微信好友申请添加了大肥鱼（微信昵称：{clean_nick}）",
+                        max_len=25,
+                    )
+            self._save_persistent_state()
+
+        if already or not clean_wxid or clean_wxid.endswith("@chatroom"):
+            return False
+
+        settings = self._settings_for(clean_wxid)
+        mode = settings.get("mode", "live")
+        if mode == "sweet":
+            welcome_txt = (
+                f"哇，通过好友申请啦～你好呀{clean_nick or ''}，我是大肥鱼||以后有什么想聊的随时来找我玩呀"
+            )
+            res_meme = self._resolve_meme_b64("比心") or self._resolve_meme_b64("害羞")
+        else:
+            welcome_txt = (
+                f"加上啦 你好呀{(' ' + clean_nick) if clean_nick else ''} 我是大肥鱼||有什么想聊的或者要帮忙的随时找我唠"
+            )
+            res_meme = self._resolve_meme_b64("猫爪") or self._resolve_meme_b64("得意")
+
+        meme_b64 = res_meme[1] if (res_meme and settings.get("meme_enabled", True)) else None
+        return await self._send_proactive_wechat(clean_wxid, welcome_txt, meme_b64)
+
+    async def _check_and_process_friend_requests(self) -> int:
+        """Checks WCF gateway for pending or newly accepted friend requests, accepts matching pending requests,
+        and greets newly accepted friends. Returns number of newly processed requests.
+        """
+        auto_enabled = bool(self._state.get("auto_accept_friend_enabled", True))
+        kw_list = [str(k).strip() for k in (self._state.get("friend_verify_keywords") or []) if str(k).strip()]
+        ok, data, _ = await df.fetch_wcf_friend_requests()
+        if not ok or not isinstance(data, dict):
+            return 0
+
+        if data.get("auto_accept") is not None and bool(data.get("auto_accept")) != auto_enabled:
+            await df.set_wcf_friend_auto_accept(auto_enabled, kw_list)
+
+        reqs = data.get("requests")
+        if not isinstance(reqs, list) or not reqs:
+            return 0
+
+        acc_map = self._state.setdefault("accepted_friend_requests", {})
+        processed = 0
+        for item in reqs:
+            if not isinstance(item, dict):
+                continue
+            req_id = str(item.get("request_id") or "").strip()
+            if not req_id:
+                continue
+            status = str(item.get("status") or "").strip()
+            sender_id = str(item.get("sender_id") or "").strip()
+            nickname = str(item.get("nickname") or "").strip()
+            verif = str(item.get("verification") or "").strip()
+
+            if status == "pending" and auto_enabled:
+                if not kw_list or any(kw in verif for kw in kw_list):
+                    ok_acc, acc_data, _ = await df.accept_wcf_friend_request(req_id)
+                    if ok_acc:
+                        status = "accepted"
+                        sender_id = str(acc_data.get("sender_id") or sender_id).strip()
+                        nickname = str(acc_data.get("nickname") or nickname).strip()
+
+            if status == "accepted" and req_id not in acc_map:
+                await self._greet_newly_accepted_friend(req_id, sender_id, nickname, verif)
+                processed += 1
+
+        return processed
+
+    async def _friend_auto_accept_loop(self) -> None:
+        """Background loop that syncs friend auto-accept configuration and greets newly accepted friends."""
+        self._clear_ended_invocation()
+        await asyncio.sleep(8)
+        try:
+            await df.set_wcf_friend_auto_accept(
+                bool(self._state.get("auto_accept_friend_enabled", True)),
+                list(self._state.get("friend_verify_keywords") or []),
+            )
+        except Exception:
+            pass
+        while True:
+            await asyncio.sleep(30)
+            try:
+                self._clear_ended_invocation()
+                if not self._state.get("enabled", True):
+                    continue
+                await self._check_and_process_friend_requests()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("Friend auto accept loop error: %s", e)
+
     async def _check_friend_moment_for_chat(
         self,
         sender_id: str,
@@ -3127,6 +3358,46 @@ class WhaleListener(EventListener):
                 action="comment",
                 index_num=int(m_comment_idx.group(1)),
                 custom_comment=(m_comment_idx.group(2) or "").strip(),
+            )
+            self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
+            return
+
+        if cmd_norm in ("大肥鱼 好友申请", "大肥鱼 查看好友申请", "鲸鱼娘 好友申请", "大肥鱼 好友请求"):
+            msg_txt, meme_b64 = await self._handle_owner_friend_request_cmd(
+                is_group=is_group,
+                sender_id=sender_id,
+                session_key=session_key,
+                action="list",
+            )
+            self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
+            return
+
+        m_accept_friend = re.match(
+            r"^(?:大肥鱼|鲸鱼娘)\s*(?:同意好友|通过好友|接受好友|同意好友申请|通过好友申请)\s+(\S+)$",
+            cmd_norm,
+        )
+        if m_accept_friend:
+            msg_txt, meme_b64 = await self._handle_owner_friend_request_cmd(
+                is_group=is_group,
+                sender_id=sender_id,
+                session_key=session_key,
+                action="accept",
+                arg=m_accept_friend.group(1).strip(),
+            )
+            self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
+            return
+
+        m_friend_kw = re.match(
+            r"^(?:大肥鱼|鲸鱼娘)\s*(?:好友验证词|好友关键词|自动好友关键词)\s+(.+)$",
+            cmd_norm,
+        )
+        if m_friend_kw:
+            msg_txt, meme_b64 = await self._handle_owner_friend_request_cmd(
+                is_group=is_group,
+                sender_id=sender_id,
+                session_key=session_key,
+                action="keywords",
+                arg=m_friend_kw.group(1).strip(),
             )
             self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
             return
