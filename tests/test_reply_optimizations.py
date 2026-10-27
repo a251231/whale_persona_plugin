@@ -4,6 +4,7 @@ import asyncio
 import base64
 from datetime import datetime
 import io
+import json
 import time
 from types import SimpleNamespace
 import unittest
@@ -440,6 +441,183 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
             self.assertIn(kw, wl.LIVE_PERSONA_BASE)
         self.assertIn("严禁把大肥鱼自己的设定", wl.MOOD_JUDGE_SYSTEM)
         self.assertIn("严禁把大肥鱼自己的设定", wl.GROUP_MOOD_JUDGE_SYSTEM)
+
+    # ------------------------------------------------------------------
+    # 9. Native WeChat 4.1 Moments Likes, Comments & 7-Day Friend Auto-Interact
+    # ------------------------------------------------------------------
+    async def test_moments_digest_includes_likes_comments_and_interact_api(self):
+        rows = [
+            {
+                "sns_id": "13899001122334455",
+                "author": "wxid_friend1",
+                "nickname": "阿强",
+                "is_self": False,
+                "time": "2026-10-27T18:20:00",
+                "content": "终于吃上铜锅涮肉了！",
+                "media_count": 2,
+                "content_type": 1,
+                "raw_like_flag": True,
+                "likes": [{"username": "wxid_a", "nickname": "小明"}, {"username": "wxid_b", "nickname": "小红"}],
+                "likes_total": 2,
+                "comments": [{"username": "wxid_c", "nickname": "老王", "content": "看着太香了吧！"}],
+                "comments_total": 1,
+            }
+        ]
+        digest = df.format_wcf_moments_digest(rows, max_items=8)
+        self.assertIn("❤️已赞", digest)
+        self.assertIn("👍2人(小明、小红)", digest)
+        self.assertIn("💬1条", digest)
+        self.assertIn("└ 💬 老王：看着太香了吧！", digest)
+
+        original_client = _REAL_ASYNC_CLIENT
+        captured_payloads = []
+
+        def respond_interact(req: httpx.Request) -> httpx.Response:
+            self.assertEqual(req.url.path, "/api/interact_moment")
+            body = json.loads(req.content)
+            captured_payloads.append(body)
+            return httpx.Response(
+                200,
+                json={"status": 0, "code": "completed", "result": {"status": "completed"}, "message": "ok"},
+            )
+
+        with patch.object(
+            httpx,
+            "AsyncClient",
+            side_effect=lambda **kw: original_client(transport=httpx.MockTransport(respond_interact), **kw),
+        ):
+            ok_like, code_like, _ = await df.interact_wcf_moment("13899001122334455", "like")
+            ok_comm, code_comm, _ = await df.interact_wcf_moment("13899001122334455", "comment", "给我也留一口！")
+
+        self.assertTrue(ok_like)
+        self.assertEqual(code_like, "completed")
+        self.assertTrue(ok_comm)
+        self.assertEqual(code_comm, "completed")
+        self.assertEqual(captured_payloads[0], {"sns_id": "13899001122334455", "action": "like", "content": ""})
+        self.assertEqual(
+            captured_payloads[1],
+            {"sns_id": "13899001122334455", "action": "comment", "content": "给我也留一口！"},
+        )
+
+    async def test_owner_moment_like_and_comment_commands_and_permission_isolation(self):
+        prior_cfg = self.listener._get_config_str
+        self.listener._get_config_str = lambda key, default: (
+            "wxid_owner" if key == "owner_ids" else prior_cfg(key, default)
+        )
+        sample_rows = [
+            {
+                "sns_id": "14800001111222233",
+                "author": "wxid_friend1",
+                "nickname": "小美",
+                "is_self": False,
+                "timestamp": int(time.time()) - 300,
+                "time": "2026-10-27T19:00:00",
+                "content": "周末去海边吹吹风",
+                "media_count": 1,
+                "content_type": 1,
+            }
+        ]
+        self._patch(df, "fetch_wcf_moments", AsyncMock(return_value=(True, sample_rows, "")))
+        mock_interact = self._patch(
+            df, "interact_wcf_moment", AsyncMock(return_value=(True, "completed", "ok"))
+        )
+        self.model_reply = "海风看着好舒服，替我也多吹两口"
+
+        # Non-owner cannot trigger native moment like
+        ctx_non = await self.ask("大肥鱼 点赞朋友圈 1", group=False, room="wxid_other", sender="wxid_other")
+        mock_interact.assert_not_awaited()
+        non_txt = "\n".join(getattr(c, "text", "") for c in (ctx_non.event.reply_message_chain or []))
+        self.assertIn("只有主人", non_txt)
+
+        # Owner likes #1
+        ctx_like = await self.ask("大肥鱼 点赞朋友圈 1", group=False, room="wxid_owner", sender="wxid_owner")
+        mock_interact.assert_awaited_once_with("14800001111222233", "like")
+        like_txt = "\n".join(getattr(c, "text", "") for c in (ctx_like.event.reply_message_chain or []))
+        self.assertIn("小美", like_txt)
+        self.assertIn("真赞", like_txt)
+
+        # Owner comments on #1 with AI auto-generated comment
+        mock_interact.reset_mock()
+        ctx_comm = await self.ask("大肥鱼 评论朋友圈 1", group=False, room="wxid_owner", sender="wxid_owner")
+        mock_interact.assert_awaited_once_with(
+            "14800001111222233", "comment", "海风看着好舒服，替我也多吹两口"
+        )
+        comm_txt = "\n".join(getattr(c, "text", "") for c in (ctx_comm.event.reply_message_chain or []))
+        self.assertIn("已", comm_txt)
+        self.assertIn("海风看着好舒服", comm_txt)
+
+    async def test_auto_interact_only_targets_7day_active_private_friends_and_chat_mentions_it(self):
+        now_sec = int(time.time())
+        now_ms = now_sec * 1000
+        self.listener._state["users"] = {
+            "wxid_active": {
+                "hasPrivateChat": True,
+                "lastChatAt": now_ms - 2 * 86400 * 1000,  # 2 days ago -> active!
+                "mood": 82,
+                "nickname": "铁瓷小张",
+            },
+            "wxid_stale": {
+                "hasPrivateChat": True,
+                "lastChatAt": now_ms - 10 * 86400 * 1000,  # 10 days ago -> expired!
+                "mood": 80,
+                "nickname": "老李",
+            },
+        }
+        feed_rows = [
+            {
+                "sns_id": "15900000000000001",
+                "author": "wxid_stranger",
+                "nickname": "路人甲",
+                "is_self": False,
+                "private": False,
+                "timestamp": now_sec - 600,
+                "content": "路人甲的朋友圈",
+            },
+            {
+                "sns_id": "15900000000000002",
+                "author": "wxid_stale",
+                "nickname": "老李",
+                "is_self": False,
+                "private": False,
+                "timestamp": now_sec - 600,
+                "content": "老李的朋友圈",
+            },
+            {
+                "sns_id": "15900000000000003",
+                "author": "wxid_active",
+                "nickname": "铁瓷小张",
+                "is_self": False,
+                "private": False,
+                "timestamp": now_sec - 600,
+                "content": "今晚自己烤了蛋挞，大成功！",
+            },
+        ]
+        self._patch(df, "fetch_wcf_moments", AsyncMock(return_value=(True, feed_rows, "")))
+        mock_interact = self._patch(
+            df, "interact_wcf_moment", AsyncMock(return_value=(True, "completed", "ok"))
+        )
+        self.model_reply = "这蛋挞烤得焦糖色绝了，快给我留两个"
+
+        with patch.object(wl.random, "random", return_value=0.1):
+            actions = await self.listener._check_and_interact_active_friends_moments(max_actions=2)
+
+        self.assertEqual(actions, 1)
+        # Must only interact with wxid_active's post (15900000000000003): 1 like + 1 comment
+        called_sns_ids = {call.args[0] for call in mock_interact.await_args_list}
+        self.assertEqual(called_sns_ids, {"15900000000000003"})
+        self.assertEqual(len(mock_interact.await_args_list), 2)
+
+        # Second scan must skip already-interacted moment (idempotency)
+        mock_interact.reset_mock()
+        actions_again = await self.listener._check_and_interact_active_friends_moments(max_actions=2)
+        self.assertEqual(actions_again, 0)
+        mock_interact.assert_not_awaited()
+
+        # When wxid_active chats in private asking about their moment, prompt includes the moment perception
+        await self.ask("你看到我刚发了条朋友圈吗", group=False, room="wxid_active", sender="wxid_active")
+        sys_prompt = self.prompt()
+        self.assertIn("今晚自己烤了蛋挞，大成功！", sys_prompt)
+        self.assertIn("这蛋挞烤得焦糖色绝了", sys_prompt)
 
 
 if __name__ == "__main__":

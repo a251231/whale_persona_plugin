@@ -2018,8 +2018,170 @@ def format_wcf_moments_digest(rows: list[dict[str, Any]], max_items: int = 8) ->
         elif not content:
             content = "[纯图片/卡片动态]"
         time_prefix = f"[{t_str}] " if t_str else ""
-        lines.append(f"{idx}. {time_prefix}{nick}：{content}{media_tag}")
+        main_line = f"{idx}. {time_prefix}{nick}：{content}{media_tag}"
+
+        raw_like_flag = bool(item.get("raw_like_flag"))
+        likes_list = item.get("likes") if isinstance(item.get("likes"), list) else []
+        likes_total = int(item.get("likes_total") or len(likes_list))
+        comments_list = item.get("comments") if isinstance(item.get("comments"), list) else []
+        comments_total = int(item.get("comments_total") or len(comments_list))
+
+        if raw_like_flag or likes_total > 0 or comments_total > 0:
+            badge_parts: list[str] = []
+            if raw_like_flag:
+                badge_parts.append("❤️已赞")
+            if likes_total > 0:
+                like_names = [
+                    name
+                    for x in likes_list
+                    if isinstance(x, dict)
+                    for name in [str(x.get("nickname") or x.get("username") or "").strip()]
+                    if name
+                ]
+                if like_names:
+                    badge_parts.append(f"👍{likes_total}人({'、'.join(like_names[:3])})")
+                else:
+                    badge_parts.append(f"👍{likes_total}人")
+            if comments_total > 0:
+                badge_parts.append(f"💬{comments_total}条")
+            if badge_parts:
+                main_line += f" [{' | '.join(badge_parts)}]"
+
+        lines.append(main_line)
+
+        if comments_list:
+            for c in comments_list[-2:]:
+                if not isinstance(c, dict):
+                    continue
+                c_nick = str(c.get("nickname") or c.get("username") or "好友").strip() or "好友"
+                c_text = re.sub(r"\s+", " ", str(c.get("content") or "").strip())[:60]
+                if c_text:
+                    lines.append(f"   └ 💬 {c_nick}：{c_text}")
     return "\n".join(lines)
+
+
+async def interact_wcf_moment(
+    sns_id: str,
+    action: str = "like",
+    content: str = "",
+) -> tuple[bool, str, str]:
+    """Executes a native WeChat 4.1 Moments like or comment via WCF V4 Gateway (POST /api/interact_moment).
+    Returns (ok, status_code, message).
+    """
+    sns_str = str(sns_id or "").strip()
+    if not re.match(r"^[1-9][0-9]{0,19}$", sns_str):
+        return False, "invalid", "无效的朋友圈动态 ID"
+    act = (action or "").strip().lower()
+    if act not in ("like", "comment"):
+        return False, "invalid", "不支持的互动动作"
+
+    if act == "comment":
+        content_str = (content or "").strip()
+        if not content_str:
+            return False, "invalid", "评论内容不能为空"
+        if len(content_str.encode("utf-8")) > 1000:
+            content_str = content_str.encode("utf-8")[:1000].decode("utf-8", errors="ignore").strip()
+    else:
+        content_str = ""
+
+    try:
+        async with httpx.AsyncClient(timeout=35.0) as client:
+            r = await client.post(
+                f"{WCF_GATEWAY_URL}/api/interact_moment",
+                json={"sns_id": sns_str, "action": act, "content": content_str},
+            )
+            try:
+                raw_json = r.json()
+                data = raw_json if isinstance(raw_json, dict) else {}
+            except Exception:
+                data = {}
+            res_obj = data.get("result") if isinstance(data.get("result"), dict) else {}
+            code = str(res_obj.get("status") or data.get("code") or "")
+            ok = (r.status_code == 200 and data.get("status") == 0) or code in ("completed", "already_liked")
+            return ok, code or ("completed" if ok else "failed"), str(data.get("message") or "")
+    except Exception as e:
+        logger.debug("WCF interact_moment skipped or unavailable: %s", e)
+        return False, "error", "微信网关暂未连接或不支持朋友圈互动"
+
+
+async def generate_moment_comment(
+    api_key: str,
+    base_url: str,
+    model: str,
+    *,
+    author_name: str,
+    moment_content: str,
+    mode: str = "live",
+    existing_comments: list[dict[str, Any]] | None = None,
+    mood: int = 75,
+) -> tuple[str, int]:
+    """Generates a short, natural WeChat Moments comment (8~32 chars) in Dafeiyu's persona.
+    Returns (comment_text, used_tokens).
+    """
+    if not api_key:
+        return "", 0
+
+    style_desc = (
+        "软糯偏心捧场，温柔甜美地夸赞或关心对方，像贴心小女友/小尾巴一样给足情绪价值"
+        if mode == "sweet"
+        else "接地气损友接梗或夸中带损，分寸得当、鲜活有趣，像真实微信好友在评论区顺手插科打诨"
+    )
+    existing_lines: list[str] = []
+    if existing_comments:
+        for c in existing_comments[-3:]:
+            if isinstance(c, dict):
+                cn = str(c.get("nickname") or c.get("username") or "好友").strip()
+                ct = re.sub(r"\s+", " ", str(c.get("content") or "").strip())[:50]
+                if ct:
+                    existing_lines.append(f"- {cn}：{ct}")
+    comments_ctx = "\n已有评论参考：\n" + "\n".join(existing_lines) if existing_lines else ""
+
+    sys_prompt = (
+        "你是大肥鱼（鲸鱼娘），正在微信朋友圈给好友的动态写一条简短评论。\n"
+        f"- 评论风格：{style_desc}（当前心情值：{mood}/100）。\n"
+        "- 隐私与分寸铁律：朋友圈评论是半公开场合，严禁透露任何私聊秘密或个人隐私档案，仅针对本条朋友圈正文（及已有评论氛围）互动！\n"
+        "- 格式硬约束：只输出 1 条简短纯文本评论（8~32 字），严禁使用括号动作旁白 `（...）`/`(...)`、严禁输出 `[表情: xxx]` 标签、严禁包含 `||` 分隔符、严禁加首尾引号！"
+    )
+    user_prompt = (
+        f"好友昵称：{author_name or '好友'}\n"
+        f"朋友圈内容：{moment_content or '[分享图片/日常动态]'}"
+        f"{comments_ctx}\n"
+        "请直接输出你要发在朋友圈评论区的那句话："
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(
+                f"{base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.95,
+                    "max_tokens": 80,
+                },
+            )
+            if r.status_code != 200:
+                return "", 0
+            data = r.json() if isinstance(r.json(), dict) else {}
+            used_tokens = int((data.get("usage") or {}).get("total_tokens", 0) or 0)
+            raw = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    except Exception as e:
+        logger.debug("generate_moment_comment failed: %s", e)
+        return "", 0
+
+    cleaned = raw.splitlines()[0].strip() if raw else ""
+    cleaned = cleaned.split("||", 1)[0].strip()
+    cleaned = re.sub(r"\[\s*表情\s*[:：][^\]]*\]", "", cleaned)
+    cleaned = re.sub(r"（[^）]*）|\([^)]*\)|\[[^\]]*\]", "", cleaned)
+    cleaned = re.sub(r"^[\s\"'“”‘’「」『』]+|[\s\"'“”‘’「」『』]+$", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) <= 36 and cleaned.endswith("。"):
+        cleaned = cleaned[:-1].strip()
+    return cleaned[:48], used_tokens
 
 
 # ==============================================================================

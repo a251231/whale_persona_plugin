@@ -459,6 +459,7 @@ class WhaleListener(EventListener):
         self._balance_cache: tuple[float, str] = (0.0, "")
         self._speak_up_task: asyncio.Task[Any] | None = None
         self._auto_moments_task: asyncio.Task[Any] | None = None
+        self._moments_interact_task: asyncio.Task[Any] | None = None
         self._memes_b64: dict[str, str] = self._load_bundled_memes()
         self._group_repeat_tracker: dict[str, dict[str, Any]] = {}
         self._group_msg_buffers: dict[str, deque] = {}
@@ -466,6 +467,8 @@ class WhaleListener(EventListener):
         self._group_active_conv: dict[str, dict[str, Any]] = {}
         self._group_recent_images: dict[str, dict[str, Any]] = {}
         self._private_recent_images: dict[str, dict[str, Any]] = {}
+        self._owner_moments_cache: dict[str, list[dict[str, Any]]] = {}
+        self._chat_moment_check_ts: dict[str, float] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_lock_users: dict[str, int] = {}
         self._session_tasks: dict[str, set[asyncio.Task[Any]]] = {}
@@ -491,7 +494,7 @@ class WhaleListener(EventListener):
             self._histories, self._group_msg_buffers, self._group_recent_images,
             self._private_recent_images, self._group_active_conv, self._group_repeat_tracker,
             self._group_interject_meta, self._group_mute_until, self._last_multi_bubble,
-            self._recent_bot_sent_texts,
+            self._recent_bot_sent_texts, self._owner_moments_cache, self._chat_moment_check_ts,
         ):
             cache.pop(session_key, None)
         self._user_docs.pop(doc_key, None)
@@ -508,6 +511,10 @@ class WhaleListener(EventListener):
         self._auto_moments_task = contextvars.Context().run(
             asyncio.create_task,
             self._auto_moments_loop(),
+        )
+        self._moments_interact_task = contextvars.Context().run(
+            asyncio.create_task,
+            self._moments_auto_interact_loop(),
         )
 
         @self.handler(events.PersonNormalMessageReceived)
@@ -564,6 +571,7 @@ class WhaleListener(EventListener):
                         data.setdefault("web_search_enabled", True)
                         data.setdefault("voice_reply_enabled", True)
                         data.setdefault("auto_moments_enabled", True)
+                        data.setdefault("interacted_moments", {})
                         users_map = data.get("users") or {}
                         for uid in list(users_map.keys()):
                             u_obj = users_map[uid]
@@ -598,6 +606,7 @@ class WhaleListener(EventListener):
             "voice_reply_enabled": True,
             "auto_moments_enabled": False,
             "moments": [],
+            "interacted_moments": {},
             "token_stats": {"date": "", "today_tokens": 0, "last_tokens": 0, "total_tokens": 0},
             "users": {},
         }
@@ -1179,7 +1188,7 @@ class WhaleListener(EventListener):
         return lines, (last_meme[1] if last_meme else None)
 
     async def _browse_and_roast_moments(
-        self, *, is_group: bool, sender_id: str
+        self, *, is_group: bool, sender_id: str, session_key: str = ""
     ) -> tuple[str, str | None]:
         """Reads loaded WeChat 4.1 Moments feed in owner private chat and generates Dafeiyu commentary;
         strictly isolates group chats and non-owners to internal fish-pond moments wall.
@@ -1210,7 +1219,11 @@ class WhaleListener(EventListener):
             res_meme = self._resolve_meme_b64("偷看")
             return "\n".join(fallback_lines), (res_meme[1] if res_meme else None)
 
+        if session_key:
+            self._owner_moments_cache[session_key] = list(rows[:8])
+
         digest = df.format_wcf_moments_digest(rows, max_items=8)
+        interact_tip = "\n\n💡 可发「大肥鱼 点赞朋友圈 1」或「大肥鱼 评论朋友圈 1 [内容]」让我直接去微信朋友圈点赞/神评！"
         res_default = self._resolve_meme_b64("偷看")
         default_meme_b64 = res_default[1] if res_default else None
         api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
@@ -1234,16 +1247,106 @@ class WhaleListener(EventListener):
                     roast_clean = roast_clean.replace("||", " ").strip()
                     if roast_clean:
                         return (
-                            f"📱 刚刚帮你刷了最新微信朋友圈：\n{digest}\n\n🐟 大肥鱼锐评：\n{roast_clean}",
+                            f"📱 刚刚帮你刷了最新微信朋友圈：\n{digest}\n\n🐟 大肥鱼锐评：\n{roast_clean}{interact_tip}",
                             roast_meme_b64 or default_meme_b64,
                         )
             except Exception as e:
                 logger.warning("Browse moments DeepSeek roast failed: %s", e)
 
         return (
-            f"📱 刚刚帮你刷了最新微信朋友圈：\n{digest}\n\n🐟 啧，大家今天动态还挺热闹嘛！",
+            f"📱 刚刚帮你刷了最新微信朋友圈：\n{digest}\n\n🐟 啧，大家今天动态还挺热闹嘛！{interact_tip}",
             default_meme_b64,
         )
+
+    async def _handle_owner_moment_interaction_cmd(
+        self,
+        *,
+        is_group: bool,
+        sender_id: str,
+        session_key: str,
+        action: str,
+        index_num: int,
+        custom_comment: str = "",
+    ) -> tuple[str, str | None]:
+        """Handles owner-only commands to like or comment on a real WeChat 4.1 Moment by index (#1~#8)."""
+        if is_group:
+            return "💡 群聊里不能直接操作真实微信朋友圈哦，请由主人在私聊中使用~", None
+
+        owner_ids_raw = self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip()
+        owners = set(re.split(r"[,，;；\s]+", owner_ids_raw)) - {""}
+        if owners and sender_id not in owners:
+            return "哼，只有主人才能让我去真实微信朋友圈点赞或评论哦~", None
+
+        rows = self._owner_moments_cache.get(session_key)
+        if not rows:
+            ok_m, fetched_rows, err_msg = await df.fetch_wcf_moments(limit=8)
+            if not ok_m or not fetched_rows:
+                return f"🐟 暂时没读到朋友圈列表（{err_msg or '列表为空'}），请先发「大肥鱼 刷朋友圈」加载后再试~", None
+            rows = list(fetched_rows[:8])
+            self._owner_moments_cache[session_key] = rows
+
+        if index_num < 1 or index_num > len(rows):
+            return f"当前只缓存了最近 {len(rows)} 条朋友圈，请输入 1~{len(rows)} 之间的序号哦~", None
+
+        target_row = rows[index_num - 1]
+        sns_id = str(target_row.get("sns_id") or "").strip()
+        nick = str(target_row.get("nickname") or target_row.get("author") or "微信好友").strip()
+        m_content = str(target_row.get("content") or "").strip()
+        if not sns_id:
+            return f"⚠️ 第 #{index_num} 条动态缺少有效的朋友圈 ID，请重新发送「大肥鱼 刷朋友圈」刷新列表。", None
+
+        if action == "like":
+            ok, status_code, msg = await df.interact_wcf_moment(sns_id, "like")
+            if ok or status_code == "already_liked":
+                async with self._state_lock:
+                    interacted = self._state.setdefault("interacted_moments", {})
+                    rec = interacted.setdefault(sns_id, {"author": str(target_row.get("author") or ""), "ts": int(time.time())})
+                    rec["liked"] = True
+                    self._save_persistent_state()
+            if status_code == "already_liked":
+                return f"❤️ 第 #{index_num} 条（{nick}）的朋友圈刚才已经点过赞啦，再点就把赞取消了，本鱼才不干呢！", None
+            if ok:
+                res_meme = self._resolve_meme_b64("比心") or self._resolve_meme_b64("得意")
+                return f"👍 已帮你在微信朋友圈给 #{index_num}「{nick}」的动态点上真赞啦！", (res_meme[1] if res_meme else None)
+            return f"⚠️ 给 #{index_num}「{nick}」点赞未成功（{msg or status_code}），请确认电脑微信已打开过朋友圈列表。", None
+
+        comment_txt = (custom_comment or "").strip()
+        if not comment_txt:
+            api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
+            base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
+            model = self._normalize_api_model(self._get_config_str("deepseek_model", DEFAULT_MODEL))
+            u = self._get_user_state(sender_id)
+            gen_txt, used_tok = await df.generate_moment_comment(
+                api_key,
+                base_url,
+                model,
+                author_name=nick,
+                moment_content=m_content,
+                mode=self._settings_for(sender_id)["mode"],
+                existing_comments=target_row.get("comments") if isinstance(target_row.get("comments"), list) else None,
+                mood=int(u.get("mood", 75)),
+            )
+            if used_tok:
+                self._record_tokens(used_tok)
+            comment_txt = gen_txt.strip()
+
+        if not comment_txt:
+            return "⚠️ 暂时没能生成评论内容，你可以直接带上文字再试一次，例如：「大肥鱼 评论朋友圈 1 周末愉快！」", None
+
+        ok, status_code, msg = await df.interact_wcf_moment(sns_id, "comment", comment_txt)
+        if ok:
+            async with self._state_lock:
+                interacted = self._state.setdefault("interacted_moments", {})
+                rec = interacted.setdefault(sns_id, {"author": str(target_row.get("author") or ""), "ts": int(time.time())})
+                rec["commented"] = True
+                rec["comment"] = comment_txt
+                self._save_persistent_state()
+            res_meme = self._resolve_meme_b64("得意")
+            return (
+                f"💬 已在微信朋友圈 #{index_num}「{nick}」动态下发表评论：\n「{comment_txt}」",
+                res_meme[1] if res_meme else None,
+            )
+        return f"⚠️ 评论 #{index_num}「{nick}」的朋友圈未成功（{msg or status_code}），拟好的评论是：「{comment_txt}」", None
 
     async def _get_balance_str(self, api_key: str, base_url: str) -> str:
         if not api_key:
@@ -1991,6 +2094,251 @@ class WhaleListener(EventListener):
                 raise
             except Exception as e:
                 logger.debug("Auto moments loop error: %s", e)
+
+    def _get_7day_active_private_friends(self, now_ms: int | None = None) -> dict[str, dict[str, Any]]:
+        """Returns {wxid: user_state} for friends who had actual private chats within the past 7 days."""
+        cur_ms = int(now_ms if now_ms is not None else time.time() * 1000)
+        cutoff_ms = 7 * 86400 * 1000
+        active: dict[str, dict[str, Any]] = {}
+        users = self._state.get("users") or {}
+        for uid, u in list(users.items()):
+            if not isinstance(u, dict) or not bool(u.get("hasPrivateChat", False)):
+                continue
+            last_chat = int(u.get("lastChatAt") or 0)
+            if last_chat <= 0 or (cur_ms - last_chat) > cutoff_ms:
+                continue
+            if not self._settings_for(uid, is_group=False).get("enabled", True):
+                continue
+            active[uid] = u
+        return active
+
+    async def _interact_single_friend_moment(
+        self,
+        author_id: str,
+        row: dict[str, Any],
+        *,
+        do_comment: bool = False,
+    ) -> tuple[bool, str]:
+        """Executes native like (and optional AI comment) on a single friend's moment and records it in state.
+        Returns (did_any_action, comment_text).
+        """
+        sns_id = str(row.get("sns_id") or "").strip()
+        if not sns_id:
+            return False, ""
+        now_sec = int(time.time())
+        today_str = datetime.now(TZ).strftime("%Y-%m-%d")
+
+        async with self._state_lock:
+            interacted = self._state.setdefault("interacted_moments", {})
+            rec = dict(interacted.get(sns_id) or {"author": author_id, "ts": now_sec})
+
+        did_like = bool(row.get("raw_like_flag") or rec.get("liked"))
+        did_action = False
+        if not did_like:
+            ok_like, code_like, _ = await df.interact_wcf_moment(sns_id, "like")
+            if ok_like or code_like == "already_liked":
+                rec["liked"] = True
+                did_action = True
+
+        comment_sent = str(rec.get("comment") or "")
+        m_content = str(row.get("content") or "").strip()
+        if do_comment and not rec.get("commented") and len(m_content) >= 2:
+            # Cap at max 2 auto-comments per friend per day to prevent spamming
+            friend_today_comments = sum(
+                1
+                for v in (self._state.get("interacted_moments") or {}).values()
+                if isinstance(v, dict)
+                and v.get("author") == author_id
+                and v.get("commented")
+                and v.get("date") == today_str
+            )
+            if friend_today_comments < 2:
+                api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
+                base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
+                model = self._normalize_api_model(self._get_config_str("deepseek_model", DEFAULT_MODEL))
+                u = self._get_user_state(author_id)
+                nick = str(row.get("nickname") or u.get("nickname") or author_id).strip()
+                gen_txt, used_tok = await df.generate_moment_comment(
+                    api_key,
+                    base_url,
+                    model,
+                    author_name=nick,
+                    moment_content=m_content,
+                    mode=self._settings_for(author_id, is_group=False).get("mode", "live"),
+                    existing_comments=row.get("comments") if isinstance(row.get("comments"), list) else None,
+                    mood=int(u.get("mood", 75)),
+                )
+                if used_tok:
+                    self._record_tokens(used_tok)
+                if gen_txt:
+                    ok_c, _, _ = await df.interact_wcf_moment(sns_id, "comment", gen_txt)
+                    if ok_c:
+                        rec["commented"] = True
+                        rec["comment"] = gen_txt
+                        rec["date"] = today_str
+                        comment_sent = gen_txt
+                        did_action = True
+
+        rec["author"] = author_id
+        rec["ts"] = now_sec
+        async with self._state_lock:
+            interacted = self._state.setdefault("interacted_moments", {})
+            interacted[sns_id] = rec
+            if len(interacted) > 300:
+                oldest_keys = sorted(
+                    interacted.keys(),
+                    key=lambda k: int((interacted.get(k) or {}).get("ts", 0)),
+                )[: len(interacted) - 300]
+                for k_old in oldest_keys:
+                    interacted.pop(k_old, None)
+            self._save_persistent_state()
+
+        return did_action, comment_sent
+
+    async def _check_and_interact_active_friends_moments(self, *, max_actions: int = 2) -> int:
+        """Scans loaded WeChat 4.1 Moments feed and automatically likes/comments on new posts (<24h)
+        from friends who have had private chats with Dafeiyu within the past 7 days.
+        """
+        active_friends = self._get_7day_active_private_friends()
+        if not active_friends:
+            return 0
+
+        ok_m, rows, _ = await df.fetch_wcf_moments(limit=15)
+        if not ok_m or not rows:
+            return 0
+
+        now_sec = int(time.time())
+        owners = set(re.split(r"[,，;；\s]+", self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip())) - {""}
+        actions_done = 0
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            sns_id = str(row.get("sns_id") or "").strip()
+            author = str(row.get("author") or "").strip()
+            if not sns_id or not author or row.get("is_self") or row.get("private"):
+                continue
+            if author not in active_friends:
+                continue
+            post_ts = int(row.get("timestamp") or 0)
+            if post_ts > 0 and (now_sec - post_ts) > 86400:
+                continue
+
+            interacted = self._state.get("interacted_moments") or {}
+            rec = interacted.get(sns_id)
+            if isinstance(rec, dict) and rec.get("liked"):
+                continue
+
+            u = active_friends[author]
+            mood_val = int(u.get("mood", 70))
+            comment_prob = 0.85 if (author in owners or mood_val >= 78) else 0.50
+            should_comment = bool(
+                str(row.get("content") or "").strip() and random.random() < comment_prob
+            )
+            did_act, _ = await self._interact_single_friend_moment(
+                author, row, do_comment=should_comment
+            )
+            if did_act:
+                actions_done += 1
+                if actions_done >= max_actions:
+                    break
+        return actions_done
+
+    async def _moments_auto_interact_loop(self) -> None:
+        """Background loop that periodically checks loaded Moments for 7-day active private chat friends."""
+        self._clear_ended_invocation()
+        while True:
+            await asyncio.sleep(1080)
+            try:
+                self._clear_ended_invocation()
+                if not self._state.get("enabled", True):
+                    continue
+                now_dt = datetime.now(TZ)
+                if now_dt.hour < 8:
+                    continue
+                await self._check_and_interact_active_friends_moments(max_actions=2)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("Moments auto interact loop error: %s", e)
+
+    async def _check_friend_moment_for_chat(
+        self,
+        sender_id: str,
+        sender_name: str,
+        session_key: str,
+        cleaned_text: str,
+        *,
+        history_len: int = 0,
+    ) -> str:
+        """Opportunistically checks if the current private chat friend posted a recent WeChat Moment (<24h),
+        likes/comments on it if unseen, and returns a prompt perception line so Dafeiyu can naturally mention it.
+        """
+        now = time.time()
+        mentioned_moments = any(
+            kw in cleaned_text for kw in ("看我朋友圈", "我刚发了朋友圈", "我发了朋友圈", "看我动态", "刚发了条朋友圈")
+        )
+        if not mentioned_moments:
+            if not self._state.get("auto_moments_enabled", False) or history_len < 2:
+                return ""
+            last_chk = self._chat_moment_check_ts.get(session_key, 0.0)
+            if (now - last_chk) < 1200 or random.random() >= 0.35:
+                return ""
+
+        self._chat_moment_check_ts[session_key] = now
+        ok_m, rows, _ = await df.fetch_wcf_moments(limit=15)
+        if not ok_m or not rows:
+            return ""
+
+        now_sec = int(now)
+        target_row: dict[str, Any] | None = None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("author") or "").strip() != sender_id or row.get("is_self") or row.get("private"):
+                continue
+            post_ts = int(row.get("timestamp") or 0)
+            if post_ts > 0 and (now_sec - post_ts) > 86400:
+                continue
+            target_row = row
+            break
+
+        if not target_row:
+            return ""
+
+        sns_id = str(target_row.get("sns_id") or "").strip()
+        m_content = re.sub(r"\s+", " ", str(target_row.get("content") or "").strip())[:100]
+        if not sns_id:
+            return ""
+
+        interacted = self._state.setdefault("interacted_moments", {})
+        rec = interacted.get(sns_id) if isinstance(interacted.get(sns_id), dict) else {}
+        comment_txt = str(rec.get("comment") or "")
+
+        if not rec.get("liked"):
+            should_comment = bool(m_content and (mentioned_moments or random.random() < 0.50))
+            _, new_comment = await self._interact_single_friend_moment(
+                sender_id, target_row, do_comment=should_comment
+            )
+            if new_comment:
+                comment_txt = new_comment
+            rec = interacted.get(sns_id) or {}
+
+        if rec.get("chat_mentioned") and not mentioned_moments:
+            return ""
+
+        async with self._state_lock:
+            entry = self._state.setdefault("interacted_moments", {}).setdefault(
+                sns_id, {"author": sender_id, "ts": now_sec}
+            )
+            entry["chat_mentioned"] = True
+            self._save_persistent_state()
+
+        act_desc = f"你已顺手给这条动态点了赞并留了评论「{comment_txt}」" if comment_txt else "你刚刚已经顺手给这条动态点了个赞"
+        return (
+            f"- **你刚刚顺手刷到对方今天发的朋友圈**：「{m_content or '[分享图片/日常动态]'}」"
+            f"（{act_desc}；如果和当前聊天话题自然契合，可以在回复时像真朋友一样顺嘴提半句，不契合则不用硬提）\n"
+        )
 
     def _get_config_str(self, key: str, default: str) -> str:
         try:
@@ -2750,7 +3098,35 @@ class WhaleListener(EventListener):
             "刷朋友圈",
         ):
             msg_txt, meme_b64 = await self._browse_and_roast_moments(
-                is_group=is_group, sender_id=sender_id
+                is_group=is_group, sender_id=sender_id, session_key=session_key
+            )
+            self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
+            return
+
+        m_like_idx = re.match(r"^(?:大肥鱼|鲸鱼娘)\s*(?:点赞朋友圈|赞朋友圈|给朋友圈点赞)\s+(\d+)$", cmd_norm)
+        if m_like_idx:
+            msg_txt, meme_b64 = await self._handle_owner_moment_interaction_cmd(
+                is_group=is_group,
+                sender_id=sender_id,
+                session_key=session_key,
+                action="like",
+                index_num=int(m_like_idx.group(1)),
+            )
+            self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
+            return
+
+        m_comment_idx = re.match(
+            r"^(?:大肥鱼|鲸鱼娘)\s*(?:评论朋友圈|评朋友圈|回复朋友圈)\s+(\d+)(?:\s+(.+))?$",
+            cmd_norm,
+        )
+        if m_comment_idx:
+            msg_txt, meme_b64 = await self._handle_owner_moment_interaction_cmd(
+                is_group=is_group,
+                sender_id=sender_id,
+                session_key=session_key,
+                action="comment",
+                index_num=int(m_comment_idx.group(1)),
+                custom_comment=(m_comment_idx.group(2) or "").strip(),
             )
             self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
             return
@@ -3300,12 +3676,16 @@ class WhaleListener(EventListener):
             intimacy_sec = self._build_intimacy_section(u, mode=settings["mode"])
             mood_sec = self._build_mood_section(u)
             mem_sec = self._recall_memories(u, cleaned_text)
+            moment_ctx_line = await self._check_friend_moment_for_chat(
+                sender_id, sender_name, session_key, cleaned_text, history_len=len(history)
+            )
             dynamic_system_prompt = (
                 f"{base_persona}\n\n"
                 f"## 四、当前私聊实时感知（系统每轮自动刷新，自然融入语气，不要机械背诵）\n"
                 f"{nick_line}"
                 f"- **你们的亲密度与关系阶段**：{intimacy_sec}\n"
                 f"- **鱼的记忆（dsh-fish-memory）**：\n{mem_sec}\n"
+                f"{moment_ctx_line}"
                 f"{schedule_line}"
                 f"- **当前日期与时段**：{coarse_time_str}\n"
                 f"- **鱼的心情（dsh-feiyu-mood）**：\n{mood_sec}\n"
