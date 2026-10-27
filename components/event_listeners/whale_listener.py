@@ -1784,12 +1784,12 @@ class WhaleListener(EventListener):
     @staticmethod
     def _is_incoming_sticker(text: str) -> bool:
         s = (text or "").strip()
-        return "<emoji " in s or s.startswith("<msg><emoji")
+        return s == "[动画表情]" or "<emoji " in s or s.startswith("<msg><emoji")
 
     @staticmethod
     def _is_incoming_voice(text: str) -> bool:
         s = (text or "").strip()
-        return "<voicemsg " in s or s.startswith("<msg><voicemsg")
+        return s in ("[语音]", "[语音消息]") or "<voicemsg " in s or s.startswith("<msg><voicemsg")
 
     @staticmethod
     def _should_ignore_plugin_command(text: str) -> bool:
@@ -1799,7 +1799,8 @@ class WhaleListener(EventListener):
         if not stripped:
             return True
         if (
-            "<emoji " in stripped
+            stripped in ("[动画表情]", "[语音]", "[语音消息]")
+            or "<emoji " in stripped
             or stripped.startswith("<msg><emoji")
             or "<voicemsg " in stripped
             or stripped.startswith("<msg><voicemsg")

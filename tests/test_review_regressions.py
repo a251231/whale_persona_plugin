@@ -243,6 +243,27 @@ class ListenerRegressions(ListenerHarness):
         await self.one_loop_iteration(self.listener._auto_moments_loop)
         self.listener._generate_and_post_moment.assert_not_awaited()
 
+    async def test_private_sticker_placeholder_is_not_ignored(self):
+        ctx = await self.ask("[动画表情]")
+        self.assertIsNotNone(ctx.event.reply_message_chain)
+        self.assertIn("微信表情包", self.prompt())
+
+    async def test_private_voice_placeholder_is_not_ignored(self):
+        ctx = await self.ask("[语音]")
+        self.assertIsNotNone(ctx.event.reply_message_chain)
+        self.assertIn("微信语音", self.prompt())
+
+    async def test_private_voice_xml_with_audio_b64_is_transcribed_and_replied(self):
+        with patch.object(
+            self.listener,
+            "_transcribe_incoming_voice",
+            AsyncMock(return_value=("今天中午吃什么呀", "开心", 3.1)),
+        ):
+            ctx = await self.ask('<msg><voicemsg audio_b64="UklGRg==" voicelength="3120" length="5529" /></msg>')
+        self.assertIsNotNone(ctx.event.reply_message_chain)
+        self.assertIn("今天中午吃什么呀", self.prompt())
+        self.assertIn("开心", self.prompt())
+
 
 class PublicUrlRegressions(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
