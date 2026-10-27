@@ -57,6 +57,7 @@ DEFAULT_SF_API_KEY = os.getenv("SILICONFLOW_API_KEY", "") or _LOCAL_SECRETS.get(
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_BOT_UUID = os.getenv("TARGET_BOT_UUID", "") or _LOCAL_SECRETS.get("target_bot_uuid", "")
+DEFAULT_OWNER_IDS = os.getenv("OWNER_IDS", "") or _LOCAL_SECRETS.get("owner_ids", "")
 SILICONFLOW_ASR_URL = "https://api.siliconflow.cn/v1/audio/transcriptions"
 SILICONFLOW_ASR_MODEL = "FunAudioLLM/SenseVoiceSmall"
 STATE_FILE = os.getenv("WHALE_STATE_FILE", "/app/data/whale_persona_state.json")
@@ -1094,6 +1095,120 @@ class WhaleListener(EventListener):
             f"🖼️ 配图：[{moment_item['meme']}]  |  🤍 点赞：{moment_item['likes']}（发「大肥鱼 点赞朋友圈」给她点赞涨心情）"
         )
         return card_text, meme_b64
+
+    async def _call_deepseek(
+        self,
+        sys_prompt: str,
+        user_prompt: str,
+        *,
+        temperature: float = 0.95,
+        max_tokens: int = 260,
+    ) -> str:
+        api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
+        if not api_key:
+            return ""
+        base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
+        model = self._normalize_api_model(self._get_config_str("deepseek_model", DEFAULT_MODEL))
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+            )
+            resp.raise_for_status()
+            r_json = resp.json()
+            used = int((r_json.get("usage") or {}).get("total_tokens", 0))
+            self._record_tokens(used)
+            return str(r_json.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+
+    def _format_fish_pond_wall(self, max_items: int = 5) -> tuple[list[str], str | None]:
+        moments_list = self._state.get("moments") or []
+        if not moments_list:
+            return ["📸 大肥鱼的鱼塘朋友圈动态墙目前还是空的哦~"], None
+        recent = moments_list[-max_items:]
+        lines = [f"📸 大肥鱼的鱼塘朋友圈动态墙（最近 {len(recent)} 条）：\n"]
+        for m_item in reversed(recent):
+            lines.append(
+                f"#{m_item.get('id')} [{m_item.get('at')}] (心情 {m_item.get('mood')}/100 | 🤍 {m_item.get('likes', 0)})\n"
+                f"「{m_item.get('text')}」 [配图:{m_item.get('meme')}]\n"
+            )
+        last_meme = self._resolve_meme_b64(str(recent[-1].get("meme", "干饭")))
+        return lines, (last_meme[1] if last_meme else None)
+
+    async def _browse_and_roast_moments(
+        self, *, is_group: bool, sender_id: str
+    ) -> tuple[str, str | None]:
+        """Reads loaded WeChat 4.1 Moments feed in owner private chat and generates Dafeiyu commentary;
+        strictly isolates group chats and non-owners to internal fish-pond moments wall.
+        """
+        if is_group:
+            wall_lines, last_meme_b64 = self._format_fish_pond_wall(max_items=5)
+            wall_lines.append(
+                "💡 群聊里只展示大肥鱼的鱼塘动态墙哦；想让我帮你刷真实微信朋友圈，请由主人在私聊里发送「大肥鱼 刷朋友圈」~"
+            )
+            return "\n".join(wall_lines), last_meme_b64
+
+        owner_ids_raw = self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip()
+        owners = set(re.split(r"[,，;；\s]+", owner_ids_raw)) - {""}
+        if owners and sender_id not in owners:
+            wall_lines, _ = self._format_fish_pond_wall(max_items=3)
+            msg = "哼，真实微信朋友圈只有主人才能让我帮忙刷哦~ 给你看看我的鱼塘动态墙吧！\n\n" + "\n".join(wall_lines)
+            return msg, None
+
+        ok_m, rows, err_msg = await df.fetch_wcf_moments(limit=8)
+        if not ok_m or not rows:
+            fallback_lines = [
+                f"🐟 刚刚探头去瞄了一眼微信朋友圈，不过暂时没读到列表（{err_msg or '列表为空'}）。",
+                "💡 小贴士：请先在电脑微信点开一下「朋友圈」窗口让列表加载，再发「大肥鱼 刷朋友圈」我就能帮你实时锐评啦！",
+            ]
+            if self._state.get("moments"):
+                wall_lines, _ = self._format_fish_pond_wall(max_items=3)
+                fallback_lines.append("\n" + "\n".join(wall_lines))
+            res_meme = self._resolve_meme_b64("偷看")
+            return "\n".join(fallback_lines), (res_meme[1] if res_meme else None)
+
+        digest = df.format_wcf_moments_digest(rows, max_items=8)
+        res_default = self._resolve_meme_b64("偷看")
+        default_meme_b64 = res_default[1] if res_default else None
+        api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
+        if api_key:
+            sys_prompt = (
+                f"{LIVE_PERSONA_BASE}\n\n"
+                "现在主人让你帮忙刷一下微信朋友圈。请以「大肥鱼」（毒舌傲娇又护短的小鲸鱼娘）的口吻，"
+                "对下面刷到的朋友圈动态做一段「朋友圈锐评」：挑 2~4 条最有意思的动态吐槽或点评，"
+                "控制在 120 字以内，不要使用 Markdown 标题或列表符号，不要加括号动作旁白，"
+                "可在最末尾附带一个 `[表情: 偷看]` 或 `[表情: 得意]` 等表情标签。"
+            )
+            user_prompt = f"刚刚刷到的最新微信朋友圈列表：\n{digest}\n\n请给出你的大肥鱼锐评："
+            try:
+                raw_roast = await self._call_deepseek(
+                    sys_prompt, user_prompt, temperature=0.95, max_tokens=260
+                )
+                if raw_roast:
+                    roast_clean, _, roast_meme_b64 = self._extract_text_and_meme(
+                        self._clean_reply(raw_roast)
+                    )
+                    roast_clean = roast_clean.replace("||", " ").strip()
+                    if roast_clean:
+                        return (
+                            f"📱 刚刚帮你刷了最新微信朋友圈：\n{digest}\n\n🐟 大肥鱼锐评：\n{roast_clean}",
+                            roast_meme_b64 or default_meme_b64,
+                        )
+            except Exception as e:
+                logger.warning("Browse moments DeepSeek roast failed: %s", e)
+
+        return (
+            f"📱 刚刚帮你刷了最新微信朋友圈：\n{digest}\n\n🐟 啧，大家今天动态还挺热闹嘛！",
+            default_meme_b64,
+        )
 
     async def _get_balance_str(self, api_key: str, base_url: str) -> str:
         if not api_key:
@@ -2178,7 +2293,7 @@ class WhaleListener(EventListener):
         target_id = launcher_id if is_group else sender_id
         control = ui.handle_control(
             self._state, cmd_norm, is_group=is_group, target_id=target_id,
-            sender_id=sender_id, owner_ids=self._get_config_str("owner_ids", ""),
+            sender_id=sender_id, owner_ids=self._get_config_str("owner_ids", DEFAULT_OWNER_IDS),
         )
         if control is not None:
             message, changed = control
@@ -2554,6 +2669,20 @@ class WhaleListener(EventListener):
             lines.append("💡 发送「大肥鱼 发朋友圈 [主题]」让她发新动态，或发「大肥鱼 点赞朋友圈」给她点赞！")
             last_meme = self._resolve_meme_b64(str(recent[-1].get("meme", "干饭")))
             self._reply(event_ctx, "\n".join(lines), last_meme[1] if last_meme else None)
+            return
+
+        if cmd_norm in (
+            "大肥鱼 刷朋友圈",
+            "大肥鱼 看朋友圈",
+            "大肥鱼 看看朋友圈",
+            "鲸鱼娘 刷朋友圈",
+            "鲸鱼娘 看朋友圈",
+            "刷朋友圈",
+        ):
+            msg_txt, meme_b64 = await self._browse_and_roast_moments(
+                is_group=is_group, sender_id=sender_id
+            )
+            self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
             return
 
         if cmd_norm in ("大肥鱼 点赞朋友圈", "大肥鱼 点赞"):

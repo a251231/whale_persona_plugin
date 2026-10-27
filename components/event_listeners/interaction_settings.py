@@ -160,7 +160,7 @@ def settings_text(state: dict[str, Any], scope: str, *, advanced: bool = False) 
         "查询：大肥鱼 心情 / 粮仓 / 搭话记录 / 表情库",
         "记忆维护：大肥鱼 记住 <内容> / 整理档案 / 失忆",
         "点播：大肥鱼 语音 <内容> / 表情 <名称> / 点歌 <歌名>",
-        "动态：大肥鱼 发朋友圈 [主题] / 朋友圈 / 点赞",
+        "动态：大肥鱼 发朋友圈 [主题] / 朋友圈 / 刷朋友圈 / 点赞",
     ])
     if is_group:
         repeat = cfg["repeat_config"]

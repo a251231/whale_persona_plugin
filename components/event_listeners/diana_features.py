@@ -1952,6 +1952,65 @@ async def publish_wcf_moment(
     return False
 
 
+async def fetch_wcf_moments(limit: int = 10) -> tuple[bool, list[dict[str, Any]], str]:
+    """Fetches loaded WeChat 4.1 Moments feed via WCF V4 Gateway (GET /api/moments).
+    Returns (ok, rows, message).
+    """
+    clamped = max(1, min(int(limit or 10), 30))
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.get(
+                f"{WCF_GATEWAY_URL}/api/moments",
+                params={"limit": clamped},
+            )
+            if r.status_code == 200:
+                data = r.json() if isinstance(r.json(), dict) else {}
+                rows = data.get("rows")
+                if data.get("status") == 0 and isinstance(rows, list):
+                    return True, rows, ""
+                msg = str(data.get("message") or "朋友圈列表暂未加载")
+                return False, [], msg
+            try:
+                err_data = r.json()
+                if isinstance(err_data, dict) and err_data.get("message"):
+                    return False, [], str(err_data["message"])
+            except Exception:
+                pass
+            return False, [], f"网关状态码 {r.status_code}"
+    except Exception as e:
+        logger.debug("WCF fetch_moments skipped or unavailable: %s", e)
+        return False, [], "微信网关暂未连接或不支持读取朋友圈"
+
+
+def format_wcf_moments_digest(rows: list[dict[str, Any]], max_items: int = 8) -> str:
+    """Formats raw /api/moments rows into a clean, readable digest string."""
+    if not rows:
+        return ""
+    lines: list[str] = []
+    for idx, item in enumerate(rows[:max_items], 1):
+        if not isinstance(item, dict):
+            continue
+        nick = str(item.get("nickname") or item.get("author") or "微信好友").strip()
+        if item.get("is_self"):
+            nick = f"{nick}（我）"
+        t_str = str(item.get("time") or "").strip()
+        if "T" in t_str:
+            t_str = t_str.split("T", 1)[-1][:5]
+        content = re.sub(r"\s+", " ", str(item.get("content") or "").strip())
+        if len(content) > 120:
+            content = content[:117] + "..."
+        media_cnt = int(item.get("media_count") or 0)
+        ctype = int(item.get("content_type") or 0)
+        media_tag = ""
+        if media_cnt > 0:
+            media_tag = f" [附图×{media_cnt}]" if ctype != 15 else f" [视频×{media_cnt}]"
+        elif not content:
+            content = "[纯图片/卡片动态]"
+        time_prefix = f"[{t_str}] " if t_str else ""
+        lines.append(f"{idx}. {time_prefix}{nick}：{content}{media_tag}")
+    return "\n".join(lines)
+
+
 # ==============================================================================
 # 9. 反套路活人感增强（动态口癖降温 + 炸毛赌气与哄好状态机）与微信 4.1 原生语音合成 (TTS)
 # ==============================================================================

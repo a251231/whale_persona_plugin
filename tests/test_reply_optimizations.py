@@ -8,8 +8,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import httpx
 from PIL import Image as PILImage
 from langbot_plugin.api.entities.builtin.platform.message import At, Image, MessageChain, Plain
+
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
 
 try:
     import test_review_regressions as harness
@@ -251,6 +254,123 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         self.assertFalse(self.listener._is_suitable_for_random_voice("订单号是 123456 收好"))
         self.assertFalse(self.listener._is_suitable_for_random_voice("看看 python_version 对不对"))
         self.assertTrue(self.listener._is_suitable_for_random_voice("笑死 你怎么还没睡"))
+
+    # ------------------------------------------------------------------
+    # 7. WeChat 4.1 Moments Feed Reading (`fetch_wcf_moments`) & Privacy Isolation
+    # ------------------------------------------------------------------
+    async def test_fetch_wcf_moments_and_format_digest_with_mock_transport(self):
+        original_client = _REAL_ASYNC_CLIENT
+        sample_rows = [
+            {
+                "id": "1001",
+                "author": "wxid_friend1",
+                "nickname": "小王",
+                "is_self": False,
+                "time": "2026-10-27T14:30:00",
+                "content": "终于下班去吃火锅啦！",
+                "media_count": 3,
+                "content_type": 1,
+            },
+            {
+                "id": "1002",
+                "author": "wxid_self",
+                "nickname": "大肥鱼",
+                "is_self": True,
+                "time": "2026-10-27T12:15:00",
+                "content": "",
+                "media_count": 1,
+                "content_type": 15,
+            },
+        ]
+
+        def respond_ok(req: httpx.Request) -> httpx.Response:
+            self.assertEqual(req.url.path, "/api/moments")
+            self.assertEqual(req.url.params.get("limit"), "8")
+            return httpx.Response(200, json={"status": 0, "count": 2, "rows": sample_rows})
+
+        with patch.object(
+            httpx,
+            "AsyncClient",
+            side_effect=lambda **kw: original_client(transport=httpx.MockTransport(respond_ok), **kw),
+        ):
+            ok, rows, err = await df.fetch_wcf_moments(limit=8)
+        self.assertTrue(ok)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(err, "")
+
+        digest = df.format_wcf_moments_digest(rows, max_items=8)
+        self.assertIn("1. [14:30] 小王：终于下班去吃火锅啦！ [附图×3]", digest)
+        self.assertIn("2. [12:15] 大肥鱼（我）： [视频×1]", digest)
+
+        def respond_not_loaded(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                503,
+                json={
+                    "status": -1,
+                    "error": "moments_not_loaded",
+                    "message": "请先在电脑微信点击打开一次「朋友圈」窗口以加载缓存",
+                },
+            )
+
+        with patch.object(
+            httpx,
+            "AsyncClient",
+            side_effect=lambda **kw: original_client(transport=httpx.MockTransport(respond_not_loaded), **kw),
+        ):
+            ok_err, rows_err, msg_err = await df.fetch_wcf_moments(limit=8)
+        self.assertFalse(ok_err)
+        self.assertEqual(rows_err, [])
+        self.assertIn("打开一次「朋友圈」窗口", msg_err)
+
+    async def test_browse_and_roast_moments_privacy_isolation_and_owner_roast(self):
+        mock_fetch = self._patch(
+            df,
+            "fetch_wcf_moments",
+            AsyncMock(
+                return_value=(
+                    True,
+                    [
+                        {
+                            "nickname": "阿强",
+                            "is_self": False,
+                            "time": "2026-10-27T13:20:00",
+                            "content": "今天又在公司加班改需求",
+                            "media_count": 1,
+                            "content_type": 1,
+                        }
+                    ],
+                    "",
+                )
+            ),
+        )
+        self.model_reply = "阿强怎么天天在加班，老板给他发几个菜啊"
+
+        # 1) Group chat must NEVER call fetch_wcf_moments
+        ctx_grp = await self.ask("大肥鱼 刷朋友圈", group=True, room="room-A", sender="wxid_owner")
+        mock_fetch.assert_not_awaited()
+        grp_reply = "\n".join(getattr(c, "text", "") for c in (ctx_grp.event.reply_message_chain or []))
+        self.assertIn("鱼塘", grp_reply)
+        self.assertNotIn("阿强", grp_reply)
+
+        # 2) Non-owner in private chat when owner_ids is configured must NEVER call fetch_wcf_moments
+        prior_cfg = self.listener._get_config_str
+        self.listener._get_config_str = lambda key, default: (
+            "wxid_owner" if key == "owner_ids" else prior_cfg(key, default)
+        )
+        ctx_stranger = await self.ask("大肥鱼 刷朋友圈", group=False, room="wxid_other", sender="wxid_other")
+        mock_fetch.assert_not_awaited()
+        stranger_reply = "\n".join(getattr(c, "text", "") for c in (ctx_stranger.event.reply_message_chain or []))
+        self.assertIn("只有主人才能让我帮忙刷", stranger_reply)
+        self.assertNotIn("阿强", stranger_reply)
+
+        # 3) Owner in private chat calls fetch_wcf_moments and gets digest + Dafeiyu roast
+        ctx_owner = await self.ask("大肥鱼 刷朋友圈", group=False, room="wxid_owner", sender="wxid_owner")
+        mock_fetch.assert_awaited_once_with(limit=8)
+        owner_reply = "\n".join(getattr(c, "text", "") for c in (ctx_owner.event.reply_message_chain or []))
+        self.assertIn("刚刚帮你刷了最新微信朋友圈", owner_reply)
+        self.assertIn("[13:20] 阿强：今天又在公司加班改需求 [附图×1]", owner_reply)
+        self.assertIn("大肥鱼锐评", owner_reply)
+        self.assertIn("阿强怎么天天在加班", owner_reply)
 
 
 if __name__ == "__main__":
