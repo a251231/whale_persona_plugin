@@ -62,6 +62,8 @@ ALIASES: dict[str, tuple[str, str, Any, str]] = {
     "本群开启搭话": ("set", "group_interject_enabled", True, "group"),
     "本群关闭搭话": ("set", "group_interject_enabled", False, "group"),
     "切换": ("set", "mode", "toggle", "conversation"),
+    "切换模式": ("set", "mode", "toggle", "conversation"),
+    "切换人格": ("set", "mode", "toggle", "conversation"),
 }
 for item in SWITCHES:
     for alias in item.aliases:
@@ -69,8 +71,8 @@ for item in SWITCHES:
             ALIASES[f"{word}{alias}"] = ("set", item.key, value, item.scope)
             if alias:
                 ALIASES[f"{alias} {word}"] = ("set", item.key, value, item.scope)
-for label, value in (("活人", "live"), ("甜宠", "sweet")):
-    for alias in (f"模式 {label}", f"{label}版"):
+for label, value in (("活人", "live"), ("毒舌", "live"), ("甜宠", "sweet")):
+    for alias in (f"模式 {label}", f"人格 {label}", f"{label}版", f"{label}模式"):
         ALIASES[alias] = ("set", "mode", value, "conversation")
 
 

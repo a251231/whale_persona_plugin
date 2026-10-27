@@ -245,6 +245,16 @@ class CommandSettingsRegressions(harness.ListenerHarness):
         self.assertTrue(loaded["auto_moments_enabled"])
         self.assertTrue(loaded["voice_reply_enabled"])
 
+    async def test_persona_aliases_and_toggle_mode_commands(self):
+        await self.ask("大肥鱼 设置 人格 甜宠")
+        self.assertIn("人格：甜宠", self.reply(await self.ask("大肥鱼 设置 高级")))
+        await self.ask("大肥鱼 设置 人格 毒舌")
+        self.assertIn("人格：活人", self.reply(await self.ask("大肥鱼 设置 高级")))
+        await self.ask("大肥鱼 切换模式")
+        self.assertIn("人格：甜宠", self.reply(await self.ask("大肥鱼 设置 高级")))
+        await self.ask("大肥鱼 切换人格")
+        self.assertIn("人格：活人", self.reply(await self.ask("大肥鱼 设置 高级")))
+
 
 if __name__ == "__main__":
     unittest.main()
