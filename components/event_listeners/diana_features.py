@@ -266,6 +266,8 @@ def append_group_context_line(
     buf = group_buffers.setdefault(group_id, deque(maxlen=12))
     now_str = datetime.now(TZ).strftime("%H:%M")
     display_name = (sender_name or "").strip() or get_cached_display_name(sender_id, group_id)
+    if display_name in ("这位群友", "群友") and sender_id and len(sender_id) >= 4:
+        display_name = f"这位群友({sender_id[-4:]})"
     line = f"[{now_str} {display_name}]: {s}"
     if not buf or buf[-1] != line:
         buf.append(line)
@@ -392,6 +394,88 @@ async def evaluate_group_interject(
     return should_reply, reply, reason, used
 
 
+SILICONFLOW_CHAT_URL = "https://api.siliconflow.cn/v1/chat/completions"
+SILICONFLOW_VL_MODELS = (
+    "Qwen/Qwen2.5-VL-72B-Instruct",
+    "Pro/Qwen/Qwen2.5-VL-7B-Instruct",
+)
+
+
+def _resolve_sf_api_key(explicit_key: str = "") -> str:
+    k = (explicit_key or os.getenv("SILICONFLOW_API_KEY", "")).strip()
+    if k:
+        return k
+    for p in ("/app/data/whale_secrets.json", "/app/data/plugins/whale_secrets.json"):
+        try:
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                if isinstance(d, dict) and d.get("siliconflow_api_key"):
+                    return str(d["siliconflow_api_key"]).strip()
+        except Exception:
+            pass
+    return ""
+
+
+async def describe_image_via_siliconflow(
+    image_b64: str,
+    sf_api_key: str = "",
+    user_hint: str = "",
+) -> str:
+    """Uses SiliconFlow Qwen2.5-VL to extract OCR text and visual details from an image/sticker
+    when the primary chat model (e.g. deepseek-chat on api.deepseek.com) is text-only.
+    """
+    b64_clean = (image_b64 or "").strip()
+    if not b64_clean:
+        return ""
+    if "," in b64_clean and b64_clean.startswith("data:"):
+        b64_clean = b64_clean.split(",", 1)[1].strip()
+    key = _resolve_sf_api_key(sf_api_key)
+    if not key:
+        return ""
+
+    prompt_txt = (
+        "请客观、精准、详细地描述这张图片或表情包的全部视觉信息：\n"
+        "1. 逐字提取图中的所有文字、数字、聊天截图内容、气泡文字、标题或字幕（OCR）；\n"
+        "2. 描述画面中的人物/角色/动物/物品、表情神态、动作细节、场景氛围与笑点/梗点；\n"
+        "3. 不要寒暄，直接输出紧凑的视觉还原描述（控制在 220 字以内）。"
+    )
+    hint_clean = (user_hint or "").strip()
+    if hint_clean and hint_clean not in ("[图片]", "[动画表情]"):
+        prompt_txt += f"\n（发送者附言参考：{hint_clean[:100]}）"
+
+    data_uri = f"data:image/jpeg;base64,{b64_clean}"
+    for vl_model in SILICONFLOW_VL_MODELS:
+        try:
+            async with httpx.AsyncClient(timeout=22.0) as client:
+                r = await client.post(
+                    SILICONFLOW_CHAT_URL,
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json={
+                        "model": vl_model,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt_txt},
+                                    {"type": "image_url", "image_url": {"url": data_uri}},
+                                ],
+                            }
+                        ],
+                        "temperature": 0.2,
+                        "max_tokens": 320,
+                    },
+                )
+                if r.status_code == 200:
+                    data = r.json() if isinstance(r.json(), dict) else {}
+                    desc = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+                    if desc:
+                        return desc
+        except Exception as e:
+            logger.debug("SiliconFlow VL (%s) describe skipped: %s", vl_model, e)
+    return ""
+
+
 async def evaluate_group_active_continuation(
     *,
     api_key: str,
@@ -410,6 +494,7 @@ async def evaluate_group_active_continuation(
     vision_b64: str | None = None,
     mode: str = "live",
     bot_uuid: str = "",
+    sf_api_key: str = "",
 ) -> tuple[bool, str, str, int]:
     """
     Active Conversation Window judge & responder:
@@ -447,14 +532,21 @@ async def evaluate_group_active_continuation(
         f"请判断这句话是不是在继续跟你聊/吐槽你/议论你，并给出 JSON 结果（注意：你的 reply 正文中绝对不要写出当前说话人的名字「{display_name}」，直接说回复内容即可；只有提到群内其他第三方群友时才写对方真实昵称）："
     )
 
-    user_content: Any = (
-        [
-            {"type": "text", "text": user_prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{vision_b64}"}},
-        ]
-        if vision_b64
-        else user_prompt
-    )
+    use_vl_bridge = bool(vision_b64 and "api.deepseek.com" in (base_url or "").lower())
+    if use_vl_bridge and vision_b64:
+        vl_desc = await describe_image_via_siliconflow(vision_b64, sf_api_key=sf_api_key, user_hint=current_text)
+        if vl_desc:
+            user_prompt += f"\n\n【群友附图视觉识别详情】：\n{vl_desc}\n"
+        user_content: Any = user_prompt
+    else:
+        user_content = (
+            [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{vision_b64}"}},
+            ]
+            if vision_b64
+            else user_prompt
+        )
 
     try:
         async with httpx.AsyncClient(timeout=25.0) as client:
@@ -541,19 +633,24 @@ ALL_MEME_CATEGORIES = [
 ]
 
 STOLEN_MEMES_FILE = os.getenv("WHALE_STOLEN_MEMES_FILE", "/app/data/whale_stolen_memes.json")
+STOLEN_MEMES_BACKUP_FILE = os.getenv(
+    "WHALE_STOLEN_MEMES_BACKUP_FILE", "/app/data/plugins/whale_stolen_memes.json"
+)
 
 
 def load_stolen_memes(legacy_state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Loads stolen memes from dedicated JSON file (and migrates any legacy inline stolen_memes)."""
     memes: list[dict[str, Any]] = []
-    try:
-        if os.path.exists(STOLEN_MEMES_FILE):
-            with open(STOLEN_MEMES_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    memes = data
-    except Exception as e:
-        logger.warning("Failed to load stolen memes file: %s", e)
+    for candidate in (STOLEN_MEMES_FILE, STOLEN_MEMES_BACKUP_FILE):
+        try:
+            if candidate and os.path.exists(candidate):
+                with open(candidate, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list) and data:
+                        memes = data
+                        break
+        except Exception as e:
+            logger.warning("Failed to load stolen memes file (%s): %s", candidate, e)
 
     if legacy_state and isinstance(legacy_state.get("stolen_memes"), list):
         legacy_list = legacy_state.pop("stolen_memes", [])
@@ -567,14 +664,20 @@ def load_stolen_memes(legacy_state: dict[str, Any] | None = None) -> list[dict[s
 
 
 def save_stolen_memes(memes: list[dict[str, Any]]) -> None:
-    try:
-        os.makedirs(os.path.dirname(STOLEN_MEMES_FILE), exist_ok=True)
-        tmp = f"{STOLEN_MEMES_FILE}.{os.getpid()}.{random.randint(10000, 99999)}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(memes[-50:], f, ensure_ascii=False)
-        os.replace(tmp, STOLEN_MEMES_FILE)
-    except Exception as e:
-        logger.warning("Failed to save stolen memes: %s", e)
+    trimmed = memes[-50:]
+    for target_path in (STOLEN_MEMES_FILE, STOLEN_MEMES_BACKUP_FILE):
+        if not target_path:
+            continue
+        if target_path == STOLEN_MEMES_BACKUP_FILE and not os.path.isdir(os.path.dirname(target_path)):
+            continue
+        try:
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            tmp = f"{target_path}.{os.getpid()}.{random.randint(10000, 99999)}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(trimmed, f, ensure_ascii=False)
+            os.replace(tmp, target_path)
+        except Exception as e:
+            logger.warning("Failed to save stolen memes (%s): %s", target_path, e)
 
 
 async def steal_incoming_sticker(

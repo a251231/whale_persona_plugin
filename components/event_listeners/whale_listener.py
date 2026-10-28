@@ -37,17 +37,19 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 SECRETS_FILE = os.getenv("WHALE_SECRETS_FILE", "/app/data/whale_secrets.json")
+SECRETS_BACKUP_FILE = os.getenv("WHALE_SECRETS_BACKUP_FILE", "/app/data/plugins/whale_secrets.json")
 
 
 def _load_local_secrets() -> dict[str, str]:
-    try:
-        if os.path.exists(SECRETS_FILE):
-            with open(SECRETS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return {str(k): str(v) for k, v in data.items() if v}
-    except Exception:
-        pass
+    for candidate in (SECRETS_FILE, SECRETS_BACKUP_FILE):
+        try:
+            if candidate and os.path.exists(candidate):
+                with open(candidate, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict) and data:
+                        return {str(k): str(v) for k, v in data.items() if v}
+        except Exception:
+            pass
     return {}
 
 
@@ -61,6 +63,7 @@ DEFAULT_OWNER_IDS = os.getenv("OWNER_IDS", "") or _LOCAL_SECRETS.get("owner_ids"
 SILICONFLOW_ASR_URL = "https://api.siliconflow.cn/v1/audio/transcriptions"
 SILICONFLOW_ASR_MODEL = "FunAudioLLM/SenseVoiceSmall"
 STATE_FILE = os.getenv("WHALE_STATE_FILE", "/app/data/whale_persona_state.json")
+STATE_BACKUP_FILE = os.getenv("WHALE_STATE_BACKUP_FILE", "/app/data/plugins/whale_persona_state.json")
 TZ = ZoneInfo("Asia/Shanghai")
 
 SENSEVOICE_TAGS: dict[str, str] = {
@@ -331,7 +334,10 @@ SMS_OR_PHONE_RE = re.compile(r"^\d{4,11}$")
 STRIP_TRIGGER_RE = re.compile(r"^(?:@[^\s\u2005]+[\s\u2005]*)*(?:ai|AI|大肥鱼|鲸鱼娘|小鲸鱼)?[,，:：\s]*")
 GROUP_WAKE_RE = re.compile(r"(?:^(?:大肥鱼|鲸鱼娘|小鲸鱼)(?:[,，:：\s]|$))|(?:(?:大肥鱼|鲸鱼娘|小鲸鱼)[,，:：？\?\!\s]*$)")
 GROUP_MUTE_RE = re.compile(
-    r"(?:大肥鱼|鲸鱼娘|小鲸鱼|它).*(?:闭嘴|别说话|禁止.*说话|少插嘴|安静点|别吵|退下)|^(?:大肥鱼\s*)?本群禁止你说话$"
+    r"(?:大肥鱼|鲸鱼娘|小鲸鱼|它).*(?:闭嘴|别说话|禁止.*说话|少插嘴|安静点|别吵|退下|闭麦)|^(?:大肥鱼\s*)?本群禁止你说话$"
+)
+WOKEN_MUTE_RE = re.compile(
+    r"^(?:请你?|你|给我|先)?(?:闭嘴|别说话|安静(?:点|会儿|一下)?|少插嘴|别吵|退下|闭麦|禁止说话|本群禁止你说话)[！!。~～\s]*$"
 )
 NATURAL_RANDOM_MUSIC_RE = re.compile(
     r"^(?:大肥鱼[,，:：\s]*|鲸鱼娘[,，:：\s]*|小鲸鱼[,，:：\s]*)?(?:我想听歌|想听歌|来一?首歌|放一?首歌|唱一?首歌|播放音乐|随便来一?首歌|我要播放音乐.*)$"
@@ -469,6 +475,7 @@ class WhaleListener(EventListener):
         self._group_recent_images: dict[str, dict[str, Any]] = {}
         self._private_recent_images: dict[str, dict[str, Any]] = {}
         self._owner_moments_cache: dict[str, list[dict[str, Any]]] = {}
+        self._cached_wcf_moments: tuple[float, list[dict[str, Any]]] = (0.0, [])
         self._owner_friend_requests_cache: dict[str, list[dict[str, Any]]] = {}
         self._chat_moment_check_ts: dict[str, float] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
@@ -560,46 +567,52 @@ class WhaleListener(EventListener):
                 return k, b64
         return None
 
+    @staticmethod
+    def _is_valid_wechat_uid(uid: str) -> bool:
+        s = (uid or "").strip()
+        return bool(s and len(s) <= 127 and s.isascii() and not any(c.isspace() for c in s))
+
     def _load_persistent_state(self) -> dict[str, Any]:
-        try:
-            if os.path.exists(STATE_FILE):
-                with open(STATE_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        data.setdefault("meme_enabled", True)
-                        data.setdefault("moments", [])
-                        data.setdefault("enabled_groups", [])
-                        data.setdefault("groups", {})
-                        data.setdefault("repeat_enabled", True)
-                        data.setdefault("repeat_config", {"min_users": 2, "prob": 0.30, "cooldown_sec": 60})
-                        data.setdefault("group_interject_enabled", True)
-                        data.setdefault("interject_logs", [])
-                        data.setdefault("steal_meme_enabled", True)
-                        data.setdefault("web_search_enabled", True)
-                        data.setdefault("voice_reply_enabled", True)
-                        data.setdefault("auto_moments_enabled", True)
-                        data.setdefault("auto_accept_friend_enabled", True)
-                        data.setdefault("friend_verify_keywords", [])
-                        data.setdefault("accepted_friend_requests", {})
-                        data.setdefault("interacted_moments", {})
-                        users_map = data.get("users") or {}
-                        for uid in list(users_map.keys()):
-                            u_obj = users_map[uid]
-                            if not isinstance(u_obj, dict):
-                                users_map.pop(uid, None)
-                                continue
-                            if u_obj.get("facts"):
-                                u_obj.setdefault("hasPrivateChat", True)
-                                u_obj["facts"] = _dedup_facts_in_place(list(u_obj.get("facts") or []))
-                            elif not u_obj.get("hasPrivateChat", False):
-                                # Clean up non-private group-only user stubs
-                                users_map.pop(uid, None)
-                        for gid in data.get("enabled_groups", []):
-                            if gid not in data["groups"]:
-                                data["groups"][gid] = _default_group_state()
-                        return data
-        except Exception as e:
-            logger.warning("Failed to load whale state: %s", e)
+        for candidate in (STATE_FILE, STATE_BACKUP_FILE):
+            try:
+                if candidate and os.path.exists(candidate):
+                    with open(candidate, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if isinstance(data, dict):
+                            data.setdefault("meme_enabled", True)
+                            data.setdefault("moments", [])
+                            data.setdefault("enabled_groups", [])
+                            data.setdefault("groups", {})
+                            data.setdefault("repeat_enabled", True)
+                            data.setdefault("repeat_config", {"min_users": 2, "prob": 0.30, "cooldown_sec": 60})
+                            data.setdefault("group_interject_enabled", True)
+                            data.setdefault("interject_logs", [])
+                            data.setdefault("steal_meme_enabled", True)
+                            data.setdefault("web_search_enabled", True)
+                            data.setdefault("voice_reply_enabled", True)
+                            data.setdefault("auto_moments_enabled", True)
+                            data.setdefault("auto_accept_friend_enabled", True)
+                            data.setdefault("friend_verify_keywords", [])
+                            data.setdefault("accepted_friend_requests", {})
+                            data.setdefault("interacted_moments", {})
+                            users_map = data.get("users") or {}
+                            for uid in list(users_map.keys()):
+                                u_obj = users_map[uid]
+                                if not isinstance(u_obj, dict) or not self._is_valid_wechat_uid(str(uid)):
+                                    users_map.pop(uid, None)
+                                    continue
+                                if u_obj.get("facts"):
+                                    u_obj.setdefault("hasPrivateChat", True)
+                                    u_obj["facts"] = _dedup_facts_in_place(list(u_obj.get("facts") or []))
+                                elif not u_obj.get("hasPrivateChat", False):
+                                    # Clean up non-private group-only user stubs
+                                    users_map.pop(uid, None)
+                            for gid in data.get("enabled_groups", []):
+                                if gid not in data["groups"]:
+                                    data["groups"][gid] = _default_group_state()
+                            return data
+            except Exception as e:
+                logger.warning("Failed to load whale state (%s): %s", candidate, e)
         return {
             "enabled": True,
             "mode": "live",
@@ -625,14 +638,19 @@ class WhaleListener(EventListener):
         }
 
     def _save_persistent_state(self) -> None:
-        try:
-            os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-            tmp = f"{STATE_FILE}.{os.getpid()}.{random.randint(10000, 99999)}.tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self._state, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, STATE_FILE)
-        except Exception as e:
-            logger.warning("Failed to save whale state: %s", e)
+        for target_path in (STATE_FILE, STATE_BACKUP_FILE):
+            if not target_path:
+                continue
+            if target_path == STATE_BACKUP_FILE and not os.path.isdir(os.path.dirname(target_path)):
+                continue
+            try:
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                tmp = f"{target_path}.{os.getpid()}.{random.randint(10000, 99999)}.tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(self._state, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, target_path)
+            except Exception as e:
+                logger.warning("Failed to save whale state (%s): %s", target_path, e)
 
     def _get_user_state(self, user_id: str) -> dict[str, Any]:
         users = self._state.setdefault("users", {})
@@ -747,6 +765,22 @@ class WhaleListener(EventListener):
             f"{status_line}\n{origin}\n"
             "这是你这会儿心里的底子，自然带进语气里即可，别把这段设定原话念出来；"
             "若对方已经开启新话题或询问正事，仅保留对应的情绪语气温度，严禁重提上一轮的旧事原因。"
+        )
+
+    def _build_self_moments_section(self, max_items: int = 3) -> str:
+        """Returns a prompt perception line of Dafeiyu's own recently published Moments so she remembers what she posted."""
+        moments_list = self._state.get("moments") or []
+        if not isinstance(moments_list, list) or not moments_list:
+            return ""
+        recent = [m for m in moments_list[-max_items:] if isinstance(m, dict) and m.get("text")]
+        if not recent:
+            return ""
+        items_str = "；".join(
+            f"#{m.get('id', '?')}[{m.get('at', '')}]「{str(m.get('text', '')).strip()[:80]}」(配图:{m.get('meme', '干饭')})"
+            for m in reversed(recent)
+        )
+        return (
+            f"- **你自己最近发过的微信朋友圈动态（别人问起你发的朋友圈或动态时据此回答，平时不必主动背诵）**：{items_str}\n"
         )
 
     def _build_intimacy_section(self, u: dict[str, Any], mode: str = "live") -> str:
@@ -1234,6 +1268,7 @@ class WhaleListener(EventListener):
 
         if session_key:
             self._owner_moments_cache[session_key] = list(rows[:8])
+        self._cached_wcf_moments = (time.time(), list(rows))
 
         digest = df.format_wcf_moments_digest(rows, max_items=8)
         interact_tip = "\n\n💡 可发「大肥鱼 点赞朋友圈 1」或「大肥鱼 评论朋友圈 1 [内容]」让我直接去微信朋友圈点赞/神评！"
@@ -1600,8 +1635,11 @@ class WhaleListener(EventListener):
 
         # Anti-mechanical rhythm gate:
         # 1) Never split into 2 bubbles on two consecutive turns in the same session
-        # 2) Merge very short 2-part splits (<16 chars total) unless the first bubble is a short reaction word
+        # 2) Never send a standalone '?' bubble when followed by a second bubble
+        # 3) Merge very short 2-part splits (<16 chars total) unless the first bubble is a short reaction word
         if len(bubbles) == 2:
+            if bubbles[0] in ("？", "?", "？？", "!", "！", "…", "..."):
+                return [bubbles[1]]
             total_chars = len(bubbles[0]) + len(bubbles[1])
             is_reaction_lead = bubbles[0] in SHORT_REACTION_BUBBLES
             if last_was_multi or (total_chars < 16 and not is_reaction_lead):
@@ -2114,13 +2152,15 @@ class WhaleListener(EventListener):
                 )
                 reply, _, meme_b64 = self._extract_text_and_meme(raw_reply)
                 if reply:
-                    now_ms = int(time.time() * 1000)
-                    u["lastSpeakUpAt"] = now_ms
-                    u["missStreak"] = 0
-                    self._save_persistent_state()
+                    sent_ok = True
                     if not manual:
-                        await self._send_proactive_wechat(user_id, reply, meme_b64)
-                    return reply, meme_b64
+                        sent_ok = await self._send_proactive_wechat(user_id, reply, meme_b64)
+                    if sent_ok:
+                        now_ms = int(time.time() * 1000)
+                        u["lastSpeakUpAt"] = now_ms
+                        u["missStreak"] = 0
+                        self._save_persistent_state()
+                        return reply, meme_b64
         except Exception as e:
             logger.warning("Speak-up generation failed: %s", e)
         return None, None
@@ -2137,13 +2177,22 @@ class WhaleListener(EventListener):
                 now_ms = int(time.time() * 1000)
                 users = self._state.get("users", {})
                 for uid, u in list(users.items()):
-                    if not uid.startswith("wxid_") or not bool(u.get("hasPrivateChat", False)):
+                    if (
+                        not uid.startswith("wxid_")
+                        or not self._is_valid_wechat_uid(uid)
+                        or not bool(u.get("hasPrivateChat", False))
+                    ):
                         continue
                     settings = self._settings_for(uid)
                     if not settings["enabled"] or not settings["speak_up_enabled"]:
                         continue
                     last_chat = int(u.get("lastChatAt", 0))
                     last_speak = int(u.get("lastSpeakUpAt", 0))
+                    if last_speak >= last_chat and last_speak > 0:
+                        # Already sent a proactive message since the user's last reply; never double-text!
+                        continue
+                    if last_speak > 0 and (now_ms - last_speak) < 4 * 3600 * 1000:
+                        continue
                     last_any = max(last_chat, last_speak)
                     if last_any <= 0:
                         continue
@@ -2208,7 +2257,7 @@ class WhaleListener(EventListener):
         active: dict[str, dict[str, Any]] = {}
         users = self._state.get("users") or {}
         for uid, u in list(users.items()):
-            if not isinstance(u, dict) or not bool(u.get("hasPrivateChat", False)):
+            if not self._is_valid_wechat_uid(str(uid)) or not isinstance(u, dict) or not bool(u.get("hasPrivateChat", False)):
                 continue
             last_chat = int(u.get("lastChatAt") or 0)
             if last_chat <= 0 or (cur_ms - last_chat) > cutoff_ms:
@@ -2312,6 +2361,7 @@ class WhaleListener(EventListener):
         ok_m, rows, _ = await df.fetch_wcf_moments(limit=15)
         if not ok_m or not rows:
             return 0
+        self._cached_wcf_moments = (time.time(), list(rows))
 
         now_sec = int(time.time())
         owners = set(re.split(r"[,，;；\s]+", self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip())) - {""}
@@ -2504,21 +2554,37 @@ class WhaleListener(EventListener):
     ) -> str:
         """Opportunistically checks if the current private chat friend posted a recent WeChat Moment (<24h),
         likes/comments on it if unseen, and returns a prompt perception line so Dafeiyu can naturally mention it.
+        Uses in-memory cached moments on normal chat turns so private replies never block on synchronous UI scraping.
         """
         now = time.time()
-        mentioned_moments = any(
+        asking_bot_moment = any(
+            kw in cleaned_text for kw in ("你发的朋友圈", "你的朋友圈", "你朋友圈", "看你朋友圈")
+        )
+        mentioned_moments = not asking_bot_moment and any(
             kw in cleaned_text for kw in ("看我朋友圈", "我刚发了朋友圈", "我发了朋友圈", "看我动态", "刚发了条朋友圈")
         )
-        if not mentioned_moments:
+        rows: list[dict[str, Any]] = []
+        if mentioned_moments:
+            self._chat_moment_check_ts[session_key] = now
+            ok_m, fetched_rows, _ = await df.fetch_wcf_moments(limit=15)
+            if ok_m and fetched_rows:
+                rows = list(fetched_rows)
+                self._cached_wcf_moments = (now, rows)
+            else:
+                rows = list(self._cached_wcf_moments[1])
+        else:
             if not self._state.get("auto_moments_enabled", False) or history_len < 2:
                 return ""
             last_chk = self._chat_moment_check_ts.get(session_key, 0.0)
             if (now - last_chk) < 1200 or random.random() >= 0.35:
                 return ""
+            cached_ts, cached_rows = self._cached_wcf_moments
+            if not cached_rows or (now - cached_ts) > 3600:
+                return ""
+            self._chat_moment_check_ts[session_key] = now
+            rows = list(cached_rows)
 
-        self._chat_moment_check_ts[session_key] = now
-        ok_m, rows, _ = await df.fetch_wcf_moments(limit=15)
-        if not ok_m or not rows:
+        if not rows:
             return ""
 
         now_sec = int(now)
@@ -2593,6 +2659,14 @@ class WhaleListener(EventListener):
             return default
 
     async def _resolve_bot_uuid(self, event_ctx: context.EventContext) -> str:
+        target_bot_uuid = self._get_config_str("target_bot_uuid", DEFAULT_BOT_UUID)
+        launcher_id = str(getattr(event_ctx.event, "launcher_id", "") or "")
+        sender_id = str(getattr(event_ctx.event, "sender_id", "") or "")
+        if target_bot_uuid and (
+            launcher_id.startswith(("oc_", "ou_", "on_"))
+            or sender_id.startswith(("ou_", "on_"))
+        ):
+            return "feishu_ignored"
         try:
             bot_uuid = await event_ctx.get_bot_uuid()
             if bot_uuid:
@@ -2643,7 +2717,7 @@ class WhaleListener(EventListener):
         if not stripped:
             return True
         if (
-            stripped in ("[动画表情]", "[语音]", "[语音消息]")
+            stripped in ("[图片]", "[动画表情]", "[语音]", "[语音消息]")
             or "<emoji " in stripped
             or stripped.startswith("<msg><emoji")
             or "<voicemsg " in stripped
@@ -2731,18 +2805,18 @@ class WhaleListener(EventListener):
             return False
         last_speaker = str(conv.get("last_speaker_id", ""))
         active_speakers: set[str] = conv.get("active_speakers") or set()
-        # 1) Golden Window (95s): the same person (or active participant) who just chatted with Dafeiyu follows up
-        if (sender_id == last_speaker or sender_id in active_speakers) and elapsed <= 95.0:
+        # 1) Golden Window (75s): the same person (or active participant) who just chatted with Dafeiyu follows up
+        if (sender_id == last_speaker or sender_id in active_speakers) and elapsed <= 75.0:
             return True
-        # 2) Hot Group Window (60s): another group member speaks right after Dafeiyu spoke
-        if elapsed <= 60.0:
+        # 2) Hot Group Window (20s): another group member speaks right after Dafeiyu spoke
+        if elapsed <= 20.0:
             return True
-        # 3) Discussion / Pronoun Window (up to 180s): group members discussing Dafeiyu using pronouns/referents
+        # 3) Discussion / Referent Window (up to 90s): group members explicitly discussing Dafeiyu
         discussion_kws = (
-            "你", "他", "她", "它", "这家伙", "这货", "这鱼", "肥鱼", "鲸鱼",
-            "机器人", "AI", "ai", "人机", "关心", "骚扰", "心梗", "尴尬", "朋友", "聊天",
+            "这家伙", "这货", "这鱼", "肥鱼", "鲸鱼", "鲸鱼娘", "小鲸鱼",
+            "机器人", "AI", "ai", "人机",
         )
-        if elapsed <= 180.0 and any(kw in s for kw in discussion_kws):
+        if elapsed <= 90.0 and any(kw in s for kw in discussion_kws):
             return True
         return False
 
@@ -2989,8 +3063,13 @@ class WhaleListener(EventListener):
                     self._group_msg_buffers, session_key, sender_id, "[发了一张图片]", sender_name=sender_name
                 )
 
-            # Natural-language group quiet/mute command (e.g. "它能闭嘴吗" / "大肥鱼 本群禁止你说话" / "大肥鱼 闭嘴")
-            if GROUP_MUTE_RE.search(cmd_norm):
+            # Natural-language group quiet/mute command (e.g. "它能闭嘴吗" / "大肥鱼 本群禁止你说话" / "@大肥鱼 闭嘴")
+            is_woken_early = self._is_group_woken(msg_chain, effective_text, ev_raw_obj) or is_quoting_bot
+            if (
+                GROUP_MUTE_RE.search(effective_text)
+                or GROUP_MUTE_RE.search(cmd_norm)
+                or (is_woken_early and WOKEN_MUTE_RE.match(cmd_norm))
+            ):
                 self._group_mute_until[session_key] = time.time() + 1800
                 self._group_active_conv.pop(session_key, None)
                 await self._reply_group_no_at(
@@ -3140,8 +3219,13 @@ class WhaleListener(EventListener):
                                 )
                             )
                             first_img = send_cont_meme if len(bubbles) == 1 else None
-                            # Direction 2A: Smart Group @ Rhythm — do not @ on consecutive follow-ups with the same speaker
-                            if is_same_sp:
+                            is_anon_sp = (
+                                not sender_name
+                                or sender_name in ("这位群友", "群友", "朋友")
+                                or sender_name.lower().startswith("wxid_")
+                            )
+                            # Direction 2A: Smart Group @ Rhythm — do not @ on consecutive follow-ups or unresolved wxid
+                            if is_same_sp or is_anon_sp:
                                 await self._reply_group_no_at(event_ctx, launcher_id, bubbles[0], first_img)
                             else:
                                 self._reply(event_ctx, bubbles[0], first_img)
@@ -3248,7 +3332,8 @@ class WhaleListener(EventListener):
                                 self._histories[session_key] = hist[-24:]
                                 buf = self._group_msg_buffers.setdefault(session_key, deque(maxlen=12))
                                 buf.append(f"[{datetime.now(TZ).strftime('%H:%M')} 大肥鱼]: {joined_log}")
-                                self._record_group_bot_activity(session_key, sender_id, joined_log)
+                                self._group_interject_meta[session_key] = {"last_judge_ts": now_ts, "unjudged_count": 0}
+                                self._record_bot_sent(joined_log, session_key)
                                 first_img = send_interj_meme if len(bubbles) == 1 else None
                                 await self._reply_group_no_at(event_ctx, launcher_id, bubbles[0], first_img)
                                 if len(bubbles) > 1:
@@ -3886,6 +3971,7 @@ class WhaleListener(EventListener):
         )
 
         base_persona = LIVE_PERSONA_BASE if settings["mode"] == "live" else SWEET_PERSONA_BASE
+        self_moments_line = self._build_self_moments_section()
 
         if is_group:
             # Group Chat: Use Group Archive (groups[launcher_id]) + Read-Only Private Familiarity + Recent Group Chat Flow
@@ -3922,6 +4008,7 @@ class WhaleListener(EventListener):
                 f"{name_rule_line}"
                 f"- **本群专属群聊档案（群梗与近期话题）**：\n{g_mem_sec}\n"
                 f"{familiar_sec}\n"
+                f"{self_moments_line}"
                 f"{schedule_line}"
                 f"- **当前日期与时段**：{coarse_time_str}\n"
                 f"- **本群气氛心情**：{g_mood}/100（{g_reason}）\n"
@@ -3956,6 +4043,7 @@ class WhaleListener(EventListener):
                 f"{nick_line}"
                 f"- **你们的亲密度与关系阶段**：{intimacy_sec}\n"
                 f"- **鱼的记忆（dsh-fish-memory）**：\n{mem_sec}\n"
+                f"{self_moments_line}"
                 f"{moment_ctx_line}"
                 f"{schedule_line}"
                 f"- **当前日期与时段**：{coarse_time_str}\n"
@@ -4010,7 +4098,23 @@ class WhaleListener(EventListener):
         messages: list[dict[str, Any]] = [{"role": "system", "content": dynamic_system_prompt}]
         for _, r, c in history:
             messages.append({"role": r, "content": c})
-        if vision_b64:
+        use_vl_bridge = bool(vision_b64 and "api.deepseek.com" in base_url.lower())
+        if use_vl_bridge and vision_b64:
+            sf_key = self._get_config_str("siliconflow_api_key", DEFAULT_SF_API_KEY)
+            vl_desc = await df.describe_image_via_siliconflow(
+                vision_b64, sf_api_key=sf_key, user_hint=cleaned_text
+            )
+            if vl_desc:
+                user_msg_for_llm += (
+                    "\n\n【附图/表情包视觉内容（请直接当作你亲眼看见的图片画面与文字自然回应，绝不要提及“视觉模型”或“识别报告”）】：\n"
+                    f"{vl_desc}"
+                )
+            else:
+                user_msg_for_llm += (
+                    "\n\n（注：对方发了一张图片，但当前网络波动没能加载出画面；请直接自然告诉对方图没刷出来，严禁猜测或编造图片内容！）"
+                )
+            messages.append({"role": "user", "content": user_msg_for_llm})
+        elif vision_b64:
             messages.append(
                 {
                     "role": "user",
@@ -4051,6 +4155,26 @@ class WhaleListener(EventListener):
                     },
                     json=req_payload,
                 )
+                if resp.status_code == 400 and vision_b64 and isinstance(messages[-1].get("content"), list):
+                    sf_key = self._get_config_str("siliconflow_api_key", DEFAULT_SF_API_KEY)
+                    vl_desc = await df.describe_image_via_siliconflow(
+                        vision_b64, sf_api_key=sf_key, user_hint=cleaned_text
+                    )
+                    fallback_msg = user_msg_for_llm + (
+                        f"\n\n【附图/表情包视觉内容】：\n{vl_desc}"
+                        if vl_desc
+                        else "\n\n（注：对方发了一张图片，但当前没能加载出画面；请自然告诉对方图没刷出来，不要瞎猜图片内容！）"
+                    )
+                    messages[-1] = {"role": "user", "content": fallback_msg}
+                    req_payload["messages"] = messages
+                    resp = await client.post(
+                        f"{base_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=req_payload,
+                    )
                 resp.raise_for_status()
                 data = resp.json()
                 used_tokens = int((data.get("usage") or {}).get("total_tokens", 0))
@@ -4181,11 +4305,21 @@ class WhaleListener(EventListener):
         self._histories[session_key] = history
 
         prev_conv = self._group_active_conv.get(session_key) or {}
+        is_anon_speaker = (
+            not sender_name
+            or sender_name in ("这位群友", "群友", "朋友")
+            or sender_name.lower().startswith("wxid_")
+        )
         no_at_group_reply = bool(
             is_group
-            and prev_conv.get("last_speaker_id") == sender_id
-            and (now - float(prev_conv.get("last_bot_ts", 0.0))) <= 60.0
-            and not self._is_group_woken(msg_chain, effective_text, ev_raw_obj)
+            and (
+                is_anon_speaker
+                or (
+                    prev_conv.get("last_speaker_id") == sender_id
+                    and (now - float(prev_conv.get("last_bot_ts", 0.0))) <= 60.0
+                    and not self._is_group_woken(msg_chain, effective_text, ev_raw_obj)
+                )
+            )
         )
 
         if is_group:

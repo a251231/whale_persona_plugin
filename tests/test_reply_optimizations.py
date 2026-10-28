@@ -711,6 +711,99 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         mock_accept.assert_awaited_once_with(req_id_2)
         self.assertIn("已通过「路人乙」的好友申请", acc_txt)
 
+    # ------------------------------------------------------------------
+    # 10. Live Log Diagnostics Optimizations (Vision Bridge, Self Moments, Speak-Up Anti-Spam, Group Mute)
+    # ------------------------------------------------------------------
+    async def test_image_placeholder_not_ignored_and_vl_bridge_for_deepseek_api(self):
+        # 1) Plain "[图片]" placeholder without base64 must not be dropped as a plugin command
+        ctx_placeholder = await self.ask("[图片]")
+        self.assertTrue(self.requests)
+        self.assertIsNotNone(ctx_placeholder.event.reply_message_chain)
+        self.assertIn("图没刷出来", self.prompt())
+
+        # 2) When base_url is https://api.deepseek.com, vision_b64 is bridged via describe_image_via_siliconflow as text
+        prior_cfg = self.listener._get_config_str
+        self.listener._get_config_str = lambda key, default: (
+            "https://api.deepseek.com" if key == "deepseek_base_url" else prior_cfg(key, default)
+        )
+        mock_vl = self._patch(
+            df,
+            "describe_image_via_siliconflow",
+            AsyncMock(return_value="画面是一盒草莓牛奶和笔记本电脑，屏幕上写着加班快乐"),
+        )
+        buf = io.BytesIO()
+        PILImage.new("RGB", (2, 2)).save(buf, format="JPEG")
+        img_b64 = base64.b64encode(buf.getvalue()).decode()
+
+        ctx_vl = await self.ask("看看这张图", image=img_b64)
+        mock_vl.assert_awaited_once()
+        self.assertIsNotNone(ctx_vl.event.reply_message_chain)
+        user_content = self.payload()["messages"][-1]["content"]
+        self.assertIsInstance(user_content, str)
+        self.assertIn("草莓牛奶", user_content)
+
+    async def test_self_moments_memory_injected_and_nonblocking_friend_moment_check(self):
+        self.listener._state["moments"] = [
+            {
+                "id": 13,
+                "at": "2026-10-27 23:25",
+                "text": "今晚有草莓牛奶配歌，本鱼决定原地躺平",
+                "meme": "得意",
+                "mood": 78,
+                "likes": 2,
+            }
+        ]
+        self.listener._state["auto_moments_enabled"] = True
+        mock_fetch = self._patch(df, "fetch_wcf_moments", AsyncMock(return_value=(True, [], "")))
+
+        await self.ask("你刚发的朋友圈是什么意思呀")
+        mock_fetch.assert_not_awaited()
+        sys_prompt = self.prompt()
+        self.assertIn("今晚有草莓牛奶配歌，本鱼决定原地躺平", sys_prompt)
+
+    async def test_speak_up_loop_never_double_texts_unanswered_user_and_cleans_invalid_uid(self):
+        self.assertTrue(self.listener._is_valid_wechat_uid("wxid_kndjpm85zk22"))
+        self.assertFalse(self.listener._is_valid_wechat_uid("wxid_kndjpm85zk每天至少八杯水"))
+
+        now_ms = int(time.time() * 1000)
+        self.listener._state["users"] = {
+            "wxid_kndjpm85zk每天至少八杯水": {
+                "hasPrivateChat": True,
+                "lastChatAt": now_ms - 7200 * 1000,
+                "lastSpeakUpAt": 0,
+            },
+            "wxid_unanswered": {
+                "hasPrivateChat": True,
+                "lastChatAt": now_ms - 10800 * 1000,
+                "lastSpeakUpAt": now_ms - 5400 * 1000,  # Already spoke up after lastChatAt!
+            },
+        }
+        self.listener._trigger_speak_up_for_user = AsyncMock()
+        fixed = SimpleNamespace(now=lambda _: datetime(2026, 10, 27, 22, 0, tzinfo=wl.TZ))
+        with patch.object(wl.asyncio, "sleep", AsyncMock(side_effect=[None, asyncio.CancelledError()])), \
+                patch.object(wl, "datetime", fixed), \
+                patch.object(wl.random, "uniform", return_value=0.0):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.listener._speak_up_loop()
+        self.listener._trigger_speak_up_for_user.assert_not_awaited()
+
+    async def test_group_woken_mute_and_interject_does_not_open_continuation_window(self):
+        self._patch(df, "get_dynamic_bot_names", return_value=("大肥鱼", "鲸鱼娘", "小鲸鱼", "free"))
+        self._patch(df, "send_wcf_text_or_image", AsyncMock(return_value=True))
+
+        # 1) Unprompted interjection must NOT open active continuation window
+        self._patch(
+            df,
+            "evaluate_group_interject",
+            AsyncMock(return_value=(True, "我也想吃火锅", "聊到火锅", 10)),
+        )
+        await self.ask("今晚吃火锅吗", group=True, room="room-A", sender="wxid_member1")
+        self.assertNotIn("bot-A:group:room-A", self.listener._group_active_conv)
+
+        # 2) "@Free 闭嘴" must trigger 30-min group mute even after @Free is stripped
+        await self.ask("@Free 闭嘴", group=True, room="room-A", sender="wxid_member1")
+        self.assertGreater(self.listener._group_mute_until.get("bot-A:group:room-A", 0.0), time.time())
+
 
 if __name__ == "__main__":
     unittest.main()
