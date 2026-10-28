@@ -546,21 +546,16 @@ async def evaluate_group_active_continuation(
         f"请判断这句话是不是在继续跟你聊/吐槽你/议论你，并给出 JSON 结果（注意：你的 reply 正文中绝对不要写出当前说话人的名字「{display_name}」，直接说回复内容即可；只有提到群内其他第三方群友时才写对方真实昵称）："
     )
 
-    use_vl_bridge = bool(vision_b64 and "api.deepseek.com" in (base_url or "").lower())
-    if use_vl_bridge and vision_b64:
-        vl_desc = await describe_image_via_siliconflow(vision_b64, sf_api_key=sf_api_key, user_hint=current_text)
-        if vl_desc:
-            user_prompt += f"\n\n【群友附图视觉识别详情】：\n{vl_desc}\n"
-        user_content: Any = user_prompt
-    else:
-        user_content = (
-            [
-                {"type": "text", "text": user_prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{vision_b64}"}},
-            ]
-            if vision_b64
-            else user_prompt
-        )
+    if vision_b64 and "api.deepseek.com" in (base_url or "").lower() and (model or "").lower() == "deepseek-chat":
+        model = "deepseek-flash"
+    user_content: Any = (
+        [
+            {"type": "text", "text": user_prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{vision_b64}"}},
+        ]
+        if vision_b64
+        else user_prompt
+    )
 
     try:
         async with httpx.AsyncClient(timeout=25.0) as client:

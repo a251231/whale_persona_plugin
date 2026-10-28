@@ -39,8 +39,8 @@ spec:
       type: string
       label:
         en_US: DeepSeek Model
-        zh_Hans: 模型名称 (支持 deepseek-chat / deepseek-flash 即 DeepSeek-V4.1-Flash 多模态识图)
-      default: "deepseek-chat"
+        zh_Hans: 模型名称 (默认 deepseek-flash 即 DeepSeek-V4.1-Flash-1017 原生支持图片识别)
+      default: "deepseek-flash"
       required: false
     - name: target_bot_uuid
       type: string

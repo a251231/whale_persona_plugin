@@ -721,26 +721,25 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         self.assertIsNotNone(ctx_placeholder.event.reply_message_chain)
         self.assertIn("图没刷出来", self.prompt())
 
-        # 2) When base_url is https://api.deepseek.com, vision_b64 is bridged via describe_image_via_siliconflow as text
+        # 2) _normalize_api_model preserves deepseek-flash (DeepSeek-V4.1-Flash-1017) and sends native image_url on api.deepseek.com
+        self.assertEqual(self.listener._normalize_api_model("deepseek-flash"), "deepseek-flash")
+        self.assertEqual(self.listener._normalize_api_model("DeepSeek-V4.1-Flash-1017"), "deepseek-flash")
         prior_cfg = self.listener._get_config_str
         self.listener._get_config_str = lambda key, default: (
-            "https://api.deepseek.com" if key == "deepseek_base_url" else prior_cfg(key, default)
-        )
-        mock_vl = self._patch(
-            df,
-            "describe_image_via_siliconflow",
-            AsyncMock(return_value="画面是一盒草莓牛奶和笔记本电脑，屏幕上写着加班快乐"),
+            "https://api.deepseek.com"
+            if key == "deepseek_base_url"
+            else ("deepseek-flash" if key == "deepseek_model" else prior_cfg(key, default))
         )
         buf = io.BytesIO()
         PILImage.new("RGB", (2, 2)).save(buf, format="JPEG")
         img_b64 = base64.b64encode(buf.getvalue()).decode()
 
         ctx_vl = await self.ask("看看这张图", image=img_b64)
-        mock_vl.assert_awaited_once()
         self.assertIsNotNone(ctx_vl.event.reply_message_chain)
+        self.assertEqual(self.payload()["model"], "deepseek-flash")
         user_content = self.payload()["messages"][-1]["content"]
-        self.assertIsInstance(user_content, str)
-        self.assertIn("草莓牛奶", user_content)
+        self.assertIsInstance(user_content, list)
+        self.assertEqual(user_content[1]["type"], "image_url")
 
     async def test_self_moments_memory_injected_and_nonblocking_friend_moment_check(self):
         self.listener._state["moments"] = [

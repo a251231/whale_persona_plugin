@@ -57,7 +57,7 @@ _LOCAL_SECRETS = _load_local_secrets()
 DEFAULT_API_KEY = os.getenv("DEEPSEEK_API_KEY", "") or _LOCAL_SECRETS.get("deepseek_api_key", "")
 DEFAULT_SF_API_KEY = os.getenv("SILICONFLOW_API_KEY", "") or _LOCAL_SECRETS.get("siliconflow_api_key", "")
 DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_MODEL = "deepseek-flash"
 DEFAULT_BOT_UUID = os.getenv("TARGET_BOT_UUID", "") or _LOCAL_SECRETS.get("target_bot_uuid", "")
 DEFAULT_OWNER_IDS = os.getenv("OWNER_IDS", "") or _LOCAL_SECRETS.get("owner_ids", "")
 SILICONFLOW_ASR_URL = "https://api.siliconflow.cn/v1/audio/transcriptions"
@@ -1708,7 +1708,7 @@ class WhaleListener(EventListener):
     def _normalize_api_model(model: str) -> str:
         m = (model or DEFAULT_MODEL).strip()
         if m.lower() in ("deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4.1-flash-1017"):
-            return "deepseek-chat"
+            return "deepseek-flash"
         return m
 
     @staticmethod
@@ -4104,25 +4104,9 @@ class WhaleListener(EventListener):
         messages: list[dict[str, Any]] = [{"role": "system", "content": dynamic_system_prompt}]
         for _, r, c in history:
             messages.append({"role": r, "content": c})
-        use_vl_bridge = bool(vision_b64 and "api.deepseek.com" in base_url.lower())
-        if use_vl_bridge and vision_b64:
-            sf_key = self._get_config_str("siliconflow_api_key", DEFAULT_SF_API_KEY)
-            vl_desc = await df.describe_image_via_siliconflow(
-                vision_b64, sf_api_key=sf_key, user_hint=cleaned_text
-            )
-            if vl_desc:
-                if hist_user_text in ("[发了一张图片]", "[发来了一张微信表情包]"):
-                    hist_user_text = f"{hist_user_text[:-1]}：{vl_desc[:120]}]"
-                user_msg_for_llm += (
-                    "\n\n【附图/表情包视觉内容（请直接当作你亲眼看见的图片画面与文字自然回应，绝不要提及“视觉模型”或“识别报告”）】：\n"
-                    f"{vl_desc}"
-                )
-            else:
-                user_msg_for_llm += (
-                    "\n\n（注：对方发了一张图片，但当前网络波动没能加载出画面；请直接自然告诉对方图没刷出来，严禁猜测或编造图片内容！）"
-                )
-            messages.append({"role": "user", "content": user_msg_for_llm})
-        elif vision_b64:
+        if vision_b64:
+            if "api.deepseek.com" in base_url.lower() and model.lower() == "deepseek-chat":
+                model = "deepseek-flash"
             messages.append(
                 {
                     "role": "user",
