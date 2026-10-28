@@ -396,9 +396,14 @@ async def evaluate_group_interject(
 
 SILICONFLOW_CHAT_URL = "https://api.siliconflow.cn/v1/chat/completions"
 SILICONFLOW_VL_MODELS = (
+    "Qwen/Qwen3-VL-30B-A3B-Instruct",
+    "Qwen/Qwen3-VL-8B-Instruct",
+    "Qwen/Qwen3-VL-32B-Instruct",
+    "zai-org/GLM-4.5V",
     "Qwen/Qwen2.5-VL-72B-Instruct",
     "Pro/Qwen/Qwen2.5-VL-7B-Instruct",
 )
+_VISION_DESC_CACHE: dict[str, tuple[float, str]] = {}
 
 
 def _resolve_sf_api_key(explicit_key: str = "") -> str:
@@ -434,10 +439,16 @@ async def describe_image_via_siliconflow(
     if not key:
         return ""
 
+    now_ts = time.time()
+    cache_key = hashlib.sha256(b64_clean.encode("utf-8", errors="ignore")).hexdigest()
+    cached_hit = _VISION_DESC_CACHE.get(cache_key)
+    if cached_hit and (now_ts - cached_hit[0]) < 600.0 and cached_hit[1]:
+        return cached_hit[1]
+
     prompt_txt = (
         "请客观、精准、详细地描述这张图片或表情包的全部视觉信息：\n"
         "1. 逐字提取图中的所有文字、数字、聊天截图内容、气泡文字、标题或字幕（OCR）；\n"
-        "2. 描述画面中的人物/角色/动物/物品、表情神态、动作细节、场景氛围与笑点/梗点；\n"
+        "2. 描述画面中的人物/角色/动物/食物/物品、表情神态、动作细节、场景氛围与笑点/梗点；\n"
         "3. 不要寒暄，直接输出紧凑的视觉还原描述（控制在 220 字以内）。"
     )
     hint_clean = (user_hint or "").strip()
@@ -470,6 +481,9 @@ async def describe_image_via_siliconflow(
                     data = r.json() if isinstance(r.json(), dict) else {}
                     desc = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
                     if desc:
+                        if len(_VISION_DESC_CACHE) > 64:
+                            _VISION_DESC_CACHE.clear()
+                        _VISION_DESC_CACHE[cache_key] = (now_ts, desc)
                         return desc
         except Exception as e:
             logger.debug("SiliconFlow VL (%s) describe skipped: %s", vl_model, e)

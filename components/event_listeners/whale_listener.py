@@ -775,12 +775,15 @@ class WhaleListener(EventListener):
         recent = [m for m in moments_list[-max_items:] if isinstance(m, dict) and m.get("text")]
         if not recent:
             return ""
-        items_str = "；".join(
-            f"#{m.get('id', '?')}[{m.get('at', '')}]「{str(m.get('text', '')).strip()[:80]}」(配图:{m.get('meme', '干饭')})"
-            for m in reversed(recent)
-        )
+        parts: list[str] = []
+        for idx, m in enumerate(reversed(recent)):
+            tag_label = "【最新一条】" if idx == 0 else "【更早之前】"
+            parts.append(
+                f"{tag_label}#{m.get('id', '?')}[{m.get('at', '')}]「{str(m.get('text', '')).strip()[:80]}」(配图:{m.get('meme', '干饭')})"
+            )
+        items_str = "；".join(parts)
         return (
-            f"- **你自己最近发过的微信朋友圈动态（别人问起你发的朋友圈或动态时据此回答，平时不必主动背诵）**：{items_str}\n"
+            f"- **你自己最近发过的微信朋友圈动态（当对方问你发朋友圈了吗/最近发了什么朋友圈时，必须优先回答【最新一条】的内容，切勿拿【更早之前】的旧动态顶替最新动态；平时没问起时不必主动背诵）**：{items_str}\n"
         )
 
     def _build_intimacy_section(self, u: dict[str, Any], mode: str = "live") -> str:
@@ -3864,8 +3867,11 @@ class WhaleListener(EventListener):
                             vision_b64 = str(rec_img.get("b64") or "") or None
                 elif not vision_b64 and not is_group:
                     rec_priv_img = self._private_recent_images.get(session_key)
-                    if isinstance(rec_priv_img, dict) and (time.time() - float(rec_priv_img.get("ts", 0))) <= 90.0:
-                        if any(kw in cleaned_text for kw in IMAGE_FOLLOWUP_KEYWORDS):
+                    if isinstance(rec_priv_img, dict):
+                        img_age = time.time() - float(rec_priv_img.get("ts", 0))
+                        if img_age <= 45.0 or (
+                            img_age <= 90.0 and any(kw in cleaned_text for kw in IMAGE_FOLLOWUP_KEYWORDS)
+                        ):
                             vision_b64 = str(rec_priv_img.get("b64") or "") or None
 
                 if vision_b64 and cleaned_text in ("", "[图片]"):
@@ -4105,6 +4111,8 @@ class WhaleListener(EventListener):
                 vision_b64, sf_api_key=sf_key, user_hint=cleaned_text
             )
             if vl_desc:
+                if hist_user_text in ("[发了一张图片]", "[发来了一张微信表情包]"):
+                    hist_user_text = f"{hist_user_text[:-1]}：{vl_desc[:120]}]"
                 user_msg_for_llm += (
                     "\n\n【附图/表情包视觉内容（请直接当作你亲眼看见的图片画面与文字自然回应，绝不要提及“视觉模型”或“识别报告”）】：\n"
                     f"{vl_desc}"
