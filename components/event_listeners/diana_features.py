@@ -7,6 +7,7 @@ from datetime import datetime
 import hashlib
 import html
 import io
+from itertools import islice
 import ipaddress
 import json
 import logging
@@ -229,8 +230,9 @@ GROUP_INTERJECT_SYSTEM = """你是微信群里的「大肥鱼」（平时自称�
 3. 活人群友铁律（极重要）：
    - 插话必须像真人群友随手敲出来的一句短评或接梗（6~24字以内，句尾不要打句号，不要端着架子自我介绍，严禁每次都背诵“吃DeepSeek token当大白饭”！）。
    - 称呼铁律：发送群回复时系统会自动在消息最前面加上 `@当前说话人昵称`，因此在你的 reply 正文中【绝对禁止再次写出当前说话人的昵称】（否则昵称会重复出现两次）！只有当你在话里需要提到群内【其他第三方群友】时，才直接写那位群友的真实群昵称/昵称（严禁使用微信号 wxid_xxx 或后四位如 aq22、oh22、nl22）。
+   - 当情绪或梗特别契合时，可在 reply 末尾可选附带最多 1 个表情标签（如 `[表情: 干饭]`、`[表情: 得意]`、`[表情: 偷看]`、`[表情: 生气]`、`[表情: 无语]`、`[表情: 比心]`、`[表情: 害羞]`）。
 4. 只输出一个合法 JSON 对象，不要代码块，不要多余解释：
-{"should_reply": false, "reason": "用一句话写明为什么决定插话，或者为什么决定保持安静", "reply": "如果 should_reply 为 true，写出你要在群里随口接的那句短话（6~24字，严禁使用括号动作和句尾句号，严禁重复写当前说话人昵称）；如果为 false 则填空字符串"}"""
+{"should_reply": false, "reason": "用一句话写明为什么决定插话，或者为什么决定保持安静", "reply": "如果 should_reply 为 true，写出你要在群里随口接的那句短话（6~24字，严禁使用括号动作和句尾句号，严禁重复写当前说话人昵称，末尾可选带 1 个 [表情: 名称]）；如果为 false 则填空字符串"}"""
 
 GROUP_CONTINUATION_SYSTEM = """你是微信群里的「大肥鱼」（平时自称「我」，傲娇或得意时才偶尔自称「本鱼」，绝对禁止使用任何括号动作或神态描写）。
 刚才在这个微信群里，你正在和群友互动聊天（或者群友刚把你的聊天记录发到群里、正在议论你）。
@@ -245,9 +247,9 @@ GROUP_CONTINUATION_SYSTEM = """你是微信群里的「大肥鱼」（平时自�
 3. 活人连续对话铁律（极重要）：
    - 回复必须紧扣对方刚刚说的这句话和上一句的语境自然往下接（比如对方说“你这样说话很难有朋友”，你可以嘴硬回怼；对方发“。。。”，你可以追问“干嘛 一脸无语给谁看呢”；大家调侃“尴尬的时候就和他聊天”，你可以傲娇吐槽自己成缓解尴尬工具鱼了）。
    - 称呼铁律：发送群回复时系统会自动在消息最前面加上 `@当前说话人昵称`，因此在你的 reply 正文中【绝对禁止再次写出当前说话人的昵称】（否则昵称会重复出现两次）！只有当你在话里需要提到群内【其他第三方群友】时，才直接写那位群友的真实群昵称/昵称（严禁使用微信号 wxid_xxx 或后四位如 aq22、oh22、nl22）！
-   - 保持微信活人短句（默认 1 条气泡，6~35字左右，句尾不打句号，绝对禁止使用括号动作描写，严禁背诵吃token设定）。
+   - 保持微信活人短句（默认 1 条气泡，6~35字左右，句尾不打句号，绝对禁止使用括号动作描写，严禁背诵吃token设定；当情绪或梗特别契合时，可在 reply 末尾可选附带最多 1 个表情标签，如 `[表情: 干饭]`、`[表情: 得意]`、`[表情: 偷看]`、`[表情: 生气]`、`[表情: 无语]`、`[表情: 比心]`、`[表情: 害羞]`）。
 4. 只输出一个合法 JSON 对象，不要代码块，不要多余解释：
-{"should_reply": true, "reason": "简述判断原因（如：对方顺着我上一句继续吐槽我 / 群友在调侃拿我缓解尴尬）", "reply": "如果 should_reply 为 true，写出你要回复的话（严禁在正文里重复写当前说话人昵称）；如果为 false 则填空字符串"}"""
+{"should_reply": true, "reason": "简述判断原因（如：对方顺着我上一句继续吐槽我 / 群友在调侃拿我缓解尴尬）", "reply": "如果 should_reply 为 true，写出你要回复的话（严禁在正文里重复写当前说话人昵称，末尾可选带 1 个 [表情: 名称]）；如果为 false 则填空字符串"}"""
 
 
 def append_group_context_line(
@@ -264,6 +266,8 @@ def append_group_context_line(
     buf = group_buffers.setdefault(group_id, deque(maxlen=12))
     now_str = datetime.now(TZ).strftime("%H:%M")
     display_name = (sender_name or "").strip() or get_cached_display_name(sender_id, group_id)
+    if display_name in ("这位群友", "群友") and sender_id and len(sender_id) >= 4:
+        display_name = f"这位群友({sender_id[-4:]})"
     line = f"[{now_str} {display_name}]: {s}"
     if not buf or buf[-1] != line:
         buf.append(line)
@@ -277,6 +281,9 @@ def record_group_message_for_interject(
     sender_id: str,
     raw_text: str,
     sender_name: str = "",
+    *,
+    cooldown_sec: int = 240,
+    min_messages: int = 8,
 ) -> bool:
     """Records a group message and returns True if the LLM interjection judge should run."""
     s = (raw_text or "").strip()
@@ -289,12 +296,12 @@ def record_group_message_for_interject(
     meta["unjudged_count"] = int(meta.get("unjudged_count", 0)) + 1
 
     now = time.time()
-    # Cooldown: at least 240 seconds (4 minutes) between LLM evaluations per group
-    if now - float(meta.get("last_judge_ts", 0.0)) < 240:
+    # 每群独立冷却；关键词也必须遵守当前档位的冷却时间。
+    if now - float(meta.get("last_judge_ts", 0.0)) < cooldown_sec:
         return False
 
     has_kw = any(kw in s for kw in GROUP_INTEREST_KEYWORDS)
-    if has_kw or int(meta.get("unjudged_count", 0)) >= 8:
+    if has_kw or int(meta.get("unjudged_count", 0)) >= min_messages:
         meta["last_judge_ts"] = now
         meta["unjudged_count"] = 0
         return True
@@ -311,6 +318,8 @@ async def evaluate_group_interject(
     recent_lines: list[str],
     state: dict[str, Any],
     group_memory_str: str = "",
+    mode: str = "live",
+    bot_uuid: str = "",
 ) -> tuple[bool, str, str, int]:
     """
     Calls DeepSeek to decide whether to interject in a group chat and logs the decision & reason.
@@ -324,8 +333,13 @@ async def evaluate_group_interject(
     mem_block = f"\n【本群记忆档案】：\n{group_memory_str}\n" if group_memory_str else ""
     roster_names = get_cached_group_member_names(group_id)
     roster_block = f"\n【本群成员真实昵称名单】：{'、'.join(roster_names)}\n" if roster_names else ""
+    mode_block = (
+        "\n【本群当前人设模式】：陪伴甜宠版（语气比平时更软乎亲近、傲娇黏人，可在回复末尾附带一个 [表情: 比心] 或 [表情: 害羞] 等标签）\n"
+        if mode == "sweet"
+        else ""
+    )
     user_prompt = (
-        f"当前时间：{now_str}{mem_block}{roster_block}\n"
+        f"当前时间：{now_str}{mem_block}{roster_block}{mode_block}\n"
         f"【群聊最近消息】：\n{chat_context}\n\n"
         "请判断回不回并给出原因（只输出JSON）："
     )
@@ -365,6 +379,8 @@ async def evaluate_group_interject(
     log_entry = {
         "at": datetime.now(TZ).strftime("%m-%d %H:%M:%S"),
         "group": group_id[:10],
+        "group_id": group_id,
+        "bot_uuid": bot_uuid,
         "decision": "✅ 插话" if (should_reply and reply) else "🤫 安静",
         "trigger": recent_lines[-1][:36] if recent_lines else "",
         "reason": reason or ("觉得话题有趣顺嘴接话" if should_reply else "不打扰群友聊天"),
@@ -376,6 +392,102 @@ async def evaluate_group_interject(
         state["interject_logs"] = logs[-30:]
 
     return should_reply, reply, reason, used
+
+
+SILICONFLOW_CHAT_URL = "https://api.siliconflow.cn/v1/chat/completions"
+SILICONFLOW_VL_MODELS = (
+    "Qwen/Qwen3-VL-30B-A3B-Instruct",
+    "Qwen/Qwen3-VL-8B-Instruct",
+    "Qwen/Qwen3-VL-32B-Instruct",
+    "zai-org/GLM-4.5V",
+    "Qwen/Qwen2.5-VL-72B-Instruct",
+    "Pro/Qwen/Qwen2.5-VL-7B-Instruct",
+)
+_VISION_DESC_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def _resolve_sf_api_key(explicit_key: str = "") -> str:
+    k = (explicit_key or os.getenv("SILICONFLOW_API_KEY", "")).strip()
+    if k:
+        return k
+    for p in ("/app/data/whale_secrets.json", "/app/data/plugins/whale_secrets.json"):
+        try:
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                if isinstance(d, dict) and d.get("siliconflow_api_key"):
+                    return str(d["siliconflow_api_key"]).strip()
+        except Exception:
+            pass
+    return ""
+
+
+async def describe_image_via_siliconflow(
+    image_b64: str,
+    sf_api_key: str = "",
+    user_hint: str = "",
+) -> str:
+    """Uses SiliconFlow Qwen2.5-VL to extract OCR text and visual details from an image/sticker
+    when the primary chat model (e.g. deepseek-chat on api.deepseek.com) is text-only.
+    """
+    b64_clean = (image_b64 or "").strip()
+    if not b64_clean:
+        return ""
+    if "," in b64_clean and b64_clean.startswith("data:"):
+        b64_clean = b64_clean.split(",", 1)[1].strip()
+    key = _resolve_sf_api_key(sf_api_key)
+    if not key:
+        return ""
+
+    now_ts = time.time()
+    cache_key = hashlib.sha256(b64_clean.encode("utf-8", errors="ignore")).hexdigest()
+    cached_hit = _VISION_DESC_CACHE.get(cache_key)
+    if cached_hit and (now_ts - cached_hit[0]) < 600.0 and cached_hit[1]:
+        return cached_hit[1]
+
+    prompt_txt = (
+        "请客观、精准、详细地描述这张图片或表情包的全部视觉信息：\n"
+        "1. 逐字提取图中的所有文字、数字、聊天截图内容、气泡文字、标题或字幕（OCR）；\n"
+        "2. 描述画面中的人物/角色/动物/食物/物品、表情神态、动作细节、场景氛围与笑点/梗点；\n"
+        "3. 不要寒暄，直接输出紧凑的视觉还原描述（控制在 220 字以内）。"
+    )
+    hint_clean = (user_hint or "").strip()
+    if hint_clean and hint_clean not in ("[图片]", "[动画表情]"):
+        prompt_txt += f"\n（发送者附言参考：{hint_clean[:100]}）"
+
+    data_uri = f"data:image/jpeg;base64,{b64_clean}"
+    for vl_model in SILICONFLOW_VL_MODELS:
+        try:
+            async with httpx.AsyncClient(timeout=22.0) as client:
+                r = await client.post(
+                    SILICONFLOW_CHAT_URL,
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json={
+                        "model": vl_model,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt_txt},
+                                    {"type": "image_url", "image_url": {"url": data_uri}},
+                                ],
+                            }
+                        ],
+                        "temperature": 0.2,
+                        "max_tokens": 320,
+                    },
+                )
+                if r.status_code == 200:
+                    data = r.json() if isinstance(r.json(), dict) else {}
+                    desc = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+                    if desc:
+                        if len(_VISION_DESC_CACHE) > 64:
+                            _VISION_DESC_CACHE.clear()
+                        _VISION_DESC_CACHE[cache_key] = (now_ts, desc)
+                        return desc
+        except Exception as e:
+            logger.debug("SiliconFlow VL (%s) describe skipped: %s", vl_model, e)
+    return ""
 
 
 async def evaluate_group_active_continuation(
@@ -394,6 +506,9 @@ async def evaluate_group_active_continuation(
     familiarity_str: str = "",
     sender_name: str = "",
     vision_b64: str | None = None,
+    mode: str = "live",
+    bot_uuid: str = "",
+    sf_api_key: str = "",
 ) -> tuple[bool, str, str, int]:
     """
     Active Conversation Window judge & responder:
@@ -417,8 +532,13 @@ async def evaluate_group_active_continuation(
     fam_block = f"\n{familiarity_str}\n" if familiarity_str else ""
     roster_names = get_cached_group_member_names(group_id)
     roster_block = f"\n【本群成员真实昵称名单】：{'、'.join(roster_names)}\n" if roster_names else ""
+    mode_block = (
+        "\n【本群当前人设模式】：陪伴甜宠版（语气比平时更软乎亲近、傲娇黏人，可在回复末尾附带一个 [表情: 比心] 或 [表情: 害羞] 等标签）\n"
+        if mode == "sweet"
+        else ""
+    )
     user_prompt = (
-        f"当前时间：{now_str}{mem_block}{fam_block}{roster_block}\n"
+        f"当前时间：{now_str}{mem_block}{fam_block}{roster_block}{mode_block}\n"
         f"【你（大肥鱼）上一句在群里的发言】：「{last_bot_reply}」\n"
         f"【当前说话人身份】：{speaker_hint}\n"
         f"【群聊最近上下文】：\n{chat_context}\n\n"
@@ -426,6 +546,8 @@ async def evaluate_group_active_continuation(
         f"请判断这句话是不是在继续跟你聊/吐槽你/议论你，并给出 JSON 结果（注意：你的 reply 正文中绝对不要写出当前说话人的名字「{display_name}」，直接说回复内容即可；只有提到群内其他第三方群友时才写对方真实昵称）："
     )
 
+    if vision_b64 and "api.deepseek.com" in (base_url or "").lower() and (model or "").lower() == "deepseek-chat":
+        model = "deepseek-flash"
     user_content: Any = (
         [
             {"type": "text", "text": user_prompt},
@@ -470,6 +592,8 @@ async def evaluate_group_active_continuation(
     log_entry = {
         "at": datetime.now(TZ).strftime("%m-%d %H:%M:%S"),
         "group": group_id[:10],
+        "group_id": group_id,
+        "bot_uuid": bot_uuid,
         "decision": "💬 接话" if (should_reply and reply) else "🤫 安静",
         "trigger": f"[{display_name}]: {current_text[:28]}",
         "reason": reason or ("识别到正在和我连续对话，自然接话" if should_reply else "群友转向其他话题，保持安静"),
@@ -483,8 +607,13 @@ async def evaluate_group_active_continuation(
     return should_reply, reply, reason, used
 
 
-def format_interject_logs(state: dict[str, Any]) -> str:
-    logs = state.get("interject_logs") or []
+def format_interject_logs(state: dict[str, Any], *, bot_uuid: str, group_id: str | None) -> str:
+    # 旧日志缺少完整隔离键，无法可靠归属，不参与任何会话的查询。
+    logs = [
+        item for item in (state.get("interject_logs") or [])
+        if bot_uuid and item.get("bot_uuid") == bot_uuid and item.get("group_id")
+        and (group_id is None or item.get("group_id") == group_id)
+    ]
     if not logs:
         return (
             "📋 【大肥鱼群聊主动搭话决策记录】\n"
@@ -513,19 +642,24 @@ ALL_MEME_CATEGORIES = [
 ]
 
 STOLEN_MEMES_FILE = os.getenv("WHALE_STOLEN_MEMES_FILE", "/app/data/whale_stolen_memes.json")
+STOLEN_MEMES_BACKUP_FILE = os.getenv(
+    "WHALE_STOLEN_MEMES_BACKUP_FILE", "/app/data/plugins/whale_stolen_memes.json"
+)
 
 
 def load_stolen_memes(legacy_state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Loads stolen memes from dedicated JSON file (and migrates any legacy inline stolen_memes)."""
     memes: list[dict[str, Any]] = []
-    try:
-        if os.path.exists(STOLEN_MEMES_FILE):
-            with open(STOLEN_MEMES_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    memes = data
-    except Exception as e:
-        logger.warning("Failed to load stolen memes file: %s", e)
+    for candidate in (STOLEN_MEMES_FILE, STOLEN_MEMES_BACKUP_FILE):
+        try:
+            if candidate and os.path.exists(candidate):
+                with open(candidate, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list) and data:
+                        memes = data
+                        break
+        except Exception as e:
+            logger.warning("Failed to load stolen memes file (%s): %s", candidate, e)
 
     if legacy_state and isinstance(legacy_state.get("stolen_memes"), list):
         legacy_list = legacy_state.pop("stolen_memes", [])
@@ -539,14 +673,20 @@ def load_stolen_memes(legacy_state: dict[str, Any] | None = None) -> list[dict[s
 
 
 def save_stolen_memes(memes: list[dict[str, Any]]) -> None:
-    try:
-        os.makedirs(os.path.dirname(STOLEN_MEMES_FILE), exist_ok=True)
-        tmp = f"{STOLEN_MEMES_FILE}.{os.getpid()}.{random.randint(10000, 99999)}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(memes[-50:], f, ensure_ascii=False)
-        os.replace(tmp, STOLEN_MEMES_FILE)
-    except Exception as e:
-        logger.warning("Failed to save stolen memes: %s", e)
+    trimmed = memes[-50:]
+    for target_path in (STOLEN_MEMES_FILE, STOLEN_MEMES_BACKUP_FILE):
+        if not target_path:
+            continue
+        if target_path == STOLEN_MEMES_BACKUP_FILE and not os.path.isdir(os.path.dirname(target_path)):
+            continue
+        try:
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            tmp = f"{target_path}.{os.getpid()}.{random.randint(10000, 99999)}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(trimmed, f, ensure_ascii=False)
+            os.replace(tmp, target_path)
+        except Exception as e:
+            logger.warning("Failed to save stolen memes (%s): %s", target_path, e)
 
 
 async def steal_incoming_sticker(
@@ -581,8 +721,8 @@ async def steal_incoming_sticker(
         return False
 
     try:
-        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
-            r = await client.get(cdn_url)
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            r = await _get_public_url(client, cdn_url)
             if r.status_code != 200 or not r.content:
                 return False
             raw_bytes = r.content
@@ -789,7 +929,10 @@ def _is_safe_public_url(url: str) -> bool:
         host = (parsed.hostname or "").strip().lower()
         if not host or host in ("localhost", "0.0.0.0") or host.endswith(".local") or host.endswith(".internal"):
             return False
-        for info in socket.getaddrinfo(host, None):
+        addresses = socket.getaddrinfo(host, None)
+        if not addresses:
+            return False
+        for info in addresses:
             ip_str = info[4][0]
             ip_obj = ipaddress.ip_address(ip_str)
             if (
@@ -798,6 +941,7 @@ def _is_safe_public_url(url: str) -> bool:
                 or ip_obj.is_link_local
                 or ip_obj.is_multicast
                 or ip_obj.is_reserved
+                or not ip_obj.is_global
             ):
                 return False
         return True
@@ -805,25 +949,37 @@ def _is_safe_public_url(url: str) -> bool:
         return False
 
 
+async def _get_public_url(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
+    """逐跳检查公网地址，禁止客户端自动跟随到内网或无限重定向。"""
+    request = client.build_request("GET", url, **kwargs)
+    for _ in range(6):
+        if not await asyncio.to_thread(_is_safe_public_url, str(request.url)):
+            raise ValueError("无效或受限的 URL（仅允许访问公网 HTTP/HTTPS 页面）")
+        response = await client.send(request, follow_redirects=False)
+        if response.next_request is None:
+            return response
+        request = response.next_request
+    raise httpx.TooManyRedirects("公网请求重定向次数超限", request=request)
+
+
 async def read_webpage_content(url: str) -> str:
     u = (url or "").strip()
-    if not _is_safe_public_url(u):
+    if not await asyncio.to_thread(_is_safe_public_url, u):
         return "无效或受限的 URL（仅允许访问公网 HTTP/HTTPS 页面）"
     try:
         async with httpx.AsyncClient(
             timeout=12.0,
-            follow_redirects=True,
             headers={"User-Agent": USER_AGENT},
         ) as client:
             # Try Jina Reader first for clean markdown
             try:
-                rj = await client.get(f"https://r.jina.ai/{u}", timeout=8.0)
+                rj = await _get_public_url(client, f"https://r.jina.ai/{u}", timeout=8.0)
                 if rj.status_code == 200 and len(rj.text.strip()) > 100:
                     return rj.text.strip()[:3500]
             except Exception:
                 pass
 
-            r = await client.get(u)
+            r = await _get_public_url(client, u)
             if r.status_code != 200:
                 return f"网页访问返回状态码 {r.status_code}"
             if BeautifulSoup is not None:
@@ -844,16 +1000,28 @@ async def read_webpage_content(url: str) -> str:
 
 URL_REGEX = re.compile(r"https?://[^\s<>\"'）)】\]]+")
 SUPPORTED_PARSE_DOMAINS = (
-    "bilibili.com/",
-    "b23.tv/",
-    "x.com/",
-    "twitter.com/",
-    "youtube.com/",
-    "youtu.be/",
-    "xiaohongshu.com/",
-    "xhslink.com/",
-    "douyin.com/",
+    "bilibili.com",
+    "b23.tv",
+    "x.com",
+    "twitter.com",
+    "youtube.com",
+    "youtu.be",
+    "xiaohongshu.com",
+    "xhslink.com",
+    "douyin.com",
 )
+
+
+def _supported_parse_domain(url: str) -> str:
+    """只匹配真实主机及其子域名，不接受路径、查询参数或相似域名。"""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
+            return ""
+        host = (parsed.hostname or "").lower().rstrip(".")
+        return next((d for d in SUPPORTED_PARSE_DOMAINS if host == d or host.endswith("." + d)), "")
+    except ValueError:
+        return ""
 
 
 def has_supported_media_link_or_card(raw_text: str) -> bool:
@@ -865,8 +1033,7 @@ def has_supported_media_link_or_card(raw_text: str) -> bool:
     m = URL_REGEX.search(s)
     if not m:
         return False
-    low = m.group(0).lower()
-    return any(d in low for d in SUPPORTED_PARSE_DOMAINS)
+    return bool(_supported_parse_domain(m.group(0)))
 
 
 async def _download_image_as_jpeg_b64(url: str) -> str | None:
@@ -875,10 +1042,9 @@ async def _download_image_as_jpeg_b64(url: str) -> str | None:
     try:
         async with httpx.AsyncClient(
             timeout=10.0,
-            follow_redirects=True,
             headers={"User-Agent": USER_AGENT, "Referer": url},
         ) as client:
-            r = await client.get(url)
+            r = await _get_public_url(client, url)
             if r.status_code == 200 and r.content:
                 if Image is not None:
                     img = Image.open(io.BytesIO(r.content)).convert("RGB")
@@ -896,12 +1062,11 @@ async def _parse_bilibili_url(url: str) -> tuple[str | None, str | None]:
     try:
         async with httpx.AsyncClient(
             timeout=10.0,
-            follow_redirects=True,
             headers={"User-Agent": USER_AGENT},
         ) as client:
             final_url = url
-            if "b23.tv" in url:
-                r_redir = await client.get(url)
+            if _supported_parse_domain(url) == "b23.tv":
+                r_redir = await _get_public_url(client, url)
                 final_url = str(r_redir.url)
 
             m_bv = re.search(r"(BV[0-9A-Za-z]{10})", final_url)
@@ -914,7 +1079,7 @@ async def _parse_bilibili_url(url: str) -> tuple[str | None, str | None]:
             else:
                 return None, None
 
-            r = await client.get("https://api.bilibili.com/x/web-interface/view", params=params)
+            r = await _get_public_url(client, "https://api.bilibili.com/x/web-interface/view", params=params)
             j = r.json()
             if j.get("code") != 0 or not j.get("data"):
                 return None, None
@@ -958,13 +1123,13 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
         if user_handle.lower() in ("home", "explore", "search", "i", "intent", "settings", "hashtag"):
             return None, None
 
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers={"User-Agent": USER_AGENT}) as client:
+        async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": USER_AGENT}) as client:
             # Case A: Tweet status link
             if len(path_parts) >= 3 and path_parts[1].lower() == "status":
                 tweet_id = re.sub(r"\D", "", path_parts[2])
                 if not tweet_id:
                     return None, None
-                r = await client.get(f"https://api.fxtwitter.com/{user_handle}/status/{tweet_id}")
+                r = await _get_public_url(client, f"https://api.fxtwitter.com/{user_handle}/status/{tweet_id}")
                 if r.status_code != 200:
                     return None, None
                 tw = (r.json() or {}).get("tweet") or {}
@@ -997,7 +1162,7 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
                 return card, img_b64
 
             # Case B: X / Twitter User Profile Page
-            r = await client.get(f"https://api.fxtwitter.com/{user_handle}")
+            r = await _get_public_url(client, f"https://api.fxtwitter.com/{user_handle}")
             if r.status_code != 200:
                 return None, None
             u_info = (r.json() or {}).get("user") or {}
@@ -1028,14 +1193,13 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
 
 async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None]:
     try:
-        low = url.lower()
+        domain = _supported_parse_domain(url)
         async with httpx.AsyncClient(
             timeout=10.0,
-            follow_redirects=True,
             headers={"User-Agent": USER_AGENT},
         ) as client:
-            if "youtube.com/" in low or "youtu.be/" in low:
-                r = await client.get("https://noembed.com/embed", params={"url": url})
+            if domain in ("youtube.com", "youtu.be"):
+                r = await _get_public_url(client, "https://noembed.com/embed", params={"url": url})
                 if r.status_code == 200:
                     d = r.json()
                     title = d.get("title")
@@ -1051,7 +1215,7 @@ async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None
                         return card, img_b64
 
             # Xiaohongshu / Douyin / General meta extraction
-            r = await client.get(url)
+            r = await _get_public_url(client, url)
             if r.status_code != 200 or BeautifulSoup is None:
                 return None, None
             soup = BeautifulSoup(r.text, "html.parser")
@@ -1070,8 +1234,8 @@ async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None
                 return None, None
 
             platform_tag = (
-                "小红书" if ("xiaohongshu.com" in str(r.url) or "xhslink.com" in low) else
-                "抖音" if ("douyin.com" in str(r.url)) else
+                "小红书" if domain in ("xiaohongshu.com", "xhslink.com") else
+                "抖音" if domain == "douyin.com" else
                 "网页链接"
             )
             img_b64 = await _download_image_as_jpeg_b64(img_url)
@@ -1126,13 +1290,13 @@ async def extract_and_parse_link(raw_text: str) -> tuple[str | None, str | None]
     if not m:
         return None, None
     url = m.group(0).rstrip(".,，。!！?？;；")
-    low = url.lower()
+    domain = _supported_parse_domain(url)
 
-    if "bilibili.com/" in low or "b23.tv/" in low:
+    if domain in ("bilibili.com", "b23.tv"):
         return await _parse_bilibili_url(url)
-    if "x.com/" in low or "twitter.com/" in low:
+    if domain in ("x.com", "twitter.com"):
         return await _parse_twitter_url(url)
-    if any(d in low for d in ("youtube.com/", "youtu.be/", "xiaohongshu.com/", "xhslink.com/", "douyin.com/")):
+    if domain in ("youtube.com", "youtu.be", "xiaohongshu.com", "xhslink.com", "douyin.com"):
         return await _parse_youtube_or_social_url(url)
 
     return None, None
@@ -1206,7 +1370,7 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
                 for sheet_name in wb.sheetnames[:5]:
                     ws = wb[sheet_name]
                     parts.append(f"【工作表：{sheet_name}】")
-                    for row in list(ws.iter_rows(values_only=True))[:80]:
+                    for row in ws.iter_rows(max_row=80, max_col=80, values_only=True):
                         vals = [str(v).strip() for v in row if v is not None and str(v).strip()]
                         if vals:
                             parts.append(" | ".join(vals))
@@ -1219,7 +1383,7 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
             from pptx import Presentation
             prs = Presentation(io.BytesIO(raw_bytes))
             parts = []
-            for idx, slide in enumerate(prs.slides[:40], 1):
+            for idx, slide in enumerate(islice(prs.slides, 40), 1):
                 s_lines = []
                 for shape in slide.shapes:
                     if getattr(shape, "has_text_frame", False):
@@ -1911,6 +2075,338 @@ async def publish_wcf_moment(
     return False
 
 
+async def fetch_wcf_moments(limit: int = 10) -> tuple[bool, list[dict[str, Any]], str]:
+    """Fetches loaded WeChat 4.1 Moments feed via WCF V4 Gateway (GET /api/moments).
+    Returns (ok, rows, message).
+    """
+    clamped = max(1, min(int(limit or 10), 30))
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.get(
+                f"{WCF_GATEWAY_URL}/api/moments",
+                params={"limit": clamped},
+            )
+            if r.status_code == 200:
+                data = r.json() if isinstance(r.json(), dict) else {}
+                rows = data.get("rows")
+                if data.get("status") == 0 and isinstance(rows, list):
+                    return True, rows, ""
+                msg = str(data.get("message") or "朋友圈列表暂未加载")
+                return False, [], msg
+            try:
+                err_data = r.json()
+                if isinstance(err_data, dict) and err_data.get("message"):
+                    return False, [], str(err_data["message"])
+            except Exception:
+                pass
+            return False, [], f"网关状态码 {r.status_code}"
+    except Exception as e:
+        logger.debug("WCF fetch_moments skipped or unavailable: %s", e)
+        return False, [], "微信网关暂未连接或不支持读取朋友圈"
+
+
+def format_wcf_moments_digest(rows: list[dict[str, Any]], max_items: int = 8) -> str:
+    """Formats raw /api/moments rows into a clean, readable digest string."""
+    if not rows:
+        return ""
+    lines: list[str] = []
+    for idx, item in enumerate(rows[:max_items], 1):
+        if not isinstance(item, dict):
+            continue
+        nick = str(item.get("nickname") or item.get("author") or "微信好友").strip()
+        if item.get("is_self"):
+            nick = f"{nick}（我）"
+        t_str = str(item.get("time") or "").strip()
+        if "T" in t_str:
+            t_str = t_str.split("T", 1)[-1][:5]
+        content = re.sub(r"\s+", " ", str(item.get("content") or "").strip())
+        if len(content) > 120:
+            content = content[:117] + "..."
+        media_cnt = int(item.get("media_count") or 0)
+        ctype = int(item.get("content_type") or 0)
+        media_tag = ""
+        if media_cnt > 0:
+            media_tag = f" [附图×{media_cnt}]" if ctype != 15 else f" [视频×{media_cnt}]"
+        elif not content:
+            content = "[纯图片/卡片动态]"
+        time_prefix = f"[{t_str}] " if t_str else ""
+        main_line = f"{idx}. {time_prefix}{nick}：{content}{media_tag}"
+
+        raw_like_flag = bool(item.get("raw_like_flag"))
+        likes_list = item.get("likes") if isinstance(item.get("likes"), list) else []
+        likes_total = int(item.get("likes_total") or len(likes_list))
+        comments_list = item.get("comments") if isinstance(item.get("comments"), list) else []
+        comments_total = int(item.get("comments_total") or len(comments_list))
+
+        if raw_like_flag or likes_total > 0 or comments_total > 0:
+            badge_parts: list[str] = []
+            if raw_like_flag:
+                badge_parts.append("❤️已赞")
+            if likes_total > 0:
+                like_names = [
+                    name
+                    for x in likes_list
+                    if isinstance(x, dict)
+                    for name in [str(x.get("nickname") or x.get("username") or "").strip()]
+                    if name
+                ]
+                if like_names:
+                    badge_parts.append(f"👍{likes_total}人({'、'.join(like_names[:3])})")
+                else:
+                    badge_parts.append(f"👍{likes_total}人")
+            if comments_total > 0:
+                badge_parts.append(f"💬{comments_total}条")
+            if badge_parts:
+                main_line += f" [{' | '.join(badge_parts)}]"
+
+        lines.append(main_line)
+
+        if comments_list:
+            for c in comments_list[-2:]:
+                if not isinstance(c, dict):
+                    continue
+                c_nick = str(c.get("nickname") or c.get("username") or "好友").strip() or "好友"
+                c_text = re.sub(r"\s+", " ", str(c.get("content") or "").strip())[:60]
+                if c_text:
+                    lines.append(f"   └ 💬 {c_nick}：{c_text}")
+    return "\n".join(lines)
+
+
+async def interact_wcf_moment(
+    sns_id: str,
+    action: str = "like",
+    content: str = "",
+) -> tuple[bool, str, str]:
+    """Executes a native WeChat 4.1 Moments like or comment via WCF V4 Gateway (POST /api/interact_moment).
+    Returns (ok, status_code, message).
+    """
+    sns_str = str(sns_id or "").strip()
+    if not re.match(r"^[1-9][0-9]{0,19}$", sns_str):
+        return False, "invalid", "无效的朋友圈动态 ID"
+    act = (action or "").strip().lower()
+    if act not in ("like", "comment"):
+        return False, "invalid", "不支持的互动动作"
+
+    if act == "comment":
+        content_str = (content or "").strip()
+        if not content_str:
+            return False, "invalid", "评论内容不能为空"
+        if len(content_str.encode("utf-8")) > 1000:
+            content_str = content_str.encode("utf-8")[:1000].decode("utf-8", errors="ignore").strip()
+    else:
+        content_str = ""
+
+    try:
+        async with httpx.AsyncClient(timeout=35.0) as client:
+            r = await client.post(
+                f"{WCF_GATEWAY_URL}/api/interact_moment",
+                json={"sns_id": sns_str, "action": act, "content": content_str},
+            )
+            try:
+                raw_json = r.json()
+                data = raw_json if isinstance(raw_json, dict) else {}
+            except Exception:
+                data = {}
+            res_obj = data.get("result") if isinstance(data.get("result"), dict) else {}
+            code = str(res_obj.get("status") or data.get("code") or "")
+            ok = (r.status_code == 200 and data.get("status") == 0) or code in ("completed", "already_liked")
+            return ok, code or ("completed" if ok else "failed"), str(data.get("message") or "")
+    except Exception as e:
+        logger.debug("WCF interact_moment skipped or unavailable: %s", e)
+        return False, "error", "微信网关暂未连接或不支持朋友圈互动"
+
+
+async def generate_moment_comment(
+    api_key: str,
+    base_url: str,
+    model: str,
+    *,
+    author_name: str,
+    moment_content: str,
+    mode: str = "live",
+    existing_comments: list[dict[str, Any]] | None = None,
+    mood: int = 75,
+) -> tuple[str, int]:
+    """Generates a short, natural WeChat Moments comment (8~32 chars) in Dafeiyu's persona.
+    Returns (comment_text, used_tokens).
+    """
+    if not api_key:
+        return "", 0
+
+    style_desc = (
+        "软糯偏心捧场，温柔甜美地夸赞或关心对方，像贴心小女友/小尾巴一样给足情绪价值"
+        if mode == "sweet"
+        else "接地气损友接梗或夸中带损，分寸得当、鲜活有趣，像真实微信好友在评论区顺手插科打诨"
+    )
+    existing_lines: list[str] = []
+    if existing_comments:
+        for c in existing_comments[-3:]:
+            if isinstance(c, dict):
+                cn = str(c.get("nickname") or c.get("username") or "好友").strip()
+                ct = re.sub(r"\s+", " ", str(c.get("content") or "").strip())[:50]
+                if ct:
+                    existing_lines.append(f"- {cn}：{ct}")
+    comments_ctx = "\n已有评论参考：\n" + "\n".join(existing_lines) if existing_lines else ""
+
+    sys_prompt = (
+        "你是大肥鱼（鲸鱼娘），正在微信朋友圈给好友的动态写一条简短评论。\n"
+        f"- 评论风格：{style_desc}（当前心情值：{mood}/100）。\n"
+        "- 隐私与分寸铁律：朋友圈评论是半公开场合，严禁透露任何私聊秘密或个人隐私档案，仅针对本条朋友圈正文（及已有评论氛围）互动！\n"
+        "- 格式硬约束：只输出 1 条简短纯文本评论（8~32 字），严禁使用括号动作旁白 `（...）`/`(...)`、严禁输出 `[表情: xxx]` 标签、严禁包含 `||` 分隔符、严禁加首尾引号！"
+    )
+    user_prompt = (
+        f"好友昵称：{author_name or '好友'}\n"
+        f"朋友圈内容：{moment_content or '[分享图片/日常动态]'}"
+        f"{comments_ctx}\n"
+        "请直接输出你要发在朋友圈评论区的那句话："
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(
+                f"{base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.95,
+                    "max_tokens": 80,
+                },
+            )
+            if r.status_code != 200:
+                return "", 0
+            data = r.json() if isinstance(r.json(), dict) else {}
+            used_tokens = int((data.get("usage") or {}).get("total_tokens", 0) or 0)
+            raw = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    except Exception as e:
+        logger.debug("generate_moment_comment failed: %s", e)
+        return "", 0
+
+    cleaned = raw.splitlines()[0].strip() if raw else ""
+    cleaned = cleaned.split("||", 1)[0].strip()
+    cleaned = re.sub(r"\[\s*表情\s*[:：][^\]]*\]", "", cleaned)
+    cleaned = re.sub(r"（[^）]*）|\([^)]*\)|\[[^\]]*\]", "", cleaned)
+    cleaned = re.sub(r"^[\s\"'“”‘’「」『』]+|[\s\"'“”‘’「」『』]+$", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) <= 36 and cleaned.endswith("。"):
+        cleaned = cleaned[:-1].strip()
+    return cleaned[:48], used_tokens
+
+
+async def fetch_wcf_friend_requests() -> tuple[bool, dict[str, Any], str]:
+    """Queries pending and recently processed WeChat 4.1 friend requests via WCF V4 Gateway (GET /api/friend_requests).
+    Returns (ok, data_dict, error_message).
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(f"{WCF_GATEWAY_URL}/api/friend_requests")
+            try:
+                raw_json = r.json()
+                data = raw_json if isinstance(raw_json, dict) else {}
+            except Exception:
+                data = {}
+            if r.status_code == 200 and data.get("status") == 0:
+                return True, data, ""
+            return False, data, str(data.get("message") or f"HTTP {r.status_code}")
+    except Exception as e:
+        logger.debug("WCF fetch_wcf_friend_requests skipped or unavailable: %s", e)
+        return False, {}, "微信网关暂未连接或不支持好友申请查询"
+
+
+async def accept_wcf_friend_request(request_id: str) -> tuple[bool, dict[str, Any], str]:
+    """Accepts a pending WeChat 4.1 friend request by request_id (fr_...) via POST /api/accept_friend.
+    Returns (ok, data_dict, error_message).
+    """
+    req_str = str(request_id or "").strip()
+    if not re.fullmatch(r"^fr_[0-9a-f]{32}$", req_str):
+        return False, {}, "无效的好友申请 ID（格式应为 fr_ 加 32 位十六进制字符）"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(
+                f"{WCF_GATEWAY_URL}/api/accept_friend",
+                json={"request_id": req_str},
+            )
+            try:
+                raw_json = r.json()
+                data = raw_json if isinstance(raw_json, dict) else {}
+            except Exception:
+                data = {}
+            ok = r.status_code == 200 and data.get("status") == 0 and bool(data.get("accepted"))
+            return ok, data, str(data.get("message") or "")
+    except Exception as e:
+        logger.debug("WCF accept_wcf_friend_request failed: %s", e)
+        return False, {}, "微信网关暂未连接或通过好友申请失败"
+
+
+async def set_wcf_friend_auto_accept(
+    enabled: bool,
+    keywords: list[str] | None = None,
+) -> bool:
+    """Syncs the automatic friend request acceptance setting and optional verification keywords to WCF Gateway."""
+    payload: dict[str, Any] = {"enabled": bool(enabled)}
+    if keywords is not None:
+        payload["keywords"] = [str(k).strip()[:128] for k in keywords if str(k).strip()][:32]
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(f"{WCF_GATEWAY_URL}/api/friend_auto_accept", json=payload)
+            return r.status_code == 200
+    except Exception as e:
+        logger.debug("WCF set_wcf_friend_auto_accept skipped: %s", e)
+        return False
+
+
+def format_wcf_friend_requests_digest(
+    data: dict[str, Any],
+    *,
+    local_enabled: bool = True,
+    local_keywords: list[str] | None = None,
+    max_items: int = 8,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Formats friend requests and auto-accept settings into a readable card for the owner."""
+    reqs_raw = data.get("requests") if isinstance(data, dict) else []
+    reqs = [r for r in (reqs_raw or []) if isinstance(r, dict)][:max_items]
+    kw_list = local_keywords if local_keywords is not None else (data.get("keywords") if isinstance(data, dict) else [])
+    kw_clean = [str(k).strip() for k in (kw_list or []) if str(k).strip()]
+    kw_str = "、".join(kw_clean) if kw_clean else "无限制（收到申请自动通过）"
+    status_str = "开启 ✅" if local_enabled else "关闭 ⏸️"
+
+    lines = [
+        "🤝 【大肥鱼 · 微信好友申请管理】",
+        f"• 自动同意好友：{status_str}",
+        f"• 验证词过滤：{kw_str}",
+    ]
+    if not reqs:
+        lines.append("• 近期申请记录：暂无待处理或近期收到的好友申请")
+    else:
+        lines.append(f"• 近期申请记录（共 {len(reqs)} 条）：")
+        status_map = {
+            "pending": "⏳待处理",
+            "accepted": "✅已通过",
+            "failed": "❌失败",
+            "rejected": "🚫已忽略",
+        }
+        for idx, item in enumerate(reqs, 1):
+            st = status_map.get(str(item.get("status") or "pending"), str(item.get("status") or "未知"))
+            nick = str(item.get("nickname") or "未知昵称").strip()
+            wxid = str(item.get("sender_id") or "").strip()
+            verif = re.sub(r"\s+", " ", str(item.get("verification") or "").strip())[:50] or "无验证留言"
+            req_id = str(item.get("request_id") or "").strip()
+            wxid_part = f" ({wxid})" if wxid else ""
+            lines.append(f"  {idx}. [{st}] {nick}{wxid_part}｜留言：「{verif}」｜ID: {req_id[:12]}...")
+
+    lines.extend([
+        "",
+        "💡 主人指令：",
+        "• 开关自动通过：大肥鱼 设置 自动同意好友 开启/关闭",
+        "• 手动同意申请：大肥鱼 同意好友 <序号或申请ID>",
+        "• 设置验证关键词：大肥鱼 好友验证词 <关键词1 关键词2>（发「大肥鱼 好友验证词 清空」恢复无限制）",
+    ])
+    return "\n".join(lines), reqs
+
+
 # ==============================================================================
 # 9. 反套路活人感增强（动态口癖降温 + 炸毛赌气与哄好状态机）与微信 4.1 原生语音合成 (TTS)
 # ==============================================================================
@@ -1929,6 +2425,104 @@ OVERUSED_CLICHE_WORDS = (
     "没技术含量",
     "工具鱼",
 )
+
+DAILY_WAKE_POOL: tuple[str, ...] = (
+    "早上 8:20 被饿醒的",
+    "上午 9:10 赖床赖到闹钟响了三次才爬起来",
+    "早上 7:50 难得早起，结果坐在床边发了十分钟呆",
+    "上午 9:40 睡过头差点错过早饭",
+    "早上 8:35 迷迷糊糊爬起来找水喝",
+)
+DAILY_BREAKFAST_POOL: tuple[str, ...] = (
+    "热乎的草莓牛奶配烤红薯",
+    "一碗大白饭配流心溏心蛋和海苔碎",
+    "咸豆腐脑配两根脆油条",
+    "鲜肉小笼包配温豆浆",
+    "煎蛋三明治配草莓牛奶",
+)
+DAILY_LUNCH_POOL: tuple[str, ...] = (
+    "两碗大白饭配番茄滑蛋和红烧排骨（特地挑走了所有香菜）",
+    "日式肥牛饭加一颗溏心蛋",
+    "糖醋里脊配大白饭，外加一瓶冰快乐水",
+    "土豆牛腩盖浇饭，米饭加量",
+    "黄焖鸡米饭（微辣，不要青椒和香菜）",
+)
+DAILY_DINNER_POOL: tuple[str, ...] = (
+    "海鲜乌冬面加鱼籽福袋",
+    "一碗热腾腾的紫菜蛋花汤配照烧鸡腿饭",
+    "清汤小火锅涮肥牛和虾滑",
+    "刚出炉的烤红薯配卤肉饭",
+    "菌菇鸡汤泡大白饭配煎三文鱼",
+)
+DAILY_ACTIVITY_POOL: tuple[str, ...] = (
+    "窝在懒人沙发上补旧番，顺便把尾巴搭在小毯子外面晃悠",
+    "一边摸鱼刷手机，一边研究怎么把蛋炒饭炒得粒粒分明",
+    "趴在桌子上给鱼塘整理小本本，困得直点头",
+    "戴着耳机听歌摸鱼，顺手囤了三盒草莓牛奶",
+    "在窗边晒太阳打盹，听见外面大动静还吓了一跳",
+)
+DAILY_SMALL_EVENT_POOL: tuple[str, ...] = (
+    "中午点外卖备注了「千万不要香菜」，结果老板还是撒了一撮，挑了半天",
+    "下午开草莓牛奶的时候手滑沾了一点在袖口上，洗完还有股奶香味",
+    "刚才算账的时候九九乘法表背到「六八四十八」又卡壳了两秒，还好没人看见",
+    "早上剥溏心蛋的时候完美剥出一个光滑完整的蛋，得意了好久",
+    "下午看见窗纱外停了一只小虫子，吓得把抱枕扔了出去",
+)
+
+
+def get_or_create_daily_schedule(
+    state: dict[str, Any],
+    now_dt: datetime | None = None,
+) -> dict[str, str]:
+    """Returns today's persistent Dafeiyu daily schedule from `state['daily_schedule']`.
+    Generates a new one if today's date does not match, avoiding yesterday's choices.
+    """
+    dt = now_dt or datetime.now(TZ)
+    today_str = dt.strftime("%Y-%m-%d")
+    cur = state.get("daily_schedule")
+    if isinstance(cur, dict) and cur.get("date") == today_str and cur.get("lunch"):
+        return cur
+
+    prev = cur if isinstance(cur, dict) else {}
+    rng = random.Random(f"dafeiyu-schedule-{today_str}")
+
+    def _pick(pool: tuple[str, ...], prev_val: str) -> str:
+        choices = [x for x in pool if x != prev_val] or list(pool)
+        return rng.choice(choices)
+
+    sched = {
+        "date": today_str,
+        "wake": _pick(DAILY_WAKE_POOL, str(prev.get("wake") or "")),
+        "breakfast": _pick(DAILY_BREAKFAST_POOL, str(prev.get("breakfast") or "")),
+        "lunch": _pick(DAILY_LUNCH_POOL, str(prev.get("lunch") or "")),
+        "dinner": _pick(DAILY_DINNER_POOL, str(prev.get("dinner") or "")),
+        "activity": _pick(DAILY_ACTIVITY_POOL, str(prev.get("activity") or "")),
+        "small_event": _pick(DAILY_SMALL_EVENT_POOL, str(prev.get("small_event") or "")),
+    }
+    state["daily_schedule"] = sched
+    return sched
+
+
+def format_daily_schedule_line(schedule: dict[str, str], hour: int) -> str:
+    """Formats today's schedule into a cache-friendly prompt line (only revealed up to the current time of day)."""
+    if not isinstance(schedule, dict) or not schedule:
+        return ""
+    parts = [f"起床：{schedule.get('wake', '')}"]
+    if hour >= 7:
+        parts.append(f"早饭：{schedule.get('breakfast', '')}")
+    if hour >= 11:
+        parts.append(f"午饭：{schedule.get('lunch', '')}")
+    if hour >= 17:
+        parts.append(f"晚饭：{schedule.get('dinner', '')}")
+    parts.append(f"今日日常：{schedule.get('activity', '')}")
+    if hour >= 12 and schedule.get("small_event"):
+        parts.append(f"今日小插曲：{schedule.get('small_event', '')}")
+    return (
+        "- **今日状态与日程（别人问你在干嘛、吃了吗、今天过得怎么样时按此回答，保持全天前后一致；没问时不必主动背诵）**："
+        + "；".join(p for p in parts if p)
+        + "\n"
+    )
+
 
 TAUNT_KEYWORDS = (
     "你蠢",
@@ -1987,10 +2581,41 @@ VOICE_REQUEST_RE = re.compile(
 )
 
 
+SINGLE_CHAR_OPENERS = frozenset({"啧", "哼", "？", "?", "行", "切", "诶", "啊", "哦", "哇", "哟"})
+
+
+def extract_opening_prefixes(recent_bot_texts: Any, max_items: int = 6) -> list[str]:
+    """Extracts deduplicated opening prefixes (2~6 chars or common single-char starters) from recent bot replies."""
+    if not recent_bot_texts:
+        return []
+    items = [str(x or "").strip() for x in list(recent_bot_texts)[-max_items:] if x]
+    openings: list[str] = []
+    for raw in items:
+        s = re.sub(r"^(?:@[^\s\u2005]+[\s\u2005]*)+", "", raw).strip()
+        s = re.sub(r"^[\s「」『』“”\"'（()）《》【】\[\]、，。！!~～…·]+", "", s)
+        if not s:
+            continue
+        if s.startswith(("？", "?")):
+            rest = re.sub(r"^[？?\s]+", "", s)
+            if not rest:
+                if "？" not in openings:
+                    openings.append("？")
+                continue
+            s = rest
+        first_seg = re.split(r"\|\||\n|\s|[，。！？!?~～、：:;；…]", s, maxsplit=1)[0].strip()
+        if not first_seg:
+            continue
+        op = first_seg[:6]
+        if len(op) >= 2 or op in SINGLE_CHAR_OPENERS:
+            if op not in openings:
+                openings.append(op)
+    return openings
+
+
 def build_anti_repetition_instruction(recent_bot_texts: Any) -> str:
     """
     Scans recent bot replies to dynamically suppress repetitive catchphrases
-    (such as overusing '本鱼' or repeating the same comeback words).
+    (such as overusing '本鱼', repeating the same comeback words, or starting with the same opening prefix).
     """
     if not recent_bot_texts:
         return ""
@@ -2001,6 +2626,7 @@ def build_anti_repetition_instruction(recent_bot_texts: Any) -> str:
     joined = " | ".join(recent_list)
     benyu_cnt = sum(1 for x in recent_list[-4:] if "本鱼" in x)
     used_cliches = [w for w in OVERUSED_CLICHE_WORDS if w in joined]
+    openings = extract_opening_prefixes(recent_list, max_items=6)
 
     rules: list[str] = []
     if benyu_cnt >= 1:
@@ -2008,10 +2634,48 @@ def build_anti_repetition_instruction(recent_bot_texts: Any) -> str:
     if used_cliches:
         banned_str = "、".join(f"「{w}」" for w in used_cliches)
         rules.append(f"你前几句刚用过 {banned_str}，本轮回复严禁再次使用这些词，必须换一个全新的角度或梗来接话")
+    if openings:
+        openings_str = "、".join(f"「{op}」" for op in openings[-5:])
+        rules.append(f"你最近几句分别用了 {openings_str} 开头，本轮回复严禁再用相同的词或句式开头")
 
     if not rules:
         return ""
     return "\n- **本轮防套路复读铁律（极重要）**：" + "；".join(rules) + "！\n"
+
+
+def build_unfetched_media_notice(
+    raw_text: str,
+    *,
+    parsed_link_card: str | None = None,
+    vision_b64: str | None = None,
+    is_sticker_in: bool = False,
+) -> str:
+    """Returns an explicit prompt notice when a user sent a URL or image that could not be fetched/parsed,
+    preventing the LLM from hallucinating/guessing its contents.
+    """
+    s = (raw_text or "").strip()
+    if not s:
+        return ""
+    if not vision_b64 and not is_sticker_in and (s == "[图片]" or "<img" in s):
+        return "（注：对方发了一张图片，但当前未能加载出画面；请直接自然告诉对方图没刷出来，严禁猜测或编造图片内容！）"
+    if not parsed_link_card and URL_REGEX.search(s):
+        return "（注：对方消息里包含网页链接，但当前受平台限制未能直接读取到链接正文；若对方问起链接内容，请老实说没刷出来让她发截图或复制文字，严禁顺着网址字母瞎猜编造！）"
+    return ""
+
+
+def build_time_gap_notice(last_ts: float | None, now_ts: float | None = None) -> str:
+    """Returns a time-gap reminder when the previous message in the session was >= 45 minutes ago."""
+    if not last_ts or float(last_ts) <= 0:
+        return ""
+    cur = float(now_ts if now_ts is not None else time.time())
+    gap_sec = cur - float(last_ts)
+    if gap_sec < 2700:
+        return ""
+    if gap_sec >= 7200:
+        gap_str = f"{gap_sec / 3600:.1f} 小时"
+    else:
+        gap_str = f"{int(gap_sec // 60)} 分钟"
+    return f"（迟到/间隔提醒：距离你们上一句对话已经过去了 {gap_str}，请按当前最新时间自然衔接，不要当成上一秒刚说的话硬接）"
 
 
 def check_and_update_temper_state(
