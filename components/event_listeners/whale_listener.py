@@ -362,6 +362,7 @@ BOT_PREFIX_RE = re.compile(
 IMAGE_FOLLOWUP_KEYWORDS = (
     "图", "看", "照片", "截图", "上面", "这张", "那个", "啥",
     "里面", "左边", "右边", "写的啥", "写的什么", "报错", "内容",
+    "锐评", "评价", "点评", "分析", "怎么看", "什么意思", "啥意思",
 )
 MEME_TAG_RE = re.compile(r"\[(?:表情|表情包|meme)\s*[:：]\s*([^\]\s]{1,12})\s*\]", re.IGNORECASE)
 
@@ -2897,11 +2898,17 @@ class WhaleListener(EventListener):
     @staticmethod
     def _strip_wake_prefix(text: str) -> str:
         s = STRIP_TRIGGER_RE.sub("", text or "").strip()
-        for bn in df.get_dynamic_bot_names():
+        bot_names = set(df.get_dynamic_bot_names()) | {"大肥鱼", "鲸鱼娘", "小鲸鱼", "肥鱼"}
+        for bn in bot_names:
             bn_str = str(bn).strip()
+            if not bn_str:
+                continue
+            esc = re.escape(bn_str)
+            # Strip @<bot_name> or @<bot_wxid> anywhere in the message (e.g. trailing "锐评一下 @Free")
+            s = re.sub(rf"@(?:{esc})(?:[\s\u2005,，:：]+|$)", " ", s, flags=re.IGNORECASE).strip()
             if len(bn_str) >= 2 and not bn_str.lower().startswith("wxid_"):
                 s = re.sub(
-                    rf"^(?:{re.escape(bn_str)})(?:[,，:：\s]+|$)",
+                    rf"^(?:{esc})(?:[,，:：\s]+|$)",
                     "",
                     s,
                     flags=re.IGNORECASE,
@@ -3884,6 +3891,12 @@ class WhaleListener(EventListener):
                     hist_user_text = f"[引用「{quote_speaker}: {quote_content[:60]}」] {cleaned_text}"
                     cleaned_text = (
                         f"【对方引用了消息「{quote_speaker}: {quote_content}」并回复】：\n{cleaned_text}"
+                    )
+                elif vision_b64 and not incoming_img_b64:
+                    hist_user_text = cleaned_text
+                    cleaned_text = (
+                        f"（结合刚刚发出的这张图片，对方对你说：「{cleaned_text}」。"
+                        "请仔细看清图片里的画面、文字和细节，用大肥鱼的微信活人短句直接回应！）"
                     )
                 else:
                     hist_user_text = cleaned_text

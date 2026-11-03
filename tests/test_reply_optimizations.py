@@ -803,6 +803,18 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         await self.ask("@Free 闭嘴", group=True, room="room-A", sender="wxid_member1")
         self.assertGreater(self.listener._group_mute_until.get("bot-A:group:room-A", 0.0), time.time())
 
+    def test_strip_wake_prefix_removes_trailing_and_inline_bot_mentions(self):
+        self._patch(df, "get_dynamic_bot_names", return_value=("大肥鱼", "鲸鱼娘", "小鲸鱼", "free"))
+        self.assertEqual(
+            self.listener._strip_wake_prefix("锐评一下 @Free"),
+            "锐评一下",
+        )
+        self.assertEqual(
+            self.listener._strip_wake_prefix("@Free 锐评一下这张图"),
+            "锐评一下这张图",
+        )
+        self.assertIn("锐评", wl.IMAGE_FOLLOWUP_KEYWORDS)
+
 
 if __name__ == "__main__":
     unittest.main()
