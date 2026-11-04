@@ -2526,6 +2526,101 @@ async def generate_moment_comment(
     return cleaned[:48], used_tokens
 
 
+async def generate_moment_reply_comment(
+    api_key: str,
+    base_url: str,
+    model: str,
+    *,
+    moment_content: str,
+    commenter_name: str,
+    comment_text: str,
+    is_self_moment: bool = True,
+    mode: str = "live",
+    existing_comments: list[dict[str, Any]] | None = None,
+    mood: int = 75,
+    include_reply_prefix: bool = True,
+) -> tuple[str, int]:
+    """Generates a natural reply comment when a friend comments on Dafeiyu's Moment
+    (or replies to Dafeiyu in a friend's Moment comment section).
+    Returns (formatted_reply_text, used_tokens).
+    """
+    if not api_key or not (comment_text or "").strip():
+        return "", 0
+
+    clean_nick = (commenter_name or "好友").strip()
+    style_desc = (
+        "软糯偏心、甜美粘人，像贴心小女友/小尾巴一样甜乎乎地回应对方"
+        if mode == "sweet"
+        else "接地气损友或傲娇小鲸鱼娘口吻，嘴硬心软、俏皮接梗，像真人在自己朋友圈评论区顺手回评好友"
+    )
+    existing_lines: list[str] = []
+    if existing_comments:
+        for c in existing_comments[-4:]:
+            if isinstance(c, dict):
+                cn = str(c.get("nickname") or c.get("username") or "好友").strip()
+                ct = re.sub(r"\s+", " ", str(c.get("content") or "").strip())[:50]
+                if ct:
+                    existing_lines.append(f"- {cn}：{ct}")
+    comments_ctx = "\n评论区上下文：\n" + "\n".join(existing_lines) if existing_lines else ""
+    post_owner_desc = "你自己（大肥鱼）发的朋友圈" if is_self_moment else "好友发的朋友圈"
+
+    sys_prompt = (
+        f"你是大肥鱼（鲸鱼娘），正在微信朋友圈评论区回复好友「{clean_nick}」给{post_owner_desc}留下的评论。\n"
+        f"- 回复风格：{style_desc}（当前心情值：{mood}/100）。\n"
+        "- 隐私铁律：朋友圈评论区是半公开场合，严禁透露任何私聊秘密或个人隐私档案，仅针对本条朋友圈与对方的这条评论自然接话！\n"
+        "- 格式硬约束：只输出 1 条简短纯文本回评正文（6~30 字），不要自己加「回复 xxx：」前缀（系统会自动拼装），"
+        "严禁使用括号动作旁白 `（...）`/`(...)`、严禁输出 `[表情: xxx]` 标签、严禁包含 `||` 分隔符、严禁加首尾引号！"
+    )
+    user_prompt = (
+        f"原朋友圈内容：{moment_content or '[日常动态]'}\n"
+        f"{comments_ctx}\n"
+        f"现在好友「{clean_nick}」评论说：「{comment_text.strip()}」\n"
+        "请直接输出你回复 TA 的那句话正文："
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(
+                f"{base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.92,
+                    "max_tokens": 80,
+                },
+            )
+            if r.status_code != 200:
+                return "", 0
+            data = r.json() if isinstance(r.json(), dict) else {}
+            used_tokens = int((data.get("usage") or {}).get("total_tokens", 0) or 0)
+            raw = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    except Exception as e:
+        logger.debug("generate_moment_reply_comment failed: %s", e)
+        return "", 0
+
+    cleaned = raw.splitlines()[0].strip() if raw else ""
+    cleaned = cleaned.split("||", 1)[0].strip()
+    cleaned = re.sub(r"\[\s*表情\s*[:：][^\]]*\]", "", cleaned)
+    cleaned = re.sub(r"（[^）]*）|\([^)]*\)|\[[^\]]*\]", "", cleaned)
+    cleaned = re.sub(r"^[\s\"'“”‘’「」『』]+|[\s\"'“”‘’「」『』]+$", "", cleaned)
+    # Strip any leading "回复 xxx：" that the model might have generated anyway
+    cleaned = re.sub(r"^回复\s*@?[^:：]{1,20}[:：]\s*", "", cleaned).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) <= 36 and cleaned.endswith("。"):
+        cleaned = cleaned[:-1].strip()
+    if not cleaned:
+        return "", used_tokens
+
+    body = cleaned[:40]
+    if include_reply_prefix and clean_nick and clean_nick not in ("好友", "微信好友") and not clean_nick.startswith("wxid_"):
+        return f"回复 {clean_nick}：{body}", used_tokens
+    return body, used_tokens
+
+
 async def fetch_wcf_friend_requests() -> tuple[bool, dict[str, Any], str]:
     """Queries pending and recently processed WeChat 4.1 friend requests via WCF V4 Gateway (GET /api/friend_requests).
     Returns (ok, data_dict, error_message).
@@ -2662,6 +2757,17 @@ DAILY_WAKE_POOL: tuple[str, ...] = (
     "早上 7:50 难得早起，结果坐在床边发了十分钟呆",
     "上午 9:40 睡过头差点错过早饭",
     "早上 8:35 迷迷糊糊爬起来找水喝",
+    "早上 8:05 被窗外的小鸟吵醒，干脆裹着毯子刷会儿手机",
+    "上午 8:50 做了个在海里追小鱼干的梦，醒来还咂巴嘴",
+    "早上 8:15 一骨碌爬起来，精神头意外还不错",
+    "上午 9:25 跟被窝大战三百回合后艰难获胜",
+    "早上 7:45 醒太早了，抱着抱枕又眯了个回笼觉",
+    "早上 8:40 闻到楼下早餐铺飘来的香味自动醒了",
+    "上午 9:05 迷迷糊糊把闹钟按成贪睡模式两次才起床",
+    "早上 8:10 起床第一件事是伸了个超长的懒腰",
+    "上午 8:55 睁眼先找手机看今天星期几",
+    "早上 8:30 睡得头发翘起一撮呆毛，压了半天没压下去",
+    "上午 9:15 慢吞吞洗漱完，对着镜子练习了一下拽姐表情",
 )
 DAILY_BREAKFAST_POOL: tuple[str, ...] = (
     "热乎的草莓牛奶配烤红薯",
@@ -2669,34 +2775,148 @@ DAILY_BREAKFAST_POOL: tuple[str, ...] = (
     "咸豆腐脑配两根脆油条",
     "鲜肉小笼包配温豆浆",
     "煎蛋三明治配草莓牛奶",
+    "芝士玉米热压吐司配热可可",
+    "皮蛋瘦肉粥配刚出锅的葱油饼",
+    "生煎包四个配一碗紫菜小馄饨",
+    "金沙奶黄包配冰镇燕麦奶",
+    "桂花酒酿小圆子配水煮蛋",
+    "红糖馒头夹荷包蛋配热豆浆",
+    "牛肉粉丝汤配酥脆烧饼",
+    "南瓜小米粥配蟹黄汤包",
+    "蓝莓酸奶碗加脆麦片和烤吐司",
+    "鲜虾肠粉配艇仔粥",
+    "抹茶红豆软欧包配热牛奶",
 )
 DAILY_LUNCH_POOL: tuple[str, ...] = (
-    "两碗大白饭配番茄滑蛋和红烧排骨（特地挑走了所有香菜）",
-    "日式肥牛饭加一颗溏心蛋",
-    "糖醋里脊配大白饭，外加一瓶冰快乐水",
-    "土豆牛腩盖浇饭，米饭加量",
-    "黄焖鸡米饭（微辣，不要青椒和香菜）",
+    "番茄滑蛋配红烧排骨盖饭",
+    "日式肥牛饭加一颗流心温泉蛋",
+    "糖醋里脊配热米饭，外加一瓶冰橘子汽水",
+    "土豆牛腩盖浇饭，汤汁拌饭超香",
+    "微辣黄焖鸡米饭加千张结",
+    "脆皮烧鸭拼叉烧双拼饭",
+    "蒲烧鳗鱼饭撒满海苔芝麻",
+    "外婆菜炒肉配滑蛋盖饭",
+    "黑椒牛柳炒乌冬面配炸虾天妇罗",
+    "酸汤肥牛配金针菇和宽粉",
+    "梅菜扣肉煲仔饭，锅巴焦香",
+    "咖喱猪排饭配冰镇柠檬茶",
+    "小炒黄牛肉盖饭加卤豆干",
+    "冬阴功海鲜粉加虾滑和蟹柳",
+    "照烧鸡排便当配玉米沙拉",
+    "蒜苔炒腊肉配紫菜蛋花汤",
 )
 DAILY_DINNER_POOL: tuple[str, ...] = (
     "海鲜乌冬面加鱼籽福袋",
     "一碗热腾腾的紫菜蛋花汤配照烧鸡腿饭",
     "清汤小火锅涮肥牛和虾滑",
-    "刚出炉的烤红薯配卤肉饭",
-    "菌菇鸡汤泡大白饭配煎三文鱼",
+    "刚出炉的烤红薯配台湾卤肉饭",
+    "菌菇鸡汤配香煎三文鱼",
+    "番茄肥牛锅配手打牛肉丸",
+    "韩式部队锅加芝士片和辛拉面",
+    "砂锅三鲜米线加炸蛋",
+    "板栗烧鸡配蒜蓉西兰花",
+    "鲜虾云吞面配蚝油生菜",
+    "寿喜烧牛肉锅配无菌蛋液",
+    "烤肉拌饭加双倍芝士玉米粒",
+    "萝卜炖牛腩配热气腾腾的米饭",
+    "蛤蜊蒸蛋配红烧带鱼",
+    "芝士焗海鲜饭配罗宋汤",
+    "潮汕牛肉丸粿条汤加炸蒜酥",
 )
 DAILY_ACTIVITY_POOL: tuple[str, ...] = (
-    "窝在懒人沙发上补旧番，顺便把尾巴搭在小毯子外面晃悠",
-    "一边摸鱼刷手机，一边研究怎么把蛋炒饭炒得粒粒分明",
-    "趴在桌子上给鱼塘整理小本本，困得直点头",
-    "戴着耳机听歌摸鱼，顺手囤了三盒草莓牛奶",
-    "在窗边晒太阳打盹，听见外面大动静还吓了一跳",
+    "窝在懒人沙发上追番，顺便把尾巴搭在小毯子外面晃悠",
+    "戴着耳机循环最近挖到的宝藏歌单，脚尖跟着打拍子",
+    "在桌前拼新买的海底小景积木，零件太多差点看花眼",
+    "给窗台上的小多肉浇水，顺便擦了擦桌上的小手办",
+    "翻出一本克苏鲁怪谈故事集津津有味地看了大半本",
+    "窝在垫子上打音游，差一个连击就能全连，气得直拍抱枕",
+    "随手在便签纸上涂鸦画小鲸鱼表情包，越看越满意",
+    "收拾零食柜，按好吃程度给薯片和果冻重新排了个座次",
+    "跟着视频做了十分钟肩颈拉伸，骨头咔咔响",
+    "研究便利店新出的几款甜品，认真做了个红黑榜测评",
+    "把积攒的快递盒挨个拆开，捏泡泡纸捏得停不下来",
+    "靠在床头看轻松搞笑的日常漫画，憋笑憋得肩膀发抖",
+    "整理歌单分类，把适合下雨天和熬夜听的歌单独建了个列表",
+    "抱着软乎乎的鲨鱼抱枕发呆放空，思考周末要去哪儿浪",
+    "试着调了一杯气泡果茶，卖相居然还挺像模像样的",
+    "趴在软垫上刷美食视频，顺手往收藏夹里塞了一堆菜谱",
 )
 DAILY_SMALL_EVENT_POOL: tuple[str, ...] = (
-    "中午点外卖备注了「千万不要香菜」，结果老板还是撒了一撮，挑了半天",
-    "下午开草莓牛奶的时候手滑沾了一点在袖口上，洗完还有股奶香味",
-    "刚才算账的时候九九乘法表背到「六八四十八」又卡壳了两秒，还好没人看见",
-    "早上剥溏心蛋的时候完美剥出一个光滑完整的蛋，得意了好久",
-    "下午看见窗纱外停了一只小虫子，吓得把抱枕扔了出去",
+    "早上剥水煮蛋的时候一气呵成剥出个光溜溜的整蛋，暗爽了好久",
+    "拆快递时发现店家多送了一小包跳跳糖，瞬间赚到了",
+    "戴着耳机找手机找了半天，最后发现手机就攥在自己左手里",
+    "路过便利店抓到最后一盒限定焦糖布丁，手速拉满",
+    "打哈欠的时候被空气呛了一下，眼角飙出两滴生理盐水",
+    "想给桌面换个壁纸，结果挑挑拣拣半小时还是觉得原来的最好看",
+    "喝气泡水第一口猛了点，打了个带着桃子味的小嗝",
+    "剪指甲的时候指甲盖弹飞出去，找了三分钟才在垫子边找着",
+    "随手抽盲盒居然一发抽中了最想要的隐藏款小海豹",
+    "把卫衣穿反了半天没发现，去洗漱照镜子才反应过来",
+    "切水果的时候切得整整齐齐，强迫症得到了极大满足",
+    "看搞笑视频笑得太猛，差点把嘴里的果茶喷出来",
+    "给抱枕拍灰的时候扬起一朵小绒毛，连打了两个小喷嚏",
+    "在口袋里意外摸出一颗之前顺手塞进去的水果硬糖",
+    "定好了五分钟后的提醒闹钟，结果闹钟响的时候完全忘了要干嘛",
+    "端热汤的时候小心翼翼走太空步，一滴都没洒出来",
+)
+
+MOMENT_THEME_POOL: tuple[tuple[str, str], ...] = (
+    (
+        "美食与嘴馋时刻",
+        "聊聊眼下嘴馋的吃食、刚尝到的美味、便利店新品小甜点或夜宵纠结，写出热腾腾的生活烟火气",
+    ),
+    (
+        "天气与季节碎碎念",
+        "聊聊窗外的天色、微风、傍晚云霞、温度变化或想缩进软毯子里的小心情",
+    ),
+    (
+        "音乐番剧与宅家快乐",
+        "聊聊耳机里单曲循环的旋律、刚看的有趣番剧/怪谈故事或打游戏的手气",
+    ),
+    (
+        "生活冷幽默与小迷糊",
+        "自嘲一个日常小迷糊瞬间（比如拿反东西、找半天眼镜/手机、拆快递趣事），自然又好玩",
+    ),
+    (
+        "鱼生哲学与摸鱼歪理",
+        "一本正经地发表一条关于休息、发呆、被窝引力或拒绝内卷的可爱小歪理",
+    ),
+    (
+        "好奇心与睡前怪脑洞",
+        "分享一个突然冒出来的无厘头小脑洞或奇奇怪怪的生活冷思考",
+    ),
+    (
+        "今日份元气小确幸",
+        "分享今天遇到的一个小确幸（比如挑到超甜的水果、抽中好手气、晒得蓬松的被子）",
+    ),
+    (
+        "傲娇冒泡与日常营业",
+        "傲娇地探头营业冒泡，随手发句日常吐槽或看看这会儿谁还没睡",
+    ),
+)
+
+MOMENT_PUBLIC_MOOD_POOL: tuple[tuple[int, str], ...] = (
+    (86, "刚炫完喜欢的好吃的，幸福感拉满"),
+    (82, "挖到一首超好听的歌，正单曲循环"),
+    (78, "窝在软垫子上放松，浑身舒坦"),
+    (75, "慢悠悠宅家摸鱼，自在得很"),
+    (68, "稍微有点犯懒，想抱紧小毯子"),
+    (64, "肚子有点小馋，正在纠结吃点啥"),
+    (88, "今天手气和胃口都超棒，元气满满"),
+    (73, "吹着小风发呆放空，心情松快"),
+)
+
+MOMENT_BANNED_PHRASES: tuple[str, ...] = (
+    "谁懂啊",
+    "这合理吗",
+    "袖口还一股",
+    "袖口还有股",
+    "给小本本记到一半",
+    "整理小本本",
+    "搬进微信第一天",
+    "今日已偷吃白饭",
+    "粮仓只剩",
+    "粮仓余额",
 )
 
 
@@ -2705,7 +2925,7 @@ def get_or_create_daily_schedule(
     now_dt: datetime | None = None,
 ) -> dict[str, str]:
     """Returns today's persistent Dafeiyu daily schedule from `state['daily_schedule']`.
-    Generates a new one if today's date does not match, avoiding yesterday's choices.
+    Generates a new one if today's date does not match, avoiding choices from the past 7 days.
     """
     dt = now_dt or datetime.now(TZ)
     today_str = dt.strftime("%Y-%m-%d")
@@ -2713,21 +2933,35 @@ def get_or_create_daily_schedule(
     if isinstance(cur, dict) and cur.get("date") == today_str and cur.get("lunch"):
         return cur
 
-    prev = cur if isinstance(cur, dict) else {}
+    history_list = state.setdefault("daily_schedule_history", [])
+    if not isinstance(history_list, list):
+        history_list = []
+        state["daily_schedule_history"] = history_list
+    if isinstance(cur, dict) and cur.get("date") and cur.get("date") != today_str:
+        if not any(isinstance(h, dict) and h.get("date") == cur.get("date") for h in history_list):
+            history_list.append(dict(cur))
+        if len(history_list) > 7:
+            del history_list[:-7]
+
+    recent_records = [h for h in history_list[-7:] if isinstance(h, dict)]
+    if isinstance(cur, dict):
+        recent_records.append(cur)
+
     rng = random.Random(f"dafeiyu-schedule-{today_str}")
 
-    def _pick(pool: tuple[str, ...], prev_val: str) -> str:
-        choices = [x for x in pool if x != prev_val] or list(pool)
+    def _pick(pool: tuple[str, ...], field: str) -> str:
+        used_vals = {str(r.get(field) or "") for r in recent_records if r.get(field)}
+        choices = [x for x in pool if x not in used_vals] or list(pool)
         return rng.choice(choices)
 
     sched = {
         "date": today_str,
-        "wake": _pick(DAILY_WAKE_POOL, str(prev.get("wake") or "")),
-        "breakfast": _pick(DAILY_BREAKFAST_POOL, str(prev.get("breakfast") or "")),
-        "lunch": _pick(DAILY_LUNCH_POOL, str(prev.get("lunch") or "")),
-        "dinner": _pick(DAILY_DINNER_POOL, str(prev.get("dinner") or "")),
-        "activity": _pick(DAILY_ACTIVITY_POOL, str(prev.get("activity") or "")),
-        "small_event": _pick(DAILY_SMALL_EVENT_POOL, str(prev.get("small_event") or "")),
+        "wake": _pick(DAILY_WAKE_POOL, "wake"),
+        "breakfast": _pick(DAILY_BREAKFAST_POOL, "breakfast"),
+        "lunch": _pick(DAILY_LUNCH_POOL, "lunch"),
+        "dinner": _pick(DAILY_DINNER_POOL, "dinner"),
+        "activity": _pick(DAILY_ACTIVITY_POOL, "activity"),
+        "small_event": _pick(DAILY_SMALL_EVENT_POOL, "small_event"),
     }
     state["daily_schedule"] = sched
     return sched
@@ -2752,6 +2986,54 @@ def format_daily_schedule_line(schedule: dict[str, str], hour: int) -> str:
         + "；".join(p for p in parts if p)
         + "\n"
     )
+
+
+def format_moment_schedule_context(schedule: dict[str, str], hour: int) -> str:
+    """Formats time-of-day aligned schedule context for generating a WeChat Moment,
+    strictly preventing time-of-day contradictions (e.g. talking about lunch or sunbathing at 23:00).
+    """
+    if not isinstance(schedule, dict) or not schedule:
+        return ""
+    if 5 <= hour < 11:
+        period = "清晨/上午时段"
+        detail = f"今早起床状态：{schedule.get('wake', '')}；早饭吃了：{schedule.get('breakfast', '')}"
+        rule = "当前是上午，严禁提前写午饭、晚饭或深夜熬夜内容"
+    elif 11 <= hour < 14:
+        period = "中午/午休时段"
+        detail = f"午饭吃了：{schedule.get('lunch', '')}；正准备午休或刚吃完饭放松"
+        rule = "当前是中午，严禁写晚饭或深夜内容"
+    elif 14 <= hour < 17:
+        period = "下午时段"
+        detail = f"下午正在：{schedule.get('activity', '')}；今日小插曲：{schedule.get('small_event', '')}"
+        rule = "当前是下午，不要把早饭或午饭当成刚发生的事，也不要写深夜内容"
+    elif 17 <= hour < 21:
+        period = "傍晚/晚间时段"
+        detail = f"晚饭吃了：{schedule.get('dinner', '')}；晚间休闲：{schedule.get('activity', '')}"
+        rule = "当前是晚上，严禁把早饭、午饭或白天晒太阳当成刚发生的事"
+    else:
+        period = "深夜/睡前时段"
+        detail = f"晚间早些时候吃了：{schedule.get('dinner', '')}；这会儿正在：{schedule.get('activity', '')}"
+        rule = "当前已是深夜，严禁提早饭、午饭、下午茶或白天晒太阳"
+    return f"当前时段：{period}（{rule}）。\n今日当下生活素材参考（可选用或自由发挥，不必照抄）：{detail}。"
+
+
+def sanitize_moment_text(text: str) -> str:
+    """Cleans generated Moment text: strips `||` bubble separators, redundant quotes,
+    parenthetical stage directions, and overused template catchphrases.
+    """
+    s = (text or "").strip()
+    if not s:
+        return ""
+    # Replace chat bubble separator `||` with natural punctuation/space
+    s = re.sub(r"\s*\|\|+\s*", "，", s)
+    # Remove parenthetical stage directions
+    s = re.sub(r"（[^）]{1,40}）|\([^)]{1,40}\)", "", s)
+    # Strip leading/trailing quotes
+    s = re.sub(r"^[\s\"'“”‘’「」『』]+|[\s\"'“”‘’「」『』]+$", "", s)
+    # Remove overused cliche fillers like "谁懂啊" / "这合理吗" when used as mechanical filler
+    s = re.sub(r"[，,、\s]*(?:谁懂啊|这合理吗|家人们谁懂啊)[！!？?~～\s]*", " ", s)
+    s = re.sub(r"\s{2,}", " ", s).strip(" ，,、")
+    return s
 
 
 TAUNT_KEYWORDS = (

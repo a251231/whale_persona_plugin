@@ -908,6 +908,119 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         self.assertEqual(u_state["dims"]["happy"], 6)
         self.assertEqual(u_state["timeline"][-1]["delta"], 2)
 
+    async def test_moments_generation_dedup_sanitization_and_7day_schedule(self):
+        # 1) 7-day rolling schedule deduplication
+        state_sched = {}
+        seen_lunches = set()
+        for day in range(1, 8):
+            dt = datetime(2026, 11, day, 12, 0, tzinfo=wl.TZ)
+            sc = df.get_or_create_daily_schedule(state_sched, dt)
+            seen_lunches.add(sc["lunch"])
+        self.assertEqual(len(seen_lunches), 7)
+
+        # 2) Recent Moments deduplication, no default token bill, `||` & cliche sanitization, meme dedup
+        self.listener._state["moments"] = [
+            {"id": 1, "at": "2026-11-03 20:00", "text": "旧动态一：草莓牛奶真好喝", "meme": "躺平", "theme": "美食与嘴馋时刻"},
+            {"id": 2, "at": "2026-11-04 12:00", "text": "旧动态二：困得直点头", "meme": "干饭", "theme": "今日份元气小确幸"},
+        ]
+        # Model tries to output `||`, `谁懂啊`, and a repeated meme `[表情: 干饭]`
+        self.model_reply = "刚拆开一包跳跳糖 || 噼里啪啦在嘴里炸开 谁懂啊 [表情: 干饭]"
+        card_txt, _ = await self.listener._generate_and_post_moment()
+        gen_prompt = self.prompt()
+        self.assertIn("旧动态一：草莓牛奶真好喝", gen_prompt)
+        self.assertIn("严禁在朋友圈里报账", gen_prompt)
+        self.assertNotIn("tokens（粮仓余额", gen_prompt)
+
+        latest_m = self.listener._state["moments"][-1]
+        self.assertNotIn("||", latest_m["text"])
+        self.assertNotIn("谁懂啊", latest_m["text"])
+        self.assertIn("跳跳糖", latest_m["text"])
+        # Because `干饭` and `躺平` were in the last 2 moments, meme tag must be rotated away
+        self.assertNotIn(latest_m["meme"], ("干饭", "躺平"))
+        self.assertEqual(self.listener._state["self_moments_history"][-1]["text"], latest_m["text"])
+        self.assertIn(latest_m["text"], card_txt)
+
+    async def test_auto_reply_to_comments_on_self_and_friend_moments(self):
+        now_sec = int(time.time())
+        self.listener._state["moments"] = [{"id": 1, "text": "今天天气超好"}]
+        self.listener._state["interacted_moments"] = {
+            "26000000000000002": {
+                "author": "wxid_friend_b",
+                "liked": True,
+                "commented": True,
+                "comment": "这火锅看着太香了吧",
+                "ts": now_sec - 600,
+            }
+        }
+        feed_rows = [
+            {
+                "sns_id": "26000000000000001",
+                "author": "wxid_bot_self",
+                "nickname": "大肥鱼",
+                "is_self": True,
+                "private": False,
+                "timestamp": now_sec - 1200,
+                "content": "耳机里随机到一首超好听的歌",
+                "comments": [
+                    {
+                        "username": "wxid_friend_a",
+                        "nickname": "阿泽",
+                        "content": "求歌名！我最近也在找歌听",
+                        "timestamp": now_sec - 300,
+                        "comment_id": "9001",
+                    }
+                ],
+            },
+            {
+                "sns_id": "26000000000000002",
+                "author": "wxid_friend_b",
+                "nickname": "小美",
+                "is_self": False,
+                "private": False,
+                "timestamp": now_sec - 900,
+                "content": "今晚吃牛油火锅！",
+                "comments": [
+                    {
+                        "username": "wxid_bot_self",
+                        "nickname": "大肥鱼",
+                        "content": "这火锅看着太香了吧",
+                        "timestamp": now_sec - 600,
+                        "comment_id": "9002",
+                    },
+                    {
+                        "username": "wxid_friend_b",
+                        "nickname": "小美",
+                        "content": "哈哈下次带你一起吃呀肥鱼",
+                        "timestamp": now_sec - 200,
+                        "comment_id": "9003",
+                    },
+                ],
+            },
+        ]
+        self._patch(df, "fetch_wcf_moments", AsyncMock(return_value=(True, feed_rows, "")))
+        mock_interact = self._patch(
+            df, "interact_wcf_moment", AsyncMock(return_value=(True, "completed", "ok"))
+        )
+        self.model_reply = "必须安排上 我连筷子都准备好了"
+
+        actions = await self.listener._check_and_interact_active_friends_moments(max_actions=3)
+        self.assertEqual(actions, 2)
+        self.assertEqual(len(mock_interact.await_args_list), 2)
+        first_call = mock_interact.await_args_list[0].args
+        second_call = mock_interact.await_args_list[1].args
+        self.assertEqual(first_call[0], "26000000000000001")
+        self.assertEqual(first_call[1], "comment")
+        self.assertTrue(first_call[2].startswith("回复 阿泽："))
+        self.assertEqual(second_call[0], "26000000000000002")
+        self.assertEqual(second_call[1], "comment")
+        self.assertTrue(second_call[2].startswith("回复 小美："))
+
+        # Second scan must not duplicate replies
+        mock_interact.reset_mock()
+        actions_again = await self.listener._check_and_interact_active_friends_moments(max_actions=3)
+        self.assertEqual(actions_again, 0)
+        mock_interact.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()
