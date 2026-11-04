@@ -815,6 +815,99 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         )
         self.assertIn("锐评", wl.IMAGE_FOLLOWUP_KEYWORDS)
 
+    def test_xiaohongshu_state_json_and_ef4_video_stream(self):
+        body = (
+            "<script>window.__INITIAL_STATE__={"
+            '"global":{"x":undefined},'
+            '"AiNoteDetailStore":{"noteDetailMap":new Map([])},'
+            '"tags":new Set(["a"]),'
+            '"empty":new Map(),'
+            '"note":{"noteDetailMap":{"abc123":{"note":{'
+            '"title":"undefined 也能写 new Map(1)",'
+            '"desc":"引号\\"和)不算"'
+            "}}}}}</script>"
+        )
+        state = df.parse_xiaohongshu_state(body)
+        self.assertIsNotNone(state)
+        note = df.extract_xiaohongshu_note_from_state(state, "abc123")
+        self.assertIsNotNone(note)
+        self.assertEqual(note["title"], "undefined 也能写 new Map(1)")
+        self.assertEqual(note["desc"], '引号"和)不算')
+        self.assertEqual(state["tags"], ["a"])
+
+        vid_note = {
+            "video": {
+                "media": {
+                    "stream": {
+                        "EF4": [
+                            {
+                                "masterUrl": "https://sns-video.example/a.mp4",
+                                "backupUrls": ["https://sns-video.example/b.mp4"],
+                            }
+                        ],
+                        "EF5": [],
+                    }
+                }
+            }
+        }
+        self.assertEqual(
+            df.xiaohongshu_video_candidate_urls(vid_note),
+            ["https://sns-video.example/a.mp4", "https://sns-video.example/b.mp4"],
+        )
+
+    def test_normalize_qq_music_cookie_maps_musicid_and_musickey(self):
+        norm, uin = df.normalize_qq_music_cookie("musicid=o010001; musickey=Q_H_L_12345; refresh_key=rk-1")
+        self.assertEqual(uin, "10001")
+        self.assertIn("uin=10001", norm)
+        self.assertIn("qqmusic_key=Q_H_L_12345", norm)
+        self.assertIn("qm_keyst=Q_H_L_12345", norm)
+
+    def test_plain_markdown_bullets_numbers_items_without_double_numbering_ordinals(self):
+        raw = "要点：\n- 甲\n  补充说明\n  - 子项\n- 乙\n\n另一组：\n* 丙\n- 第 2 步启动"
+        want = "要点：\n1. 甲\n  补充说明\n  - 子项\n2. 乙\n\n另一组：\n1. 丙\n第 2 步启动"
+        self.assertEqual(df.plain_markdown_bullets(raw), want)
+        self.assertEqual(self.listener._clean_reply(raw), want)
+
+    async def test_mood_saturation_and_chronological_judge_order(self):
+        # 1) Normal range (60): +6 -> 66
+        self.assertEqual(self.listener._apply_saturated_mood_delta(60, 6), (66, 6))
+        # 2) Upper saturation (>=85): positive halved (88 + 3*0.5 -> 90), negative full (88 - 3 -> 85)
+        self.assertEqual(self.listener._apply_saturated_mood_delta(88, 3), (90, 2))
+        self.assertEqual(self.listener._apply_saturated_mood_delta(88, -3), (85, -3))
+        # 3) Lower saturation (<=40): negative halved (35 - 3*0.5 -> 34), positive full (35 + 3 -> 38)
+        self.assertEqual(self.listener._apply_saturated_mood_delta(35, -3), (34, -1))
+        self.assertEqual(self.listener._apply_saturated_mood_delta(35, 3), (38, 3))
+
+        # 4) Verify _async_post_turn_judge sends user_text BEFORE reply_text
+        u_state = self.listener._get_user_state("wxid_judge_order")
+        u_state["mood"] = 88
+        u_state["dims"] = {"happy": 0}
+        self.model_reply = json.dumps(
+            {
+                "moodDelta": 3,
+                "dims": {"happy": 6},
+                "reason": "对方夸我聪明，我心里美滋滋",
+                "confidence": 85,
+                "memory_fact": "",
+                "memory_event": "",
+            }
+        )
+        await wl.WhaleListener._async_post_turn_judge(
+            self.listener,
+            api_key="sk-test",
+            base_url="https://api.deepseek.com",
+            model="deepseek-chat",
+            user_id="wxid_judge_order",
+            user_text="USER-FIRST-MESSAGE",
+            reply_text="BOT-SECOND-REPLY",
+            expected_state=u_state,
+        )
+        judge_prompt = self.prompt()
+        self.assertLess(judge_prompt.index("USER-FIRST-MESSAGE"), judge_prompt.index("BOT-SECOND-REPLY"))
+        self.assertEqual(u_state["mood"], 90)
+        self.assertEqual(u_state["dims"]["happy"], 6)
+        self.assertEqual(u_state["timeline"][-1]["delta"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

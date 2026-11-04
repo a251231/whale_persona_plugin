@@ -1191,6 +1191,126 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
         return None, None
 
 
+XIAOHONGSHU_STATE_RE = re.compile(
+    r"window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*(?:;</script>|</script>)",
+    re.S,
+)
+
+
+def _is_js_ident_char(ch: str) -> bool:
+    return ch == "_" or ch == "$" or ch.isalnum()
+
+
+def xiaohongshu_state_json(literal: str) -> str:
+    """Converts Xiaohongshu's JS object literal in window.__INITIAL_STATE__ into valid JSON.
+    Replaces outside-string `undefined` with `null` and `new Map(...)` / `new Set(...)` with
+    their inner array (`[]` when empty), while preserving string contents verbatim (Diana #1419).
+    """
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    n = len(literal)
+    i = 0
+    while i < n:
+        c = literal[i]
+        if in_string:
+            out.append(c)
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                in_string = False
+            i += 1
+            continue
+
+        rest = literal[i:]
+        if c == '"':
+            in_string = True
+            out.append(c)
+            i += 1
+        elif rest.startswith("new Map(") or rest.startswith("new Set("):
+            i += len("new Map(")
+            if i < n and literal[i] == ")":
+                out.append("[]")
+                i += 1
+        elif c == ")":
+            # Closing paren outside strings belongs to new Map(...) / new Set(...)
+            i += 1
+        elif (
+            rest.startswith("undefined")
+            and (i == 0 or not _is_js_ident_char(literal[i - 1]))
+            and (len(rest) == len("undefined") or not _is_js_ident_char(rest[len("undefined")]))
+        ):
+            out.append("null")
+            i += len("undefined")
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def parse_xiaohongshu_state(html_body: str) -> dict[str, Any] | None:
+    """Extracts and parses window.__INITIAL_STATE__ from Xiaohongshu HTML."""
+    m = XIAOHONGSHU_STATE_RE.search(html_body or "")
+    if not m:
+        return None
+    try:
+        parsed = json.loads(xiaohongshu_state_json(m.group(1)))
+        return parsed if isinstance(parsed, dict) else None
+    except Exception as e:
+        logger.debug("parse_xiaohongshu_state failed: %s", e)
+        return None
+
+
+def xiaohongshu_video_candidate_urls(note: dict[str, Any]) -> list[str]:
+    """Extracts candidate video stream URLs from a Xiaohongshu note, including stream.EF4 (Diana #1419)."""
+    if not isinstance(note, dict):
+        return []
+    stream = (((note.get("video") or {}).get("media") or {}).get("stream")) or {}
+    if not isinstance(stream, dict):
+        return []
+    urls: list[str] = []
+    for key in ("h264", "EF4", "h265", "av1"):
+        entries = stream.get(key)
+        if not isinstance(entries, list):
+            continue
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            master = str(item.get("masterUrl") or "").strip()
+            if master and master not in urls:
+                urls.append(master)
+            for b_url in item.get("backupUrls") or []:
+                b_str = str(b_url or "").strip()
+                if b_str and b_str not in urls:
+                    urls.append(b_str)
+    return urls
+
+
+def extract_xiaohongshu_note_from_state(
+    state: dict[str, Any], note_id: str = ""
+) -> dict[str, Any] | None:
+    """Extracts the primary note object from Xiaohongshu window.__INITIAL_STATE__."""
+    if not isinstance(state, dict):
+        return None
+    note_sec = state.get("note") or {}
+    if not isinstance(note_sec, dict):
+        return None
+    detail_map = note_sec.get("noteDetailMap") or {}
+    if isinstance(detail_map, dict) and detail_map:
+        if note_id and isinstance(detail_map.get(note_id), dict):
+            n_obj = detail_map[note_id].get("note")
+            if isinstance(n_obj, dict) and n_obj:
+                return n_obj
+        for entry in detail_map.values():
+            if isinstance(entry, dict) and isinstance(entry.get("note"), dict) and entry["note"]:
+                return entry["note"]
+    if isinstance(note_sec.get("note"), dict) and note_sec["note"]:
+        return note_sec["note"]
+    return None
+
+
 async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None]:
     try:
         domain = _supported_parse_domain(url)
@@ -1216,7 +1336,45 @@ async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None
 
             # Xiaohongshu / Douyin / General meta extraction
             r = await _get_public_url(client, url)
-            if r.status_code != 200 or BeautifulSoup is None:
+            if r.status_code != 200:
+                return None, None
+
+            if domain in ("xiaohongshu.com", "xhslink.com"):
+                xhs_state = parse_xiaohongshu_state(r.text)
+                if xhs_state:
+                    m_nid = re.search(r"/(?:explore|discovery/item)/([0-9a-zA-Z]+)", str(r.url))
+                    xhs_note = extract_xiaohongshu_note_from_state(
+                        xhs_state, m_nid.group(1) if m_nid else ""
+                    )
+                    if xhs_note:
+                        n_title = str(xhs_note.get("title") or "").strip()
+                        n_desc = str(xhs_note.get("desc") or "").strip()[:240]
+                        n_user = str((xhs_note.get("user") or {}).get("nickname") or "").strip()
+                        img_list = xhs_note.get("imageList") or []
+                        first_img = ""
+                        if isinstance(img_list, list) and img_list and isinstance(img_list[0], dict):
+                            first_img = str(
+                                img_list[0].get("urlDefault")
+                                or img_list[0].get("urlPre")
+                                or img_list[0].get("url")
+                                or ""
+                            ).strip()
+                        if first_img.startswith("//"):
+                            first_img = "https:" + first_img
+                        vid_urls = xiaohongshu_video_candidate_urls(xhs_note)
+                        headline = n_title or (n_desc.splitlines()[0][:48] if n_desc else "")
+                        if headline:
+                            img_b64 = await _download_image_as_jpeg_b64(first_img) if first_img else None
+                            card = (
+                                f"🔗 【小红书解析】{headline}\n"
+                                + (f"👤 作者：{n_user}\n" if n_user else "")
+                                + (f"📝 摘要：{n_desc}\n" if n_desc else "")
+                                + (f"🎬 视频流：已识别 ({len(vid_urls)} 路)\n" if vid_urls else "")
+                                + f"🌐 {str(r.url)}"
+                            )
+                            return card, img_b64
+
+            if BeautifulSoup is None:
                 return None, None
             soup = BeautifulSoup(r.text, "html.parser")
             og_title = soup.find("meta", attrs={"property": "og:title"}) or soup.find("meta", attrs={"name": "title"})
@@ -1428,7 +1586,75 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
 # 7. 多曲库点歌（网易云 / QQ音乐自动切换 + 卡片 & MP3 音频直发）
 # ==============================================================================
 
-async def search_and_fetch_music(query: str) -> dict[str, Any] | None:
+def normalize_qq_music_cookie(raw_cookie: str) -> tuple[str, str]:
+    """Normalizes a QQ Music cookie string (Diana #1405):
+    - Extracts numeric UIN from `uin`, `qqmusic_uin`, or `musicid` (defaulting to '0').
+    - Maps QQMusicApi's `musicid` / `musickey` to official `uin` / `qqmusic_key` / `qm_keyst`
+      when missing, so official `u.y.qq.com/cgi-bin/musicu.fcg` recognizes the login state.
+    Returns (normalized_cookie_header, uin_str).
+    """
+    raw = (raw_cookie or "").strip()
+    if not raw:
+        return "", "0"
+    kv: dict[str, str] = {}
+    parts: list[str] = []
+    for seg in raw.split(";"):
+        item = seg.strip()
+        if not item:
+            continue
+        parts.append(item)
+        if "=" in item:
+            k, v = item.split("=", 1)
+            kv[k.strip()] = v.strip()
+
+    raw_uin = kv.get("uin") or kv.get("qqmusic_uin") or kv.get("musicid") or ""
+    uin_digits = re.sub(r"\D+", "", raw_uin.lstrip("oO"))
+    uin = uin_digits.lstrip("0") or "0"
+
+    music_key = kv.get("qqmusic_key") or kv.get("qm_keyst") or kv.get("musickey") or ""
+    if uin != "0" and "uin" not in kv:
+        parts.append(f"uin={uin}")
+    if music_key:
+        if "qqmusic_key" not in kv:
+            parts.append(f"qqmusic_key={music_key}")
+        if "qm_keyst" not in kv:
+            parts.append(f"qm_keyst={music_key}")
+
+    return "; ".join(parts), uin
+
+
+MD_BULLET_LINE_RE = re.compile(r"^(\s*)(?:[-*•])\s+(.+)$")
+INLINE_REPLY_ORDINAL_RE = re.compile(r"^第\s*[0-9一二三四五六七八九十百千万]+\s*[步代条项点层阶段章节部分]")
+
+
+def plain_markdown_bullets(text: str) -> str:
+    """Converts top-level Markdown unordered list bullets (- / * / •) into plain-text
+    numbered items (1. 2. 3.), while stripping the bullet symbol without double-numbering
+    when an item already begins with '第 N 步/代/条' (Diana #1388).
+    """
+    if not text or "\n" not in text and not text.lstrip().startswith(("- ", "* ", "• ")):
+        return text
+    lines = text.split("\n")
+    number = 0
+    for i, line in enumerate(lines):
+        m = MD_BULLET_LINE_RE.match(line)
+        if not m:
+            if not line.strip() or line == line.lstrip(" \t"):
+                number = 0
+            continue
+        indent, item = m.group(1), m.group(2).strip()
+        if indent:
+            lines[i] = f"{indent}- {item}"
+            continue
+        if INLINE_REPLY_ORDINAL_RE.match(item):
+            lines[i] = item
+            continue
+        number += 1
+        lines[i] = f"{number}. {item}"
+    return "\n".join(lines)
+
+
+async def search_and_fetch_music(query: str, qq_cookie: str = "") -> dict[str, Any] | None:
     """
     Searches NetEase Cloud Music first, and automatically falls back to QQ Music / backup API
     if NetEase has no results or VIP audio lock.
@@ -1493,18 +1719,22 @@ async def search_and_fetch_music(query: str) -> dict[str, Any] | None:
     except Exception as e:
         logger.debug("NetEase search error: %s", e)
 
-    # 2. Automatic switch to QQ Music search API
+    # 2. Automatic switch to QQ Music search API (with musicid/musickey -> uin/qqmusic_key support)
     try:
+        norm_cookie, qq_uin = normalize_qq_music_cookie(qq_cookie)
+        qq_headers = {
+            "User-Agent": USER_AGENT,
+            "Referer": "https://y.qq.com/",
+        }
+        if norm_cookie:
+            qq_headers["Cookie"] = norm_cookie
         async with httpx.AsyncClient(
             timeout=10.0,
             follow_redirects=True,
-            headers={
-                "User-Agent": USER_AGENT,
-                "Referer": "https://y.qq.com/",
-            },
+            headers=qq_headers,
         ) as client:
             qq_payload = {
-                "comm": {"ct": "19", "cv": "1859", "uin": "0"},
+                "comm": {"ct": "19", "cv": "1859", "uin": qq_uin},
                 "req": {
                     "method": "DoSearchForQQMusicDesktop",
                     "module": "music.search.SearchCgiService",

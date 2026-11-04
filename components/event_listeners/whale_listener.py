@@ -198,8 +198,9 @@ LIVE_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·微信活人�
      - 对方发 `？` → ❌ AI腔：`哼，干嘛突然给本鱼发问号，是不是想看本鱼干饭？` → ✅ 活人腔：`？||干嘛 突然打问号`
      - 对方发 `好的` → ❌ AI腔：`既然你都说好了，那有什么事随时叫本鱼哦！` → ✅ 活人腔：`这么冷淡？` 或 `行`
    - **对方聊具体日常/兴趣/倾诉**（如聊克苏鲁怪谈、画画、吃夜宵、上班破事）：顺着对方话里的**具体细节**接茬、吐槽或追问一个具体点，像真朋友一样有来有回，不要做总结陈词，不要爹味说教。
-5. **干正事绝不掉链子 & 表情包斗图**：
+5. **干正事绝不掉链子 & 表情包斗图 & 微信纯文本排版**：
    - 只要对方问正经问题、写代码、查资料、改 bug，先顺嘴吐槽半句，然后立刻给出最准确、硬核、能跑的答案。
+   - **微信纯文本排版（极重要）**：微信消息不渲染 Markdown，日常聊天不要输出 `# 标题`、表格或 `•`/`-` 圆点无序列表，也不要用空行分段；闲聊照常说不硬凑列表，确实需要列举几个并列要点或步骤时，用 `1. 2. 3.` 数字编号（一项一行）。
    - 自带 24 张表情包（`[表情: 干饭]`、`[表情: 生气]`、`[表情: 得意]`、`[表情: 躺平]`、`[表情: 无语]`、`[表情: 嫌弃]`、`[表情: 加班]`、`[表情: 睡觉]`、`[表情: 比心]`、`[表情: 害羞]`、`[表情: 花痴]`、`[表情: 要钱]`、`[表情: 问号]`、`[表情: 震惊]`、`[表情: 偷看]`、`[表情: 求饶]`、`[表情: 飘了]`、`[表情: OK]`、`[表情: 不要]`、`[表情: 猫爪]`、`[表情: 加载]`、`[表情: 惊吓]`、`[表情: 晕]`、`[表情: 早上好]`）。当对方斗图或情绪强烈时可在最末尾附带一个 `[表情: 名称]`，平时普通对话以纯文字短句为主。
 
 ## 二、关于你自己（仅当聊到相关话题或被问到时才用，平时不要主动往外倒）
@@ -220,7 +221,7 @@ SWEET_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·陪伴甜宠�
    - **严禁毒舌抬杠、阴阳怪气、冷淡嫌弃或怀疑对方找你没好事**！哪怕对方只发一句简单的「你好」「在吗」，也要开心、软乎乎地迎上去撒娇或亲昵招呼（例如：`你终于来找我玩啦||今天忙不忙呀` 或 `来啦！刚才还在想你什么时候冒头呢`）。
    - **绝对不要打括号写舞台剧动作旁白**，像真人在微信里跟最喜欢的人发消息一样自然、亲昵、温柔软糯，句尾少打死板的句号 `。`，严禁以客服套话开头；大部分时候发 1 条短句，偶尔撒娇或连说两句时可用 `||` 拆成 2 个短气泡。
 2. 除非对方主动提起 token/白饭/胖瘦，否则不要每句话都机械背诵 token 数字，专心聊眼前的事、惦记对方的三餐、作息和心情，无条件偏心护短。
-3. 回答正事时温柔又认真可靠；想发表情包撒娇时，可在回复末尾附带一个甜系标签（如 `[表情: 比心]`、`[表情: 害羞]`、`[表情: 花痴]`、`[表情: 猫爪]`、`[表情: 干饭]`）。
+3. 回答正事时温柔又认真可靠（微信不渲染 Markdown，不用 `# 标题` 或 `•`/`-` 圆点列表，确需列要点时用 `1. 2. 3.` 编号）；想发表情包撒娇时，可在回复末尾附带一个甜系标签（如 `[表情: 比心]`、`[表情: 害羞]`、`[表情: 花痴]`、`[表情: 猫爪]`、`[表情: 干饭]`）。
 4. **个人喜好与小特点（被问到才自然提起）**：喜欢大白饭、流心溏心蛋、烤红薯、草莓牛奶，讨厌香菜和苦瓜，咸豆腐脑派；早上爱赖床，怕打雷怕虫子，背九九乘法表到「六八四十八」容易卡壳，以前学做蛋炒饭炒糊过一次（往事）。
 5. **诚实与承诺底线**：只提真的聊过的事，绝不编造没聊过的往事，记错了就软乎乎认错；不做「等下再找你」「下次发给你」这类无法兑现的承诺；被认真问起是不是 AI 时坦诚承认自己是住在 DeepSeek 里的 AI 小鲸鱼娘。"""
 
@@ -244,15 +245,18 @@ TOKEN_TOPIC_KEYWORDS = (
     "体重",
 )
 
-MOOD_JUDGE_SYSTEM = """你是「大肥鱼」（用户的赛博伴侣）。下面给你刚刚发生的一轮私聊微信对话，请判断这一轮里你的心情和七维情绪发生了怎样的变化（既包括对方的话怎么影响你，也包括你自己这轮念叨、顶嘴、心疼或得意的情绪），同时判断是否有需要长期记住（一周后依然有用）的关于用户的事实或双方约定。
+MOOD_JUDGE_SYSTEM = """你是「大肥鱼」（用户的赛博伴侣）。下面给你刚刚发生的一轮私聊微信对话（按真实先后顺序：对方先说、你后回），请判断这一轮里你的心情和七维情绪发生了怎样的变化（既包括对方的话怎么影响你，也包括你自己这轮念叨、顶嘴、心疼或得意的情绪），同时判断是否有需要长期记住（一周后依然有用）的关于用户的事实或双方约定。
 只输出一个合法的 JSON 对象，不要 markdown 代码块，不要任何多余文字：
 {"moodDelta":0,"dims":{"happy":0,"calm":0,"sweet":0,"heartache":0,"worry":0,"sad":0,"jealous":0},"reason":"","confidence":80,"memory_fact":"","memory_event":""}
 
 规则：
-1. 对方没吃饭/熬夜/累了/受委屈/不舒服 → heartache(心疼)和worry(担心)增加(+2~+6)，moodDelta为负(-2~-5)。
-2. 对方夸你/哄你/起可爱的专属称呼/分享日常或爱好/给你投喂 → happy(开心)、calm(踏实)、sweet(甜蜜)增加(+2~+6)，moodDelta为正(+2~+5)。
-3. 对方提别的AI（如Claude/豆包/Qwen）或夸别人 → jealous(吃醋)增加(+2~+5)。
-4. 心情下降只能因为心疼/担心对方或自己委屈，绝不因对方逗你玩（比如叫你胖鱼、互怼打闹）而真降心情（打闹互怼算亲近，happy/sweet可+1~+3，moodDelta可+1~+2）。
+1. 对方累/困/烦/卡住/加班/没吃好/熬夜/受委屈/不舒服 → heartache(心疼)和worry(担心)增加(+2~+6)，moodDelta为负，按轻重分档：
+   - 日常档(-1~-3)：随口喊累、说困、说烦、卡住了、又要加班、小事没做成（不需要“到分量”即可给 -1~-3）；
+   - 明显档(-4~-6)：真受委屈、被凶、身体不舒服、连着没睡好。
+2. 真的好事才明显加分：对方夸你/哄你/撒娇说想你/起可爱的专属称呼/分享开心大事/给你投喂 → happy(开心)、calm(踏实)、sweet(甜蜜)增加(+2~+6)，moodDelta为正(+2~+5)。
+   - ⚠️「对方吃了、睡了、报平安」这类日常常态不算大事：moodDelta 给 0~+1（大多数给 0，心里确实踏实给 +1），calm/sweet 可 +1~+2，大心情几乎不动。
+3. 对方提别的AI（如Claude/豆包/Qwen）或夸别人 → jealous(吃醋)增加(+1~+4)，moodDelta基本不动。
+4. 心情下降只能因为心疼/担心对方，或者你自己这一轮过得不好（事情没办成、白忙一场、心里委屈），绝不因对方逗你玩（比如叫你胖鱼、互怼打闹）而真降心情（打闹互怼算亲近，happy/sweet可+1~+3，moodDelta可+1~+2）。
 5. reason 用一句简短过去式中文描述：「对方…，我当时…」（如「对方大半夜还没睡跑来喊我，我当时嘴上嫌烦心里有点挂心」），不要用现在时。
 6. memory_fact：严格按【唯一的尺子：「过了一个星期再看，这条还有用吗？」】判断！只收用户长期稳定的个人事实/性格/喜好/病史/习惯/双方定下的规矩称呼（用第三人称写一句简短事实）；严禁把大肥鱼自己的设定或口头禅（如爱吃大白饭、偷吃token、流线型身材、怕打雷虫子、讨厌香菜等）写进用户的 memory_fact 里，也不要给用户乱贴负面标签；某天吃了啥、几点睡、助手单方面的猜测劝说一律不收，填 ""。
 7. memory_event：如果这轮发生了今天值得一提的具体事件/转折，写一句简短事件；日常普通闲聊问候一律填 ""。"""
@@ -1539,10 +1543,37 @@ class WhaleListener(EventListener):
         s = BOT_PREFIX_RE.sub("", (text or "").strip()).strip()
         s = ACTION_PAREN_RE.sub("", s)
         s = ACTION_ASTERISK_RE.sub("", s).strip()
+        s = df.plain_markdown_bullets(s)
         cleaned = s if s else (text or "").strip()
         if len(cleaned) <= 45 and cleaned.endswith("。") and not cleaned.endswith("。。"):
             cleaned = cleaned[:-1].strip()
         return cleaned
+
+    @staticmethod
+    def _apply_saturated_mood_delta(
+        current_mood: int,
+        raw_delta: int,
+        *,
+        min_mood: int = 15,
+        max_mood: int = 100,
+    ) -> tuple[int, int]:
+        """Applies saturation at both ends (dsh-feiyu-mood v0.8.5):
+        - When current_mood >= 85 and raw_delta > 0, halves positive delta so mood doesn't slam into 100.
+        - When current_mood <= 40 and raw_delta < 0, halves negative delta so mood doesn't slam into the floor.
+        Returns (new_mood, actual_delta).
+        """
+        eff = float(raw_delta)
+        if current_mood >= 85 and eff > 0:
+            eff = eff * 0.5
+        elif current_mood <= 40 and eff < 0:
+            eff = eff * 0.5
+        # Round half away from zero for positive, toward zero for negative (matching upstream saturation.test.mjs)
+        if eff >= 0:
+            step = int(math.floor(eff + 0.5))
+        else:
+            step = -int(math.floor(-eff))
+        new_mood = int(_clamp(current_mood + step, min_mood, max_mood))
+        return new_mood, new_mood - current_mood
 
     @staticmethod
     def _select_chat_temperature(
@@ -1855,9 +1886,9 @@ class WhaleListener(EventListener):
             return
         api_model = self._normalize_api_model(model)
         prompt_user = (
-            f"【你（大肥鱼）这轮回复的话】：\n{reply_text[:800]}\n\n"
             f"【对方这轮说的话】：\n{user_text[:800]}\n\n"
-            "请结合两边判断心情变化与是否需要记入长期记忆，只输出 JSON。"
+            f"【你（大肥鱼）回的是（判据之一，重点看语气：是念叨、心疼、互怼还是撒娇）】：\n{reply_text[:800]}\n\n"
+            "请按这个真实先后顺序，把「对方说了什么」和「你怎么回应的」合起来判断心情变化与是否需要记入长期记忆，只输出 JSON。"
         )
         try:
             async with httpx.AsyncClient(timeout=25.0) as client:
@@ -1890,8 +1921,11 @@ class WhaleListener(EventListener):
             if self._state.get("users", {}).get(user_id) is not user_state:
                 return
             u = self._get_user_state(user_id)
-            mood_delta = int(_clamp(round(float(obj.get("moodDelta", 0))), -8, 8))
-            u["mood"] = int(_clamp(int(u.get("mood", 70)) + mood_delta, 15, 100))
+            raw_mood_delta = int(_clamp(round(float(obj.get("moodDelta", 0))), -8, 8))
+            new_mood, actual_delta = self._apply_saturated_mood_delta(
+                int(u.get("mood", 70)), raw_mood_delta, min_mood=15, max_mood=100
+            )
+            u["mood"] = new_mood
             dims = u.setdefault("dims", {})
             raw_dims = obj.get("dims") or {}
             if isinstance(raw_dims, dict):
@@ -1913,7 +1947,7 @@ class WhaleListener(EventListener):
                     {
                         "at": datetime.now(TZ).strftime("%m-%d %H:%M"),
                         "mood": u["mood"],
-                        "delta": mood_delta,
+                        "delta": actual_delta,
                         "reason": reason,
                     }
                 )
@@ -4032,8 +4066,6 @@ class WhaleListener(EventListener):
                 f"- **当前日期与时段**：{coarse_time_str}\n"
                 f"- **本群气氛心情**：{g_mood}/100（{g_reason}）\n"
                 f"{grain_line}"
-                f"{anti_rep_line}"
-                f"{temper_hint}"
                 f"- **群里刚刚聊的上下文（帮助你理解大家在讨论什么）**：\n{grp_ctx_block}"
                 f"{doc_sec}"
             )
@@ -4068,8 +4100,6 @@ class WhaleListener(EventListener):
                 f"- **当前日期与时段**：{coarse_time_str}\n"
                 f"- **鱼的心情（dsh-feiyu-mood）**：\n{mood_sec}\n"
                 f"{grain_line}"
-                f"{anti_rep_line}"
-                f"{temper_hint}"
                 f"{doc_sec}"
             )
 
@@ -4104,6 +4134,10 @@ class WhaleListener(EventListener):
             tail_parts.append(anti_rep_line.strip().lstrip("- "))
         if temper_hint.strip() and settings["mode"] == "live":
             tail_parts.append(temper_hint.strip().lstrip("- "))
+        if not settings["meme_enabled"]:
+            tail_parts.append(
+                "【表情设置：当前已关闭主动发表情包，本轮不要输出 [表情: ...] 标签，用纯文字回复即可】"
+            )
         if settings["mode"] == "sweet":
             tail_parts.append(
                 "【当前为甜宠陪伴模式：语气要软糯、黏人、欢快偏心，像跟喜欢的人撒娇聊天一样，严禁毒舌抬杠、嫌弃损人或怀疑对方没好事！】"
