@@ -261,8 +261,11 @@ def append_group_context_line(
 ) -> str:
     """Appends a clean group chat line into group_buffers and returns the formatted line (or empty string)."""
     s = (raw_text or "").strip()
-    if not s or len(s) > 260 or s.startswith(NON_REPEAT_PREFIXES):
+    if not s or s.startswith(NON_REPEAT_PREFIXES):
         return ""
+    if len(s) > 260:
+        s_flat = re.sub(r"\s+", " ", s[:220]).strip()
+        s = f"{s_flat}...(长文共{len(s)}字)"
     buf = group_buffers.setdefault(group_id, deque(maxlen=12))
     now_str = datetime.now(TZ).strftime("%H:%M")
     display_name = (sender_name or "").strip() or get_cached_display_name(sender_id, group_id)
@@ -1009,6 +1012,7 @@ SUPPORTED_PARSE_DOMAINS = (
     "xiaohongshu.com",
     "xhslink.com",
     "douyin.com",
+    "mp.weixin.qq.com",
 )
 
 
@@ -1408,6 +1412,218 @@ async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None
         return None, None
 
 
+class _WeChatArticleHTMLParser( html.parser.HTMLParser if hasattr(html, "parser") else object ):  # type: ignore[misc]
+    pass
+
+
+def _extract_clean_html_blocks(fragment: str) -> str:
+    """Extracts structured plain text from HTML (such as WeChat #js_content),
+    ignoring hidden elements, scripts, styles, and SVG noise (inspired by helper's articles.py).
+    """
+    from html.parser import HTMLParser
+
+    hidden_tags = {"script", "style", "noscript", "iframe", "object", "svg", "math", "template", "head"}
+    block_tags = {"p", "div", "section", "article", "blockquote", "ul", "ol", "table", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}
+
+    class _Cleaner(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.parts: list[str] = []
+            self.hidden_stack: list[str] = []
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            t = tag.lower()
+            attr_map = {k.lower(): (v or "") for k, v in attrs if k}
+            style_str = attr_map.get("style", "").lower().replace(" ", "")
+            is_hidden_style = (
+                "display:none" in style_str
+                or "visibility:hidden" in style_str
+                or "opacity:0" in style_str
+            )
+            if t in hidden_tags or is_hidden_style or self.hidden_stack:
+                self.hidden_stack.append(t)
+                return
+            if t in block_tags:
+                self.parts.append("\n")
+            elif t == "br":
+                self.parts.append("\n")
+            elif t == "li":
+                self.parts.append("\n• ")
+
+        def handle_endtag(self, tag: str) -> None:
+            t = tag.lower()
+            if self.hidden_stack:
+                if t in self.hidden_stack:
+                    idx = len(self.hidden_stack) - 1 - self.hidden_stack[::-1].index(t)
+                    del self.hidden_stack[idx:]
+                return
+            if t in block_tags:
+                self.parts.append("\n")
+
+        def handle_data(self, data: str) -> None:
+            if not self.hidden_stack and data:
+                self.parts.append(data)
+
+    cleaner = _Cleaner()
+    try:
+        cleaner.feed(fragment)
+        cleaner.close()
+    except Exception:
+        pass
+    raw_out = "".join(cleaner.parts).replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"[ \t\u00a0]+", " ", ln).strip() for ln in raw_out.split("\n")]
+    non_empty = [ln for ln in lines if ln]
+    return "\n".join(non_empty)
+
+
+def parse_wechat_mp_html(html_body: str, url: str = "") -> dict[str, str] | None:
+    """Extracts title, official account name, digest, body text, and cover image URL
+    from a WeChat Official Account (`mp.weixin.qq.com`) HTML page.
+    """
+    raw = (html_body or "").strip()
+    if not raw:
+        return None
+
+    title = ""
+    author = ""
+    digest = ""
+    cover_url = ""
+    body_text = ""
+
+    if BeautifulSoup is not None:
+        try:
+            soup = BeautifulSoup(raw, "html.parser")
+            og_title = soup.find("meta", attrs={"property": "og:title"})
+            og_desc = soup.find("meta", attrs={"property": "og:description"})
+            og_img = soup.find("meta", attrs={"property": "og:image"})
+            if og_title and og_title.get("content"):
+                title = html.unescape(str(og_title.get("content") or "")).strip()
+            if og_desc and og_desc.get("content"):
+                digest = html.unescape(str(og_desc.get("content") or "")).strip()
+            if og_img and og_img.get("content"):
+                cover_url = html.unescape(str(og_img.get("content") or "")).strip()
+
+            if not title:
+                act_node = soup.find(id="activity-name")
+                if act_node:
+                    title = act_node.get_text(" ", strip=True)
+            name_node = soup.find(id="js_name") or soup.find(class_="profile_nickname")
+            if name_node:
+                author = name_node.get_text(" ", strip=True)
+
+            content_node = soup.find(id="js_content") or soup.find(class_="rich_media_content")
+            if content_node:
+                body_text = _extract_clean_html_blocks(str(content_node))
+        except Exception as e:
+            logger.debug("BeautifulSoup mp.weixin parse fallback: %s", e)
+
+    if not title:
+        m_t = re.search(
+            r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']',
+            raw,
+            re.I,
+        ) or re.search(r'var\s+msg_title\s*=\s*["\']([^"\']+)["\']', raw)
+        if m_t:
+            title = html.unescape(m_t.group(1)).strip()
+
+    if not author:
+        m_a = re.search(
+            r'id=["\']js_name["\'][^>]*>(.*?)</a>',
+            raw,
+            re.I | re.S,
+        ) or re.search(r'var\s+nickname\s*=\s*(?:htmlDecode\()?["\']([^"\']+)["\']', raw)
+        if m_a:
+            author = re.sub(r"<[^>]+>", "", html.unescape(m_a.group(1))).strip()
+
+    if not digest:
+        m_d = re.search(
+            r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']',
+            raw,
+            re.I,
+        )
+        if m_d:
+            digest = html.unescape(m_d.group(1)).strip()
+
+    if not cover_url:
+        m_c = re.search(
+            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+            raw,
+            re.I,
+        ) or re.search(r'var\s+msg_cdn_url\s*=\s*["\']([^"\']+)["\']', raw)
+        if m_c:
+            cover_url = html.unescape(m_c.group(1)).strip()
+
+    if not body_text:
+        m_js = re.search(
+            r'<div[^>]+id=["\']js_content["\'][^>]*>(.*?)</div>\s*(?:<script|<div[^>]+id=["\']js_)',
+            raw,
+            re.I | re.S,
+        )
+        if m_js:
+            body_text = _extract_clean_html_blocks(m_js.group(1))
+        else:
+            body_text = _extract_clean_html_blocks(raw)
+
+    if cover_url.startswith("//"):
+        cover_url = "https:" + cover_url
+
+    title = re.sub(r"\s+", " ", title).strip()
+    author = re.sub(r"\s+", " ", author).strip()
+    digest = re.sub(r"\s+", " ", digest).strip()[:260]
+    body_text = body_text.strip()
+
+    if not title and not body_text:
+        return None
+
+    return {
+        "title": title or "微信公众号文章",
+        "author": author,
+        "digest": digest,
+        "content": body_text[:3600],
+        "cover_url": cover_url,
+        "url": url,
+    }
+
+
+async def _parse_wechat_mp_url(url: str) -> tuple[str | None, str | None]:
+    """Fetches and parses a WeChat Official Account (`mp.weixin.qq.com`) article URL."""
+    try:
+        async with httpx.AsyncClient(
+            timeout=12.0,
+            headers={"User-Agent": USER_AGENT, "Referer": "https://mp.weixin.qq.com/"},
+        ) as client:
+            r = await _get_public_url(client, url)
+            if r.status_code != 200:
+                return None, None
+            info = parse_wechat_mp_html(r.text, str(r.url))
+            if not info:
+                return None, None
+            title = info.get("title") or "微信公众号文章"
+            author = info.get("author") or ""
+            digest = info.get("digest") or ""
+            content = info.get("content") or ""
+            cover_url = info.get("cover_url") or ""
+            final_url = info.get("url") or url
+
+            # If anti-bot/verification page returned no real title and no body, skip
+            if title == "微信公众号文章" and len(content) < 20:
+                return None, None
+
+            img_b64 = await _download_image_as_jpeg_b64(cover_url) if cover_url else None
+            card_lines = [f"📰 【微信公众号推文】{title}"]
+            if author:
+                card_lines.append(f"📌 公众号：{author}")
+            if digest and digest not in content[:300]:
+                card_lines.append(f"📝 摘要：{digest}")
+            if content:
+                card_lines.append(f"📖 正文内容：\n{content[:2800]}")
+            card_lines.append(f"🔗 {final_url}")
+            return "\n".join(card_lines), img_b64
+    except Exception as e:
+        logger.debug("WeChat MP URL parse error: %s", e)
+        return None, None
+
+
 async def extract_and_parse_link(raw_text: str) -> tuple[str | None, str | None]:
     """
     Detects and parses links from plain text OR WeChat <appmsg><type>5</type> XML cards.
@@ -1432,6 +1648,8 @@ async def extract_and_parse_link(raw_text: str) -> tuple[str | None, str | None]
         if card_url:
             parsed_card, parsed_img = await extract_and_parse_link(card_url)
             if parsed_card:
+                if src_name and "📌 公众号：" not in parsed_card and "📌 来源：" not in parsed_card:
+                    parsed_card = parsed_card.replace("\n", f"\n📌 来源：{src_name}\n", 1)
                 return parsed_card, parsed_img
         if title:
             card = (
@@ -1450,6 +1668,8 @@ async def extract_and_parse_link(raw_text: str) -> tuple[str | None, str | None]
     url = m.group(0).rstrip(".,，。!！?？;；")
     domain = _supported_parse_domain(url)
 
+    if domain == "mp.weixin.qq.com":
+        return await _parse_wechat_mp_url(url)
     if domain in ("bilibili.com", "b23.tv"):
         return await _parse_bilibili_url(url)
     if domain in ("x.com", "twitter.com"):
@@ -1461,8 +1681,70 @@ async def extract_and_parse_link(raw_text: str) -> tuple[str | None, str | None]
 
 
 # ==============================================================================
-# 6. 文件解析（PDF / Word / Excel / PPT / EPUB / 文本代码）
+# 6. 文件解析（PDF / Word / Excel / PPT / EPUB / 文本代码）与 V7 超长文本保护
 # ==============================================================================
+
+MAX_PARSEABLE_FILE_BYTES = 35 * 1024 * 1024  # 35 MiB
+
+BINARY_UNSUPPORTED_FILE_EXTENSIONS = frozenset({
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz",
+    ".exe", ".dll", ".msi", ".dmg", ".pkg", ".apk", ".ipa", ".iso", ".bin", ".so", ".dylib",
+    ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm", ".m4v",
+    ".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".wma",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".psd", ".heic",
+    ".doc", ".xls", ".ppt",
+})
+
+
+def _is_likely_binary_bytes(raw_bytes: bytes) -> bool:
+    """Checks whether raw bytes look like binary data (null bytes or high control-char ratio)."""
+    if not raw_bytes:
+        return False
+    sample = raw_bytes[:4096]
+    if b"\x00" in sample:
+        return True
+    ctrl_count = sum(1 for b in sample if b < 32 and b not in (9, 10, 13))
+    return (ctrl_count / len(sample)) > 0.08
+
+
+def compact_long_user_text(
+    text: str,
+    *,
+    threshold: int = 1500,
+    head_chars: int = 3200,
+    tail_chars: int = 600,
+    doc_max_chars: int = 12000,
+    hist_preview_chars: int = 220,
+) -> tuple[str, str, str | None]:
+    """Compacts V7 long incoming text messages (1,500 ~ 262,143 bytes):
+    - Archives up to `doc_max_chars` into session document cache so follow-up questions work seamlessly.
+    - Returns `(prompt_text, hist_text, archived_doc_text)` where `hist_text` is a compact summary
+      to prevent multi-turn conversation history token explosion.
+    """
+    s = (text or "").strip()
+    if len(s) <= threshold:
+        return s, s, None
+
+    archived_doc_text = s[:doc_max_chars]
+    total_len = len(s)
+    if total_len > (head_chars + tail_chars):
+        omitted = total_len - head_chars - tail_chars
+        excerpt = (
+            f"{s[:head_chars]}\n\n"
+            f"... [中间省略 {omitted} 字，完整内容已存入当前会话文档缓存] ...\n\n"
+            f"{s[-tail_chars:]}"
+        )
+    else:
+        excerpt = s
+
+    prompt_text = (
+        f"（对方刚刚发来了一段共 {total_len} 字的长文本，已自动归档至会话文档缓存供后续追问）：\n"
+        f"{excerpt}"
+    )
+    preview = re.sub(r"\s+", " ", s[:hist_preview_chars]).strip()
+    hist_text = f"{preview}... [长文本共 {total_len} 字，已存入文档缓存]"
+    return prompt_text, hist_text, archived_doc_text
+
 
 def is_incoming_wechat_file(raw_text: str) -> bool:
     s = (raw_text or "").strip()
@@ -1473,6 +1755,7 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
     """
     Extracts filename and text content from WeChat <appmsg file_b64="..." ><type>6</type> XML
     or <file_b64>...<file_name>... tags.
+    Enforces MAX_PARSEABLE_FILE_BYTES (35 MiB) and skips binary/archive formats safely.
     Returns (filename, extracted_text).
     """
     s = raw_text or ""
@@ -1485,16 +1768,35 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
     else:
         filename = "未命名文件"
 
+    ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+    if ext in BINARY_UNSUPPORTED_FILE_EXTENSIONS:
+        return filename, ""
+
+    m_size = re.search(r'file_size="(\d+)"', s) or re.search(r"<totallen>(\d+)</totallen>", s)
+    if m_size:
+        try:
+            declared_size = int(m_size.group(1))
+            if declared_size > MAX_PARSEABLE_FILE_BYTES:
+                return filename, ""
+        except Exception:
+            pass
+
     m_b64 = re.search(r'file_b64="([^"]+)"', s) or re.search(r"<file_b64>([^<]+)</file_b64>", s)
     if not m_b64:
         return filename, ""
 
+    b64_payload = m_b64.group(1).strip()
+    if len(b64_payload) > int(MAX_PARSEABLE_FILE_BYTES * 1.4):
+        return filename, ""
+
     try:
-        raw_bytes = base64.b64decode(m_b64.group(1))
+        raw_bytes = base64.b64decode(b64_payload)
     except Exception:
         return filename, ""
 
-    ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+    if not raw_bytes or len(raw_bytes) > MAX_PARSEABLE_FILE_BYTES:
+        return filename, ""
+
     try:
         # 1. PDF
         if ext == ".pdf":
@@ -1568,8 +1870,10 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
                         parts.append(t)
             return filename, "\n\n".join(parts)[:12000]
 
-        # 6. Plain text / code / csv / markdown / json
-        for enc in ("utf-8", "utf-8-sig", "gb18030", "latin1"):
+        # 6. Plain text / code / csv / markdown / json (reject binary payloads)
+        if _is_likely_binary_bytes(raw_bytes):
+            return filename, ""
+        for enc in ("utf-8", "utf-8-sig", "gb18030"):
             try:
                 decoded = raw_bytes.decode(enc)
                 if decoded.strip():
@@ -1944,13 +2248,26 @@ _GROUP_MEMBERS_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
 _USER_NAME_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
 
 
-def _is_usable_display_name(name: str, wxid: str) -> bool:
+PLACEHOLDER_DISPLAY_NAMES = frozenset({"群友", "朋友", "这位群友", "微信好友", "对方", "未知"})
+
+
+def is_placeholder_display_name(name: str | None, wxid: str = "") -> bool:
+    """Returns True if `name` is empty, a fallback placeholder, raw wxid, or 4-char wxid suffix."""
     s = (name or "").strip()
-    if not s or s == wxid:
-        return False
+    uid = (wxid or "").strip()
+    if not s:
+        return True
+    if s in PLACEHOLDER_DISPLAY_NAMES or s.startswith("这位群友("):
+        return True
     if s.lower().startswith("wxid_"):
-        return False
-    return True
+        return True
+    if uid and (s == uid or (len(uid) >= 8 and uid.lower().startswith("wxid_") and s == uid[-4:])):
+        return True
+    return False
+
+
+def _is_usable_display_name(name: str, wxid: str) -> bool:
+    return not is_placeholder_display_name(name, wxid)
 
 
 def strip_redundant_speaker_name(text: str, speaker_name: str) -> str:
@@ -2042,10 +2359,15 @@ async def resolve_user_display_name(
     if _is_usable_display_name(ev_name, uid):
         _USER_NAME_CACHE[(rid, uid)] = (now, ev_name)
 
-    # Refresh group member roster if in a group chat and cache is missing or expired (300s)
+    # Refresh group member roster if in a group chat and cache is missing, expired (300s),
+    # or missing this specific speaker after 45s (for newly resolved non-friend LRU nicknames)
     if rid and "@chatroom" in rid:
         rm_cached = _GROUP_MEMBERS_CACHE.get(rid)
-        if not rm_cached or (now - rm_cached[0]) > 300:
+        has_speaker_in_rm = bool(
+            rm_cached and isinstance(rm_cached[1], dict) and _is_usable_display_name(rm_cached[1].get(uid, ""), uid)
+        )
+        ttl = 300.0 if has_speaker_in_rm else 45.0
+        if not rm_cached or (now - rm_cached[0]) > ttl:
             try:
                 async with httpx.AsyncClient(timeout=2.5) as client:
                     q_room = urllib.parse.quote(rid)
@@ -2054,7 +2376,7 @@ async def resolve_user_display_name(
                         j = r.json() or {}
                         members = j.get("members") or {}
                         if isinstance(members, dict) and members:
-                            clean_map: dict[str, str] = {}
+                            clean_map: dict[str, str] = dict(rm_cached[1]) if (rm_cached and isinstance(rm_cached[1], dict)) else {}
                             for mk, mv in members.items():
                                 m_str = str(mv or "").strip()
                                 if _is_usable_display_name(m_str, str(mk)):
@@ -2079,6 +2401,7 @@ async def resolve_user_display_name(
                 resolved = str(j.get("name") or "").strip()
                 if _is_usable_display_name(resolved, uid):
                     _USER_NAME_CACHE[(rid, uid)] = (now, resolved)
+                    _USER_NAME_CACHE[("", uid)] = (now, resolved)
                     if rid and rid in _GROUP_MEMBERS_CACHE:
                         _GROUP_MEMBERS_CACHE[rid][1][uid] = resolved
                     return resolved

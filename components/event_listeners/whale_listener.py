@@ -968,7 +968,16 @@ class WhaleListener(EventListener):
             reverse=True,
         )[:8]
         for uid, obj in sorted_imps:
-            m_name = str(obj.get("name") or df.get_cached_display_name(uid, group_id) or uid[-4:])
+            stored_name = str(obj.get("name") or "").strip()
+            cached_name = df.get_cached_display_name(uid, group_id)
+            if df.is_placeholder_display_name(stored_name, uid):
+                if not df.is_placeholder_display_name(cached_name, uid):
+                    m_name = cached_name
+                    obj["name"] = cached_name
+                else:
+                    m_name = stored_name or cached_name or uid[-4:]
+            else:
+                m_name = stored_name
             m_tags = [str(t) for t in (obj.get("tags") or []) if t]
             m_cnt = int(obj.get("chat_count", 1))
             tag_txt = "、".join(m_tags) if m_tags else "群内活跃水友"
@@ -983,6 +992,30 @@ class WhaleListener(EventListener):
             f"📅 本群近期话题（30天半衰期自然淡忘）：\n{e_str}\n\n"
             f"💡 群内发「大肥鱼 记住 <本群梗或规矩>」可记入本群档案；群聊不会把群内闲聊写入单人私聊档案（但本鱼在群里认得私聊熟人！）"
         )
+
+    def _sync_group_member_real_name(self, group_id: str, sender_id: str, sender_name: str) -> bool:
+        """Promotes a group member's stored impression name from a placeholder/wxid suffix
+        to their real resolved nickname as soon as it becomes available.
+        """
+        gid = (group_id or "").strip()
+        uid = (sender_id or "").strip()
+        real_name = (sender_name or "").strip()
+        if not gid or not uid or df.is_placeholder_display_name(real_name, uid):
+            return False
+        g_obj = (self._state.get("groups") or {}).get(gid)
+        if not isinstance(g_obj, dict):
+            return False
+        imps = g_obj.get("member_impressions")
+        if not isinstance(imps, dict):
+            return False
+        m_entry = imps.get(uid)
+        if not isinstance(m_entry, dict):
+            return False
+        old_name = str(m_entry.get("name") or "").strip()
+        if old_name != real_name:
+            m_entry["name"] = real_name
+            return True
+        return False
 
     async def _consolidate_user_archive(
         self,
@@ -2137,16 +2170,25 @@ class WhaleListener(EventListener):
             if sender_id:
                 imps = g.setdefault("member_impressions", {})
                 m_entry = imps.get(sender_id)
+                best_name = sender_name
+                if df.is_placeholder_display_name(best_name, sender_id):
+                    cached_n = df.get_cached_display_name(sender_id, group_id)
+                    if not df.is_placeholder_display_name(cached_n, sender_id):
+                        best_name = cached_n
                 if not isinstance(m_entry, dict):
                     m_entry = {
-                        "name": sender_name or sender_id[-4:],
+                        "name": (
+                            best_name
+                            if not df.is_placeholder_display_name(best_name, sender_id)
+                            else sender_id[-4:]
+                        ),
                         "tags": [],
                         "chat_count": 0,
                         "updatedAt": now_ms,
                     }
                     imps[sender_id] = m_entry
-                if sender_name and not sender_name.startswith("wxid_"):
-                    m_entry["name"] = sender_name
+                elif not df.is_placeholder_display_name(best_name, sender_id):
+                    m_entry["name"] = best_name
                 m_entry["chat_count"] = int(m_entry.get("chat_count", 0)) + 1
                 m_entry["updatedAt"] = now_ms
                 m_tag = str(obj.get("member_tag") or "").strip()
@@ -3332,6 +3374,8 @@ class WhaleListener(EventListener):
         sender_name = await df.resolve_user_display_name(
             sender_id, launcher_id if is_group else "", event_sender_name
         )
+        if is_group:
+            self._sync_group_member_real_name(launcher_id, sender_id, sender_name)
 
         self._start_session_task(session_key, df.refresh_dynamic_bot_names())
 
@@ -4077,6 +4121,7 @@ class WhaleListener(EventListener):
         parsed_link_card: str | None = None
         parsed_link_img_b64: str | None = None
         hist_user_text: str = ""
+        just_cached_doc_this_turn: bool = False
 
         if not is_group and incoming_img_b64:
             self._private_recent_images[session_key] = {
@@ -4170,14 +4215,23 @@ class WhaleListener(EventListener):
                 )
             hist_user_text = f"[合并转发《{fwd_title}》] {fwd_des[:100]}"
         else:
-            # Check if message contains a Bilibili / X(Twitter) / YouTube / Xiaohongshu / Douyin link or WeChat shared card
+            # Check if message contains a WeChat MP / Bilibili / X(Twitter) / YouTube / Xiaohongshu / Douyin link or WeChat shared card
             parsed_link_card, parsed_link_img_b64 = await df.extract_and_parse_link(raw_text)
             if parsed_link_card:
+                first_card_line = parsed_link_card.splitlines()[0].strip() if parsed_link_card else "分享链接"
+                if "【微信公众号推文】" in parsed_link_card or len(parsed_link_card) > 360:
+                    doc_title = re.sub(r"^[^\w\u4e00-\u9fa5]*【[^】]+】", "", first_card_line).strip() or "分享文章"
+                    self._user_docs[doc_key] = {
+                        "name": doc_title[:60],
+                        "text": parsed_link_card[:12000],
+                        "ts": time.time(),
+                    }
+                    just_cached_doc_this_turn = True
                 cleaned_text = (
                     f"（对方刚刚分享了一个链接/卡片，已自动解析出详情如下：\n{parsed_link_card}\n"
-                    "请用大肥鱼的微信活人短句（1~2句话，不许打括号动作）对这个链接/视频/推文/主页内容顺嘴锐评或接梗一句！）"
+                    "请用大肥鱼的微信活人短句（1~2句话，不许打括号动作）对这个链接/推文/视频/主页内容顺嘴锐评或接梗一句！）"
                 )
-                hist_user_text = f"[分享链接] {parsed_link_card[:120]}"
+                hist_user_text = f"[分享链接] {first_card_line[:120]}"
             else:
                 if is_group and not (
                     self._is_group_woken(msg_chain, effective_text, ev_raw_obj)
@@ -4215,18 +4269,43 @@ class WhaleListener(EventListener):
                     )
                     hist_user_text = "[发了一张图片]"
                 elif quote_content:
-                    hist_user_text = f"[引用「{quote_speaker}: {quote_content[:60]}」] {cleaned_text}"
+                    comp_prompt, comp_hist, comp_doc = df.compact_long_user_text(cleaned_text)
+                    if comp_doc:
+                        self._user_docs[doc_key] = {
+                            "name": f"长文本消息({len(cleaned_text)}字)",
+                            "text": comp_doc,
+                            "ts": time.time(),
+                        }
+                        just_cached_doc_this_turn = True
+                    hist_user_text = f"[引用「{quote_speaker}: {quote_content[:60]}」] {comp_hist}"
                     cleaned_text = (
-                        f"【对方引用了消息「{quote_speaker}: {quote_content}」并回复】：\n{cleaned_text}"
+                        f"【对方引用了消息「{quote_speaker}: {quote_content}」并回复】：\n{comp_prompt}"
                     )
                 elif vision_b64 and not incoming_img_b64:
-                    hist_user_text = cleaned_text
+                    comp_prompt, comp_hist, comp_doc = df.compact_long_user_text(cleaned_text)
+                    if comp_doc:
+                        self._user_docs[doc_key] = {
+                            "name": f"长文本消息({len(cleaned_text)}字)",
+                            "text": comp_doc,
+                            "ts": time.time(),
+                        }
+                        just_cached_doc_this_turn = True
+                    hist_user_text = comp_hist
                     cleaned_text = (
-                        f"（结合刚刚发出的这张图片，对方对你说：「{cleaned_text}」。"
+                        f"（结合刚刚发出的这张图片，对方对你说：「{comp_prompt}」。"
                         "请仔细看清图片里的画面、文字和细节，用大肥鱼的微信活人短句直接回应！）"
                     )
                 else:
-                    hist_user_text = cleaned_text
+                    comp_prompt, comp_hist, comp_doc = df.compact_long_user_text(cleaned_text)
+                    if comp_doc:
+                        self._user_docs[doc_key] = {
+                            "name": f"长文本消息({len(cleaned_text)}字)",
+                            "text": comp_doc,
+                            "ts": time.time(),
+                        }
+                        just_cached_doc_this_turn = True
+                    cleaned_text = comp_prompt
+                    hist_user_text = comp_hist
 
         if await self._is_duplicate(getattr(event_ctx, "query_id", None)):
             return
@@ -4293,7 +4372,7 @@ class WhaleListener(EventListener):
         # Include cached file context if user uploaded a document within the last 30 minutes
         doc_sec = ""
         cached_doc = self._user_docs.get(doc_key)
-        if cached_doc and (now - float(cached_doc.get("ts", 0))) < 1800 and not is_file_in:
+        if cached_doc and (now - float(cached_doc.get("ts", 0))) < 1800 and not is_file_in and not just_cached_doc_this_turn:
             doc_sec = (
                 f"\n\n## 五、对方最近上传的文档缓存（《{cached_doc.get('name')}》，若对方追问文档内容请据此回答）\n"
                 f"{str(cached_doc.get('text', ''))[:4500]}"

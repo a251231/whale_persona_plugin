@@ -1021,6 +1021,137 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         self.assertEqual(actions_again, 0)
         mock_interact.assert_not_awaited()
 
+    async def test_wechat_mp_article_parse_and_doc_cache(self):
+        sample_html = """
+        <html>
+          <head>
+            <meta property="og:title" content="DeepSeek V4.1 深度测评：多模态与长文本全面突破" />
+            <meta property="og:description" content="本文实测最新 Flash 模型延迟与准确度。" />
+          </head>
+          <body>
+            <a id="js_name">AI前沿观察</a>
+            <div id="js_content">
+              <p>第一段：今天实测了 DeepSeek-V4.1-Flash 的多模态识图能力。</p>
+              <p style="display: none">这段是隐藏的反爬干扰文字，绝不能提取出来</p>
+              <script>console.log("noise");</script>
+              <p>第二段：结合 V7 桥接后，最高可接收 256KB 的超长文本消息。</p>
+            </div>
+          </body>
+        </html>
+        """
+        parsed = df.parse_wechat_mp_html(sample_html, "https://mp.weixin.qq.com/s?__biz=MzA1&mid=100&idx=1&sn=abcd")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["title"], "DeepSeek V4.1 深度测评：多模态与长文本全面突破")
+        self.assertEqual(parsed["author"], "AI前沿观察")
+        self.assertIn("第一段：今天实测了", parsed["content"])
+        self.assertIn("第二段：结合 V7 桥接后", parsed["content"])
+        self.assertNotIn("隐藏的反爬干扰文字", parsed["content"])
+        self.assertNotIn("console.log", parsed["content"])
+
+        async def _fake_get_public(client, url, **kwargs):
+            return httpx.Response(200, text=sample_html, request=httpx.Request("GET", url))
+
+        self._patch(df, "_get_public_url", AsyncMock(side_effect=_fake_get_public))
+        xml_card = (
+            "<msg><appmsg><type>5</type>"
+            "<title>DeepSeek V4.1 深度测评</title>"
+            "<des>简短摘要</des>"
+            "<url>https://mp.weixin.qq.com/s?__biz=MzA1&amp;mid=100&amp;idx=1&amp;sn=abcd</url>"
+            "</appmsg></msg>"
+        )
+        await self.ask(xml_card, group=False, room="u_mp", sender="u_mp")
+        doc_Entries = [v for k, v in self.listener._user_docs.items() if k[2] == "u_mp"]
+        self.assertEqual(len(doc_Entries), 1)
+        self.assertIn("第二段：结合 V7 桥接后", doc_Entries[0]["text"])
+        all_hists = [h for k, h in self.listener._histories.items() if "u_mp" in k]
+        self.assertTrue(all_hists)
+        self.assertTrue(any("[分享链接]" in c and "第二段" not in c for _, r, c in all_hists[0] if r == "user"))
+
+    async def test_v7_long_text_compaction_and_token_protection(self):
+        from collections import deque
+
+        long_msg = "【开头关键信息】" + ("这是一段超长的技术日志与代码分析内容。" * 320) + "【结尾核心结论】"
+        self.assertGreater(len(long_msg), 5500)
+
+        prompt_txt, hist_txt, doc_txt = df.compact_long_user_text(long_msg)
+        self.assertIsNotNone(doc_txt)
+        self.assertIn("【开头关键信息】", prompt_txt)
+        self.assertIn("【结尾核心结论】", prompt_txt)
+        self.assertIn("完整内容已存入当前会话文档缓存", prompt_txt)
+        self.assertLess(len(hist_txt), 320)
+        self.assertIn("已存入文档缓存", hist_txt)
+
+        await self.ask(long_msg, group=False, room="u_long", sender="u_long")
+        doc_Entries = [v for k, v in self.listener._user_docs.items() if k[2] == "u_long"]
+        self.assertEqual(len(doc_Entries), 1)
+        self.assertEqual(len(doc_Entries[0]["text"]), len(long_msg))
+        all_hists = [h for k, h in self.listener._histories.items() if "u_long" in k]
+        self.assertTrue(all_hists)
+        user_hist_entries = [c for _, r, c in all_hists[0] if r == "user"]
+        self.assertEqual(len(user_hist_entries), 1)
+        self.assertLess(len(user_hist_entries[0]), 320)
+
+        # Group context buffer should summarize long V7 text instead of dropping it
+        grp_buf: dict[str, deque] = {}
+        line = df.append_group_context_line(grp_buf, "g1@chatroom", "u1", long_msg, sender_name="阿泽")
+        self.assertIn("...(长文共", line)
+        self.assertEqual(len(grp_buf["g1@chatroom"]), 1)
+
+    def test_binary_and_oversized_file_filtering(self):
+        # 1. Known binary archive extension (.zip) must be rejected immediately
+        zip_b64 = base64.b64encode(b"PK\x03\x04\x14\x00\x00\x00\x08\x00binary_payload").decode("ascii")
+        fname, ftext = df.parse_wechat_file_xml(
+            f'<msg><appmsg file_b64="{zip_b64}"><type>6</type><title>archive.zip</title></appmsg></msg>'
+        )
+        self.assertEqual(fname, "archive.zip")
+        self.assertEqual(ftext, "")
+
+        # 2. Unknown extension with binary null bytes must NOT fall through to latin1 garbage
+        bin_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\xff\xfe\xfd").decode("ascii")
+        fname2, ftext2 = df.parse_wechat_file_xml(
+            f'<msg><appmsg file_b64="{bin_b64}"><type>6</type><title>unknown.dat</title></appmsg></msg>'
+        )
+        self.assertEqual(fname2, "unknown.dat")
+        self.assertEqual(ftext2, "")
+
+        # 3. Oversized file (> 35 MiB declared size) must be skipped safely
+        txt_b64 = base64.b64encode("正常文本内容".encode("utf-8")).decode("ascii")
+        fname3, ftext3 = df.parse_wechat_file_xml(
+            f'<msg><appmsg file_b64="{txt_b64}" file_size="{40 * 1024 * 1024}"><type>6</type><title>huge.log</title></appmsg></msg>'
+        )
+        self.assertEqual(fname3, "huge.log")
+        self.assertEqual(ftext3, "")
+
+        # 4. Valid UTF-8 text/log file within limit extracts cleanly
+        fname4, ftext4 = df.parse_wechat_file_xml(
+            f'<msg><appmsg file_b64="{txt_b64}" file_size="18"><type>6</type><title>notes.txt</title></appmsg></msg>'
+        )
+        self.assertEqual(fname4, "notes.txt")
+        self.assertEqual(ftext4, "正常文本内容")
+
+    def test_non_friend_group_member_nickname_auto_promotion(self):
+        uid = "wxid_nonfriend_9988"
+        gid = "888888@chatroom"
+        self.assertTrue(df.is_placeholder_display_name("这位群友", uid))
+        self.assertTrue(df.is_placeholder_display_name("这位群友(9988)", uid))
+        self.assertTrue(df.is_placeholder_display_name("9988", uid))
+        self.assertTrue(df.is_placeholder_display_name(uid, uid))
+        self.assertFalse(df.is_placeholder_display_name("林深见鹿", uid))
+
+        g_state = self.listener._get_group_state(gid)
+        g_state["member_impressions"] = {
+            uid: {"name": "这位群友", "tags": ["潜水党"], "chat_count": 3, "updatedAt": 1000}
+        }
+        promoted = self.listener._sync_group_member_real_name(gid, uid, "林深见鹿")
+        self.assertTrue(promoted)
+        self.assertEqual(g_state["member_impressions"][uid]["name"], "林深见鹿")
+
+        # Placeholder must never overwrite an existing real nickname
+        not_promoted = self.listener._sync_group_member_real_name(gid, uid, "这位群友")
+        self.assertFalse(not_promoted)
+        self.assertEqual(g_state["member_impressions"][uid]["name"], "林深见鹿")
+
 
 if __name__ == "__main__":
     unittest.main()
