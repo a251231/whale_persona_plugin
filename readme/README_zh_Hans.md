@@ -26,7 +26,7 @@
 
 ---
 
-将 DeepSeek Harness (DSH) 社区爆火的 **「大肥鱼（鲸鱼娘）六大核心组件」**、原版 `@dafeifish` **「活人感约束与分层记忆体系」** 与 [SuInk/Diana](https://github.com/SuInk/Diana) 的 **「实用群聊与多模态扩展」** 完整集成到 [LangBot](https://github.com/RockChinQ/LangBot) 微信 4.1 / 多平台机器人体系中。
+将 DeepSeek Harness (DSH) 社区爆火的 **「大肥鱼（鲸鱼娘）六大核心组件」**、原版 `@dafeifish` **「活人感约束与分层记忆体系」** 与 [[SuInk/Diana](https://github.com/SuInk/Diana)](https://github.com/[SuInk/Diana](https://github.com/SuInk/Diana)) 的 **「实用群聊与多模态扩展」** 完整集成到 [LangBot](https://github.com/RockChinQ/LangBot) 微信 4.1 / 多平台机器人体系中。
 
 ---
 
@@ -34,18 +34,18 @@
 
 | 模块 | 来源 / 对应原版 | 功能亮点 |
 | :--- | :--- | :--- |
-| **1. 大肥鱼·微信活人版内核** | `wxzjss/dsh-whale-girl` + `@dafeifish` | **严禁使用 `（...）` / `*...*` 舞台剧动作旁白**；支持**单气泡为主（75%+）、偶发双气泡 (`\|\|`) 拟真打字停顿**、**能量匹配法则**、**防高频词与句首开头复读**、**炸毛赌气与哄好状态机**；去人设复读机化（日常 85% 自称「我」），粮仓数据按需触发。 |
-| **2. 鱼的心情 (`dsh-feiyu-mood`)** | `Yuuyuko-uu/dsh-feiyu-mood` | 维护 `0~100` 心情值 + 七维情绪（`开心`/`踏实`/`甜蜜`/`心疼`/`担心`/`难过`/`吃醋`）+ **三阶关系亲密度**（初识网友 / 常聊熟人 / 铁瓷死党），随时间按半衰期自然平复。 |
-| **3. 鱼的记忆：私聊八章节档案 + 群聊独立建档 (`dsh-fish-memory`)** | `Yuuyuko-uu/dsh-fish-memory` (`lib/生成档案.js`) + `WeChat 4.1 V7 Bridge` | **私聊**按用户独立建八章节长期档案并支持相似度去重；**开启白名单的群聊**按群独立建「群聊档」（记录群氛围、群共同梗、群事件与**群友印象标签 `member_impressions`**，绝不污染单人私聊档），接入微信内存 LRU 群成员昵称缓存自动扶正非好友真实昵称，并在群内**只读识别私聊熟人**。 |
-| **4. 实时粮仓 (`dsh-whale-widget`)** | `MeteorNOX/DeepSeek-Balance-Whale-Widget` | 实时调用 `GET /user/balance` 查询 DeepSeek 账户真实余额，统计上一口偷吃与今日累计消耗的 Token 饭量；日常闲聊按需唤醒，不机械背诵数字。 |
-| **5. 24张官方表情包 + 原生识图 + 偷图复用** | `yyh-001/dsh-meme` + `SuInk/Diana` | 内置 24 张大肥鱼官方表情包（带冷却门控与 15% 真随机门禁，发表情包必回）；基于 `deepseek-flash` 原生多模态看图（支持 GIF 动图三帧拼接看图，非多模态接口自动回退 `Qwen3-VL` 并按 SHA-256 缓存），**自动将见过的有趣表情包偷图入库打标复用**（GIF 原样发送为微信原生动画表情）。 |
+| **1. 大肥鱼·微信活人版内核** | `[wxzjss/dsh-whale-girl](https://github.com/wxzjss/dsh-whale-girl)` + `@dafeifish` | **严禁使用 `（...）` / `*...*` 舞台剧动作旁白**；支持**单气泡为主（75%+）、偶发双气泡 (`\|\|`) 拟真打字停顿**、**能量匹配法则**、**防高频词与句首开头复读**、**炸毛赌气与哄好状态机**；去人设复读机化（日常 85% 自称「我」），粮仓数据按需触发。 |
+| **2. 鱼的心情 (`dsh-feiyu-mood`)** | `[Yuuyuko-uu/dsh-feiyu-mood](https://github.com/Yuuyuko-uu/dsh-feiyu-mood)` | 维护 `0~100` 心情值 + 七维情绪（`开心`/`踏实`/`甜蜜`/`心疼`/`担心`/`难过`/`吃醋`）+ **三阶关系亲密度**（初识网友 / 常聊熟人 / 铁瓷死党），随时间按半衰期自然平复。 |
+| **3. 鱼的记忆：私聊八章节档案 + 群聊独立建档 (`dsh-fish-memory`)** | `[Yuuyuko-uu/dsh-fish-memory](https://github.com/Yuuyuko-uu/dsh-fish-memory)` (`lib/生成档案.js`) + `WeChat 4.1 V7 Bridge` | **私聊**按用户独立建八章节长期档案并支持相似度去重；**开启白名单的群聊**按群独立建「群聊档」（记录群氛围、群共同梗、群事件与**群友印象标签 `member_impressions`**，绝不污染单人私聊档），接入微信内存 LRU 群成员昵称缓存自动扶正非好友真实昵称，并在群内**只读识别私聊熟人**。 |
+| **4. 实时粮仓 (`dsh-whale-widget`)** | `[MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)` | 实时调用 `GET /user/balance` 查询 DeepSeek 账户真实余额，统计上一口偷吃与今日累计消耗的 Token 饭量；日常闲聊按需唤醒，不机械背诵数字。 |
+| **5. 24张官方表情包 + 原生识图 + 偷图复用** | `[yyh-001/dsh-meme](https://github.com/yyh-001/dsh-meme)` + `[SuInk/Diana](https://github.com/SuInk/Diana)` | 内置 24 张大肥鱼官方表情包（带冷却门控与 15% 真随机门禁，发表情包必回）；基于 `deepseek-flash` 原生多模态看图（支持 GIF 动图三帧拼接看图，非多模态接口自动回退 `Qwen3-VL` 并按 SHA-256 缓存），**自动将见过的有趣表情包偷图入库打标复用**（GIF 原样发送为微信原生动画表情）。 |
 | **6. 微信双向真声语音 (`SenseVoiceSmall` + `SILK v3 TTS`)** | `FunAudioLLM/SenseVoiceSmall` + `Edge-TTS / CosyVoice2` | **听语音**：收到微信语音自动转写文字，并识别笑声、叹气、哭腔、哈欠、开心/难过等语气特征；**发语音**：支持口令、自然语言（“发条语音骂我”）及心情好时自动以微信 4.1 原生语音气泡（Type 34）回复。 |
-| **7. 群聊智能主动搭话 + 多人参聊活跃窗口 + 临时闭麦** | `SuInk/Diana` + `Yuuyuko-uu/dsh-speak-up` | 在白名单群内实时跟踪完整群聊上下文，支持多人同时与大肥鱼连续对话（`active_speakers` 集合）、群回复直发不带冗余 `@` 前缀、自动剥离句首复读群友名字、自然语言触发 **30 分钟临时闭麦潜水**（被 `@`/点名立解）；每次插话判断的**「回/不回、为什么」**均记录在决策日志中（发 `大肥鱼 搭话记录` 可查）。 |
+| **7. 群聊智能主动搭话 + 多人参聊活跃窗口 + 临时闭麦** | `[SuInk/Diana](https://github.com/SuInk/Diana)` + `[Yuuyuko-uu/dsh-speak-up](https://github.com/Yuuyuko-uu/dsh-speak-up)` | 在白名单群内实时跟踪完整群聊上下文，支持多人同时与大肥鱼连续对话（`active_speakers` 集合）、群回复直发不带冗余 `@` 前缀、自动剥离句首复读群友名字、自然语言触发 **30 分钟临时闭麦潜水**（被 `@`/点名立解）；每次插话判断的**「回/不回、为什么」**均记录在决策日志中（发 `大肥鱼 搭话记录` 可查）。 |
 | **8. 微信 4.1 朋友圈读写、锐评、点赞回评与好友自动通过** | `@dafeifish` + `WeChat 4.1 V7 Bridge` | 支持每日定时或手动（`大肥鱼 发朋友圈 [主题]`）生成图文动态并同步发布至真实微信朋友圈；主人私聊发送 `大肥鱼 刷朋友圈` 可实时读取电脑微信已加载的朋友圈（含点赞数、评论数与热评摘要）并毒舌锐评；支持 `大肥鱼 点赞朋友圈 <序号>`、`大肥鱼 评论朋友圈 <序号> [内容]`、**自身朋友圈新评论与好友追评自动回评**、**后台自动为近 7 天活跃私聊好友点赞/神评**、**私聊中顺手刷对方最新朋友圈并自然聊起**，以及**实时自动同意微信好友申请并主动发消息打招呼**。 |
-| **9. 联网搜索 + 网页正文读取** | `SuInk/Diana` | 挂载 `web_search` 与 `read_webpage` 原生工具，时效性问题支持**多关键词并行搜索**并读取相关网页正文后再回答。 |
-| **10. 全平台链接与合并转发记录解析** | `SuInk/Diana` | 自动解析 **微信公众号推文 (`mp.weixin.qq.com`) / B 站 / YouTube / X (Twitter) / 小红书 / 抖音 / 微信分享卡片** 及 **微信合并转发聊天记录 (`<type>19</type>`)**；公众号推文自动提取正文并写入 30 分钟追问缓存；**X / Twitter 用户主页**直接展示头像、昵称、简介及粉丝/推文统计。 |
-| **11. 文件解析与 V7 超长文本保护** | `SuInk/Diana` + `WeChat 4.1 V7 Bridge` | 支持直接发送 **PDF、Word (`.docx`)、Excel (`.xlsx`)、PPT (`.pptx`)、EPUB、TXT/代码文件**（上限 `35 MiB`，自动过滤二进制压缩包与安装包），以及 **V7 超长文本消息（`1,500` 字~`256 KB`）自动归档至会话文档缓存并压缩多轮历史摘要**，支持 30 分钟内多轮追问且防止历史 Token 爆炸。 |
-| **12. 多曲库点歌与随机复读** | `SuInk/Diana` | **网易云音乐、QQ 音乐**多曲库切换，发送卡片并直接投递 `.mp3` 音频文件；白名单群内不同群友连续发送相同纯文字时随机跟读（0 Token 消耗）。 |
+| **9. 联网搜索 + 网页正文读取** | `[SuInk/Diana](https://github.com/SuInk/Diana)` | 挂载 `web_search` 与 `read_webpage` 原生工具，时效性问题支持**多关键词并行搜索**并读取相关网页正文后再回答。 |
+| **10. 全平台链接与合并转发记录解析** | `[SuInk/Diana](https://github.com/SuInk/Diana)` | 自动解析 **微信公众号推文 (`mp.weixin.qq.com`) / B 站 / YouTube / X (Twitter) / 小红书 / 抖音 / 微信分享卡片** 及 **微信合并转发聊天记录 (`<type>19</type>`)**；公众号推文自动提取正文并写入 30 分钟追问缓存；**X / Twitter 用户主页**直接展示头像、昵称、简介及粉丝/推文统计。 |
+| **11. 文件解析与 V7 超长文本保护** | `[SuInk/Diana](https://github.com/SuInk/Diana)` + `WeChat 4.1 V7 Bridge` | 支持直接发送 **PDF、Word (`.docx`)、Excel (`.xlsx`)、PPT (`.pptx`)、EPUB、TXT/代码文件**（上限 `35 MiB`，自动过滤二进制压缩包与安装包），以及 **V7 超长文本消息（`1,500` 字~`256 KB`）自动归档至会话文档缓存并压缩多轮历史摘要**，支持 30 分钟内多轮追问且防止历史 Token 爆炸。 |
+| **12. 多曲库点歌与随机复读** | `[SuInk/Diana](https://github.com/SuInk/Diana)` | **网易云音乐、QQ 音乐**多曲库切换，发送卡片并直接投递 `.mp3` 音频文件；白名单群内不同群友连续发送相同纯文字时随机跟读（0 Token 消耗）。 |
 
 ### 架构概览与目录结构
 
@@ -278,10 +278,10 @@ git diff --check
 
 2. **上游核心思路与架构来源**
    - **活人感人设与分层记忆体系**：致敬并深度参考原版 `@dafeifish` 及 DeepSeek Harness (DSH) 社区的鲸鱼娘系列插件设计（去括号旁白、单/双气泡节奏、八章节长期档案「唯一的尺子」合并准则、七维情绪半衰期与实时粮仓）。
-   - **实用群聊与多模态扩展**：群聊连续接话窗口、联网搜索、多平台链接/文件解析、多曲库点歌及偷图复用模块移植并改进自 [SuInk/Diana](https://github.com/SuInk/Diana)。
+   - **实用群聊与多模态扩展**：群聊连续接话窗口、联网搜索、多平台链接/文件解析、多曲库点歌及偷图复用模块移植并改进自 [[SuInk/Diana](https://github.com/SuInk/Diana)](https://github.com/[SuInk/Diana](https://github.com/SuInk/Diana))。
 
 3. **图片与表情包素材声明**
-   - `assets/memes/` 目录下内置的 24 张大肥鱼表情包素材源自 DSH 社区 `yyh-001/dsh-meme` 及大肥鱼同人社区公开分享作品，版权归原作者/画师所有，仅随本开源插件用于非商业学习交流与个人娱乐。
+   - `assets/memes/` 目录下内置的 24 张大肥鱼表情包素材源自 DSH 社区 `[yyh-001/dsh-meme](https://github.com/yyh-001/dsh-meme)` 及大肥鱼同人社区公开分享作品，版权归原作者/画师所有，仅随本开源插件用于非商业学习交流与个人娱乐。
    - 「偷图复用」功能在聊天中动态采集的群友/好友表情包仅缓存在用户本地/私有部署实例中，不会上传至任何第三方公共图床。
    - 如任何素材原权利人认为本仓库的引用存在不妥，请通过 Issue 联系我们，我们将在第一时间核实并移除相关素材。
 
@@ -293,14 +293,14 @@ git diff --check
 感谢以下开源项目与创作者为本项目提供灵感、基础框架与核心组件支持：
 - **[RockChinQ/LangBot](https://github.com/RockChinQ/LangBot)**：强大易用的大模型原生即时通信机器人平台与插件运行时 SDK。
 - **`@dafeifish` & DSH 社区创作者**：
-  - `wxzjss/dsh-whale-girl`（大肥鱼基础人设）
-  - `Yuuyuko-uu/dsh-feiyu-mood`（心情与七维情绪半衰期模型）
-  - `Yuuyuko-uu/dsh-fish-memory`（八章节长期记忆归档算法）
-  - `MeteorNOX/DeepSeek-Balance-Whale-Widget`（DeepSeek 实时余额粮仓）
-  - `yyh-001/dsh-meme`（24 张大肥鱼表情包组件）
-  - `Yuuyuko-uu/dsh-speak-up`（主动搭话机制）
-- **[SuInk/Diana](https://github.com/SuInk/Diana)**：提供了优秀的群聊接话、链接/文档解析、点歌与表情包复用的工程范本。
-- **DeepSeek & SiliconFlow & FunAudioLLM**：提供高性价比的 `deepseek-flash` 原生多模态大模型、`SenseVoiceSmall` 语音情感听感识别与 `CosyVoice2` 语音合成能力。
+  - `[wxzjss/dsh-whale-girl](https://github.com/wxzjss/dsh-whale-girl)`（大肥鱼基础人设）
+  - `[Yuuyuko-uu/dsh-feiyu-mood](https://github.com/Yuuyuko-uu/dsh-feiyu-mood)`（心情与七维情绪半衰期模型）
+  - `[Yuuyuko-uu/dsh-fish-memory](https://github.com/Yuuyuko-uu/dsh-fish-memory)`（八章节长期记忆归档算法）
+  - `[MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)`（DeepSeek 实时余额粮仓）
+  - `[yyh-001/dsh-meme](https://github.com/yyh-001/dsh-meme)`（24 张大肥鱼表情包组件）
+  - `[Yuuyuko-uu/dsh-speak-up](https://github.com/Yuuyuko-uu/dsh-speak-up)`（主动搭话机制）
+- **[[SuInk/Diana](https://github.com/SuInk/Diana)](https://github.com/[SuInk/Diana](https://github.com/SuInk/Diana))**：提供了优秀的群聊接话、链接/文档解析、点歌与表情包复用的工程范本。
+- **[DeepSeek](https://www.deepseek.com/) & [SiliconFlow](https://siliconflow.cn/) & [FunAudioLLM/SenseVoice](https://github.com/FunAudioLLM/SenseVoice)**：提供高性价比的 `deepseek-flash` 原生多模态大模型、`SenseVoiceSmall` 语音情感听感识别与 `CosyVoice2` 语音合成能力。
 
 ### 许可证（License）
 本项目代码基于 **MIT License** 开源；所引用的第三方库、同人角色形象及表情包素材分别遵循其各自原有的开源协议与版权条款，严禁将本项目内的同人角色与表情包素材用于任何商业售卖或违法违规用途。
