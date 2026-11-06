@@ -1,4 +1,30 @@
-# 🐋 LangBot 大肥鱼插件（活人感全家桶 × Diana 全能版 `whale_persona_plugin` v0.5.0）
+<div align="center">
+
+<img src="../assets/memes/ganfan.jpg" width="120" style="border-radius: 50%;" alt="大肥鱼 Dafeiyu" />
+
+# 🐋 LangBot 大肥鱼插件 (`whale_persona_plugin` v0.5.0)
+**DeepSeek 鲸鱼娘「活人感全家桶」 × Diana 全能扩展 × 微信 4.1 V7 原生增强**
+
+[![Version](https://img.shields.io/badge/version-v0.5.0-blue.svg)](../manifest.yaml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](../requirements.txt)
+[![LangBot](https://img.shields.io/badge/LangBot-Plugin%20v1-00B4D8.svg)](https://github.com/RockChinQ/LangBot)
+[![Model](https://img.shields.io/badge/DeepSeek-deepseek--flash-4D6BFE.svg)](https://api.deepseek.com)
+[![Tests](https://img.shields.io/badge/tests-133%20passed-brightgreen.svg)](../tests/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](#-十许可证与致谢)
+
+[核心模块](#-一核心模块总览dsh-六大件--diana-扩展--微信-41-v7-原生增强) •
+[快速配置](#-二快速配置与启用) •
+[口令速查](#-三常用入口交互档位与口令速查) •
+[微信 4.1 原生能力](#-四微信-41-原生能力详解) •
+[活人感与双轨记忆](#-五微信真朋友活人感与私聊群聊双轨记忆设计) •
+[数据隔离与安全](#-六数据隔离与安全边界) •
+[反馈与求助](#-八反馈与求助) •
+[来源与素材声明](#-九项目来源与素材声明) •
+[许可证与致谢](#-十许可证与致谢)
+
+</div>
+
+---
 
 将 DeepSeek Harness (DSH) 社区爆火的 **「大肥鱼（鲸鱼娘）六大核心组件」**、原版 `@dafeifish` **「活人感约束与分层记忆体系」** 与 [SuInk/Diana](https://github.com/SuInk/Diana) 的 **「实用群聊与多模态扩展」** 完整集成到 [LangBot](https://github.com/RockChinQ/LangBot) 微信 4.1 / 多平台机器人体系中。
 
@@ -20,6 +46,30 @@
 | **10. 全平台链接与合并转发记录解析** | `SuInk/Diana` | 自动解析 **微信公众号推文 (`mp.weixin.qq.com`) / B 站 / YouTube / X (Twitter) / 小红书 / 抖音 / 微信分享卡片** 及 **微信合并转发聊天记录 (`<type>19</type>`)**；公众号推文自动提取正文并写入 30 分钟追问缓存；**X / Twitter 用户主页**直接展示头像、昵称、简介及粉丝/推文统计。 |
 | **11. 文件解析与 V7 超长文本保护** | `SuInk/Diana` + `WeChat 4.1 V7 Bridge` | 支持直接发送 **PDF、Word (`.docx`)、Excel (`.xlsx`)、PPT (`.pptx`)、EPUB、TXT/代码文件**（上限 `35 MiB`，自动过滤二进制压缩包与安装包），以及 **V7 超长文本消息（`1,500` 字~`256 KB`）自动归档至会话文档缓存并压缩多轮历史摘要**，支持 30 分钟内多轮追问且防止历史 Token 爆炸。 |
 | **12. 多曲库点歌与随机复读** | `SuInk/Diana` | **网易云音乐、QQ 音乐**多曲库切换，发送卡片并直接投递 `.mp3` 音频文件；白名单群内不同群友连续发送相同纯文字时随机跟读（0 Token 消耗）。 |
+
+### 架构概览与目录结构
+
+```mermaid
+flowchart LR
+    A["微信 4.1 客户端 + Helper V7 DLL"] <-->|"HTTP / WS (8080)"| B["WeChatFerry V4 Gateway"]
+    B <-->|"LangBot 事件链"| C["WhaleListener (主监听器)"]
+    C --> D["interaction_settings.py\n(会话档位/口令/权限注册表)"]
+    C --> E["diana_features.py\n(链接/公众号/35MB文件/点歌/WCF接口)"]
+    C <--> F["DeepSeek API (deepseek-flash)\n原生看图 / 双人格对话 / 记忆提炼"]
+    C <--> G["SiliconFlow API\nSenseVoice 听感 / CosyVoice2 / VL 兜底"]
+```
+
+```text
+whale_persona_plugin/
+├── main.py                                  # 插件入口 (WhalePersonaPlugin)
+├── manifest.yaml                            # LangBot 插件元数据与配置项定义
+├── assets/memes/                            # 内置 24 张大肥鱼官方表情包素材
+├── components/event_listeners/
+│   ├── whale_listener.py                    # 核心事件监听、双人格 Prompt、双轨记忆、工具与后台任务
+│   ├── diana_features.py                    # 链接/公众号/文件解析、多曲库点歌、WCF 网关交互与公网安全校验
+│   └── interaction_settings.py              # 会话设置注册表、三档交互档位与兼容口令解析
+└── tests/                                   # 标准库 unittest 回归测试套件 (133 项用例)
+```
 
 ---
 
@@ -196,3 +246,61 @@ python -m unittest discover -s tests -v
 python -m compileall -q main.py components tests
 git diff --check
 ```
+
+---
+
+## 💬 八、反馈与求助
+
+遇到问题或有新功能点子？建议先对照下方常见问题快速自检：
+
+| 常见现象 | 排查与解决方式 |
+| :--- | :--- |
+| **群里 `@大肥鱼` 没反应** | 1. 群聊默认需加入白名单，先在群内发 `大肥鱼 设置 开启`；<br>2. 检查是否触发了 30 分钟临时闭麦，直接点名 `大肥鱼` 可立即唤醒；<br>3. 若配置了 `target_bot_uuid`，确认与当前机器人 UUID 一致。 |
+| **无法开启自动朋友圈 / 刷朋友圈提示无权限** | 全局开关与真实朋友圈读取仅限主人私聊操作。请先在 LangBot 插件配置 `owner_ids` 中填入你的微信 `wxid_...`（多个用英文逗号分隔），再在私聊中发送指令。 |
+| **收到语音不转文字 / 不发语音气泡** | 检查是否已配置 `siliconflow_api_key`（用于免费 `SenseVoiceSmall` 语音转写），并确认当前会话 `大肥鱼 设置 高级` 中的「语音」开关为 `开`。 |
+| **发压缩包 `.zip` 或超大文件不解析** | 为保护内存与上下文，插件仅解析 `<= 35 MiB` 的文档/代码文件（PDF/Word/Excel/PPT/EPUB/TXT），自动忽略 `.zip`/`.exe`/`.mp4` 等二进制格式。 |
+
+### 提交 Issue 与求助指引
+- **Bug 反馈与功能建议**：欢迎前往本仓库 [Issues](https://github.com/a251231/whale_persona_plugin/issues) 提交问题或改进建议。
+- **提问建议附上**：
+  1. 触发场景（私聊 / 群聊、当前档位与人格模式，可贴 `大肥鱼 设置 高级` 的输出）；
+  2. LangBot 插件运行容器（`langbot_plugin_runtime`）的相关报错日志片段；
+  3. 复现步骤与期望行为。
+- ⚠️ **安全脱敏提醒**：提交日志或截图前，请务必隐去 `deepseek_api_key`、`siliconflow_api_key`、服务器公网 IP 及私人聊天隐私内容。
+
+---
+
+## 🎨 九、项目来源与素材声明
+
+1. **角色设定与非官方声明**
+   - 本插件中的「大肥鱼（鲸鱼娘 / Dafeiyu）」是基于 DeepSeek 社区同人拟人形象创作的**非官方爱好者同人项目**，与 DeepSeek（深度求索）官方无任何隶属、授权或商业关联。
+   - 插件在对话中也严格遵守诚实底线：当被认真问及身份时，大肥鱼会坦诚说明自己是住在 DeepSeek 里的 AI 小鲸鱼娘（非官方同人角色）。
+
+2. **上游核心思路与架构来源**
+   - **活人感人设与分层记忆体系**：致敬并深度参考原版 `@dafeifish` 及 DeepSeek Harness (DSH) 社区的鲸鱼娘系列插件设计（去括号旁白、单/双气泡节奏、八章节长期档案「唯一的尺子」合并准则、七维情绪半衰期与实时粮仓）。
+   - **实用群聊与多模态扩展**：群聊连续接话窗口、联网搜索、多平台链接/文件解析、多曲库点歌及偷图复用模块移植并改进自 [SuInk/Diana](https://github.com/SuInk/Diana)。
+
+3. **图片与表情包素材声明**
+   - `assets/memes/` 目录下内置的 24 张大肥鱼表情包素材源自 DSH 社区 `yyh-001/dsh-meme` 及大肥鱼同人社区公开分享作品，版权归原作者/画师所有，仅随本开源插件用于非商业学习交流与个人娱乐。
+   - 「偷图复用」功能在聊天中动态采集的群友/好友表情包仅缓存在用户本地/私有部署实例中，不会上传至任何第三方公共图床。
+   - 如任何素材原权利人认为本仓库的引用存在不妥，请通过 Issue 联系我们，我们将在第一时间核实并移除相关素材。
+
+---
+
+## 📄 十、许可证与致谢
+
+### 致谢（Acknowledgements）
+感谢以下开源项目与创作者为本项目提供灵感、基础框架与核心组件支持：
+- **[RockChinQ/LangBot](https://github.com/RockChinQ/LangBot)**：强大易用的大模型原生即时通信机器人平台与插件运行时 SDK。
+- **`@dafeifish` & DSH 社区创作者**：
+  - `wxzjss/dsh-whale-girl`（大肥鱼基础人设）
+  - `Yuuyuko-uu/dsh-feiyu-mood`（心情与七维情绪半衰期模型）
+  - `Yuuyuko-uu/dsh-fish-memory`（八章节长期记忆归档算法）
+  - `MeteorNOX/DeepSeek-Balance-Whale-Widget`（DeepSeek 实时余额粮仓）
+  - `yyh-001/dsh-meme`（24 张大肥鱼表情包组件）
+  - `Yuuyuko-uu/dsh-speak-up`（主动搭话机制）
+- **[SuInk/Diana](https://github.com/SuInk/Diana)**：提供了优秀的群聊接话、链接/文档解析、点歌与表情包复用的工程范本。
+- **DeepSeek & SiliconFlow & FunAudioLLM**：提供高性价比的 `deepseek-flash` 原生多模态大模型、`SenseVoiceSmall` 语音情感听感识别与 `CosyVoice2` 语音合成能力。
+
+### 许可证（License）
+本项目代码基于 **MIT License** 开源；所引用的第三方库、同人角色形象及表情包素材分别遵循其各自原有的开源协议与版权条款，严禁将本项目内的同人角色与表情包素材用于任何商业售卖或违法违规用途。
