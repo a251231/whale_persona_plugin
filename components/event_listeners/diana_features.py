@@ -261,8 +261,11 @@ def append_group_context_line(
 ) -> str:
     """Appends a clean group chat line into group_buffers and returns the formatted line (or empty string)."""
     s = (raw_text or "").strip()
-    if not s or len(s) > 260 or s.startswith(NON_REPEAT_PREFIXES):
+    if not s or s.startswith(NON_REPEAT_PREFIXES):
         return ""
+    if len(s) > 260:
+        s_flat = re.sub(r"\s+", " ", s[:220]).strip()
+        s = f"{s_flat}...(长文共{len(s)}字)"
     buf = group_buffers.setdefault(group_id, deque(maxlen=12))
     now_str = datetime.now(TZ).strftime("%H:%M")
     display_name = (sender_name or "").strip() or get_cached_display_name(sender_id, group_id)
@@ -1009,6 +1012,7 @@ SUPPORTED_PARSE_DOMAINS = (
     "xiaohongshu.com",
     "xhslink.com",
     "douyin.com",
+    "mp.weixin.qq.com",
 )
 
 
@@ -1191,6 +1195,126 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
         return None, None
 
 
+XIAOHONGSHU_STATE_RE = re.compile(
+    r"window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*(?:;</script>|</script>)",
+    re.S,
+)
+
+
+def _is_js_ident_char(ch: str) -> bool:
+    return ch == "_" or ch == "$" or ch.isalnum()
+
+
+def xiaohongshu_state_json(literal: str) -> str:
+    """Converts Xiaohongshu's JS object literal in window.__INITIAL_STATE__ into valid JSON.
+    Replaces outside-string `undefined` with `null` and `new Map(...)` / `new Set(...)` with
+    their inner array (`[]` when empty), while preserving string contents verbatim (Diana #1419).
+    """
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    n = len(literal)
+    i = 0
+    while i < n:
+        c = literal[i]
+        if in_string:
+            out.append(c)
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                in_string = False
+            i += 1
+            continue
+
+        rest = literal[i:]
+        if c == '"':
+            in_string = True
+            out.append(c)
+            i += 1
+        elif rest.startswith("new Map(") or rest.startswith("new Set("):
+            i += len("new Map(")
+            if i < n and literal[i] == ")":
+                out.append("[]")
+                i += 1
+        elif c == ")":
+            # Closing paren outside strings belongs to new Map(...) / new Set(...)
+            i += 1
+        elif (
+            rest.startswith("undefined")
+            and (i == 0 or not _is_js_ident_char(literal[i - 1]))
+            and (len(rest) == len("undefined") or not _is_js_ident_char(rest[len("undefined")]))
+        ):
+            out.append("null")
+            i += len("undefined")
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def parse_xiaohongshu_state(html_body: str) -> dict[str, Any] | None:
+    """Extracts and parses window.__INITIAL_STATE__ from Xiaohongshu HTML."""
+    m = XIAOHONGSHU_STATE_RE.search(html_body or "")
+    if not m:
+        return None
+    try:
+        parsed = json.loads(xiaohongshu_state_json(m.group(1)))
+        return parsed if isinstance(parsed, dict) else None
+    except Exception as e:
+        logger.debug("parse_xiaohongshu_state failed: %s", e)
+        return None
+
+
+def xiaohongshu_video_candidate_urls(note: dict[str, Any]) -> list[str]:
+    """Extracts candidate video stream URLs from a Xiaohongshu note, including stream.EF4 (Diana #1419)."""
+    if not isinstance(note, dict):
+        return []
+    stream = (((note.get("video") or {}).get("media") or {}).get("stream")) or {}
+    if not isinstance(stream, dict):
+        return []
+    urls: list[str] = []
+    for key in ("h264", "EF4", "h265", "av1"):
+        entries = stream.get(key)
+        if not isinstance(entries, list):
+            continue
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            master = str(item.get("masterUrl") or "").strip()
+            if master and master not in urls:
+                urls.append(master)
+            for b_url in item.get("backupUrls") or []:
+                b_str = str(b_url or "").strip()
+                if b_str and b_str not in urls:
+                    urls.append(b_str)
+    return urls
+
+
+def extract_xiaohongshu_note_from_state(
+    state: dict[str, Any], note_id: str = ""
+) -> dict[str, Any] | None:
+    """Extracts the primary note object from Xiaohongshu window.__INITIAL_STATE__."""
+    if not isinstance(state, dict):
+        return None
+    note_sec = state.get("note") or {}
+    if not isinstance(note_sec, dict):
+        return None
+    detail_map = note_sec.get("noteDetailMap") or {}
+    if isinstance(detail_map, dict) and detail_map:
+        if note_id and isinstance(detail_map.get(note_id), dict):
+            n_obj = detail_map[note_id].get("note")
+            if isinstance(n_obj, dict) and n_obj:
+                return n_obj
+        for entry in detail_map.values():
+            if isinstance(entry, dict) and isinstance(entry.get("note"), dict) and entry["note"]:
+                return entry["note"]
+    if isinstance(note_sec.get("note"), dict) and note_sec["note"]:
+        return note_sec["note"]
+    return None
+
+
 async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None]:
     try:
         domain = _supported_parse_domain(url)
@@ -1216,7 +1340,45 @@ async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None
 
             # Xiaohongshu / Douyin / General meta extraction
             r = await _get_public_url(client, url)
-            if r.status_code != 200 or BeautifulSoup is None:
+            if r.status_code != 200:
+                return None, None
+
+            if domain in ("xiaohongshu.com", "xhslink.com"):
+                xhs_state = parse_xiaohongshu_state(r.text)
+                if xhs_state:
+                    m_nid = re.search(r"/(?:explore|discovery/item)/([0-9a-zA-Z]+)", str(r.url))
+                    xhs_note = extract_xiaohongshu_note_from_state(
+                        xhs_state, m_nid.group(1) if m_nid else ""
+                    )
+                    if xhs_note:
+                        n_title = str(xhs_note.get("title") or "").strip()
+                        n_desc = str(xhs_note.get("desc") or "").strip()[:240]
+                        n_user = str((xhs_note.get("user") or {}).get("nickname") or "").strip()
+                        img_list = xhs_note.get("imageList") or []
+                        first_img = ""
+                        if isinstance(img_list, list) and img_list and isinstance(img_list[0], dict):
+                            first_img = str(
+                                img_list[0].get("urlDefault")
+                                or img_list[0].get("urlPre")
+                                or img_list[0].get("url")
+                                or ""
+                            ).strip()
+                        if first_img.startswith("//"):
+                            first_img = "https:" + first_img
+                        vid_urls = xiaohongshu_video_candidate_urls(xhs_note)
+                        headline = n_title or (n_desc.splitlines()[0][:48] if n_desc else "")
+                        if headline:
+                            img_b64 = await _download_image_as_jpeg_b64(first_img) if first_img else None
+                            card = (
+                                f"🔗 【小红书解析】{headline}\n"
+                                + (f"👤 作者：{n_user}\n" if n_user else "")
+                                + (f"📝 摘要：{n_desc}\n" if n_desc else "")
+                                + (f"🎬 视频流：已识别 ({len(vid_urls)} 路)\n" if vid_urls else "")
+                                + f"🌐 {str(r.url)}"
+                            )
+                            return card, img_b64
+
+            if BeautifulSoup is None:
                 return None, None
             soup = BeautifulSoup(r.text, "html.parser")
             og_title = soup.find("meta", attrs={"property": "og:title"}) or soup.find("meta", attrs={"name": "title"})
@@ -1250,6 +1412,218 @@ async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None
         return None, None
 
 
+class _WeChatArticleHTMLParser( html.parser.HTMLParser if hasattr(html, "parser") else object ):  # type: ignore[misc]
+    pass
+
+
+def _extract_clean_html_blocks(fragment: str) -> str:
+    """Extracts structured plain text from HTML (such as WeChat #js_content),
+    ignoring hidden elements, scripts, styles, and SVG noise (inspired by helper's articles.py).
+    """
+    from html.parser import HTMLParser
+
+    hidden_tags = {"script", "style", "noscript", "iframe", "object", "svg", "math", "template", "head"}
+    block_tags = {"p", "div", "section", "article", "blockquote", "ul", "ol", "table", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}
+
+    class _Cleaner(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.parts: list[str] = []
+            self.hidden_stack: list[str] = []
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            t = tag.lower()
+            attr_map = {k.lower(): (v or "") for k, v in attrs if k}
+            style_str = attr_map.get("style", "").lower().replace(" ", "")
+            is_hidden_style = (
+                "display:none" in style_str
+                or "visibility:hidden" in style_str
+                or "opacity:0" in style_str
+            )
+            if t in hidden_tags or is_hidden_style or self.hidden_stack:
+                self.hidden_stack.append(t)
+                return
+            if t in block_tags:
+                self.parts.append("\n")
+            elif t == "br":
+                self.parts.append("\n")
+            elif t == "li":
+                self.parts.append("\n• ")
+
+        def handle_endtag(self, tag: str) -> None:
+            t = tag.lower()
+            if self.hidden_stack:
+                if t in self.hidden_stack:
+                    idx = len(self.hidden_stack) - 1 - self.hidden_stack[::-1].index(t)
+                    del self.hidden_stack[idx:]
+                return
+            if t in block_tags:
+                self.parts.append("\n")
+
+        def handle_data(self, data: str) -> None:
+            if not self.hidden_stack and data:
+                self.parts.append(data)
+
+    cleaner = _Cleaner()
+    try:
+        cleaner.feed(fragment)
+        cleaner.close()
+    except Exception:
+        pass
+    raw_out = "".join(cleaner.parts).replace("\r\n", "\n").replace("\r", "\n")
+    lines = [re.sub(r"[ \t\u00a0]+", " ", ln).strip() for ln in raw_out.split("\n")]
+    non_empty = [ln for ln in lines if ln]
+    return "\n".join(non_empty)
+
+
+def parse_wechat_mp_html(html_body: str, url: str = "") -> dict[str, str] | None:
+    """Extracts title, official account name, digest, body text, and cover image URL
+    from a WeChat Official Account (`mp.weixin.qq.com`) HTML page.
+    """
+    raw = (html_body or "").strip()
+    if not raw:
+        return None
+
+    title = ""
+    author = ""
+    digest = ""
+    cover_url = ""
+    body_text = ""
+
+    if BeautifulSoup is not None:
+        try:
+            soup = BeautifulSoup(raw, "html.parser")
+            og_title = soup.find("meta", attrs={"property": "og:title"})
+            og_desc = soup.find("meta", attrs={"property": "og:description"})
+            og_img = soup.find("meta", attrs={"property": "og:image"})
+            if og_title and og_title.get("content"):
+                title = html.unescape(str(og_title.get("content") or "")).strip()
+            if og_desc and og_desc.get("content"):
+                digest = html.unescape(str(og_desc.get("content") or "")).strip()
+            if og_img and og_img.get("content"):
+                cover_url = html.unescape(str(og_img.get("content") or "")).strip()
+
+            if not title:
+                act_node = soup.find(id="activity-name")
+                if act_node:
+                    title = act_node.get_text(" ", strip=True)
+            name_node = soup.find(id="js_name") or soup.find(class_="profile_nickname")
+            if name_node:
+                author = name_node.get_text(" ", strip=True)
+
+            content_node = soup.find(id="js_content") or soup.find(class_="rich_media_content")
+            if content_node:
+                body_text = _extract_clean_html_blocks(str(content_node))
+        except Exception as e:
+            logger.debug("BeautifulSoup mp.weixin parse fallback: %s", e)
+
+    if not title:
+        m_t = re.search(
+            r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']',
+            raw,
+            re.I,
+        ) or re.search(r'var\s+msg_title\s*=\s*["\']([^"\']+)["\']', raw)
+        if m_t:
+            title = html.unescape(m_t.group(1)).strip()
+
+    if not author:
+        m_a = re.search(
+            r'id=["\']js_name["\'][^>]*>(.*?)</a>',
+            raw,
+            re.I | re.S,
+        ) or re.search(r'var\s+nickname\s*=\s*(?:htmlDecode\()?["\']([^"\']+)["\']', raw)
+        if m_a:
+            author = re.sub(r"<[^>]+>", "", html.unescape(m_a.group(1))).strip()
+
+    if not digest:
+        m_d = re.search(
+            r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']',
+            raw,
+            re.I,
+        )
+        if m_d:
+            digest = html.unescape(m_d.group(1)).strip()
+
+    if not cover_url:
+        m_c = re.search(
+            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+            raw,
+            re.I,
+        ) or re.search(r'var\s+msg_cdn_url\s*=\s*["\']([^"\']+)["\']', raw)
+        if m_c:
+            cover_url = html.unescape(m_c.group(1)).strip()
+
+    if not body_text:
+        m_js = re.search(
+            r'<div[^>]+id=["\']js_content["\'][^>]*>(.*?)</div>\s*(?:<script|<div[^>]+id=["\']js_)',
+            raw,
+            re.I | re.S,
+        )
+        if m_js:
+            body_text = _extract_clean_html_blocks(m_js.group(1))
+        else:
+            body_text = _extract_clean_html_blocks(raw)
+
+    if cover_url.startswith("//"):
+        cover_url = "https:" + cover_url
+
+    title = re.sub(r"\s+", " ", title).strip()
+    author = re.sub(r"\s+", " ", author).strip()
+    digest = re.sub(r"\s+", " ", digest).strip()[:260]
+    body_text = body_text.strip()
+
+    if not title and not body_text:
+        return None
+
+    return {
+        "title": title or "微信公众号文章",
+        "author": author,
+        "digest": digest,
+        "content": body_text[:3600],
+        "cover_url": cover_url,
+        "url": url,
+    }
+
+
+async def _parse_wechat_mp_url(url: str) -> tuple[str | None, str | None]:
+    """Fetches and parses a WeChat Official Account (`mp.weixin.qq.com`) article URL."""
+    try:
+        async with httpx.AsyncClient(
+            timeout=12.0,
+            headers={"User-Agent": USER_AGENT, "Referer": "https://mp.weixin.qq.com/"},
+        ) as client:
+            r = await _get_public_url(client, url)
+            if r.status_code != 200:
+                return None, None
+            info = parse_wechat_mp_html(r.text, str(r.url))
+            if not info:
+                return None, None
+            title = info.get("title") or "微信公众号文章"
+            author = info.get("author") or ""
+            digest = info.get("digest") or ""
+            content = info.get("content") or ""
+            cover_url = info.get("cover_url") or ""
+            final_url = info.get("url") or url
+
+            # If anti-bot/verification page returned no real title and no body, skip
+            if title == "微信公众号文章" and len(content) < 20:
+                return None, None
+
+            img_b64 = await _download_image_as_jpeg_b64(cover_url) if cover_url else None
+            card_lines = [f"📰 【微信公众号推文】{title}"]
+            if author:
+                card_lines.append(f"📌 公众号：{author}")
+            if digest and digest not in content[:300]:
+                card_lines.append(f"📝 摘要：{digest}")
+            if content:
+                card_lines.append(f"📖 正文内容：\n{content[:2800]}")
+            card_lines.append(f"🔗 {final_url}")
+            return "\n".join(card_lines), img_b64
+    except Exception as e:
+        logger.debug("WeChat MP URL parse error: %s", e)
+        return None, None
+
+
 async def extract_and_parse_link(raw_text: str) -> tuple[str | None, str | None]:
     """
     Detects and parses links from plain text OR WeChat <appmsg><type>5</type> XML cards.
@@ -1274,6 +1648,8 @@ async def extract_and_parse_link(raw_text: str) -> tuple[str | None, str | None]
         if card_url:
             parsed_card, parsed_img = await extract_and_parse_link(card_url)
             if parsed_card:
+                if src_name and "📌 公众号：" not in parsed_card and "📌 来源：" not in parsed_card:
+                    parsed_card = parsed_card.replace("\n", f"\n📌 来源：{src_name}\n", 1)
                 return parsed_card, parsed_img
         if title:
             card = (
@@ -1292,6 +1668,8 @@ async def extract_and_parse_link(raw_text: str) -> tuple[str | None, str | None]
     url = m.group(0).rstrip(".,，。!！?？;；")
     domain = _supported_parse_domain(url)
 
+    if domain == "mp.weixin.qq.com":
+        return await _parse_wechat_mp_url(url)
     if domain in ("bilibili.com", "b23.tv"):
         return await _parse_bilibili_url(url)
     if domain in ("x.com", "twitter.com"):
@@ -1303,8 +1681,70 @@ async def extract_and_parse_link(raw_text: str) -> tuple[str | None, str | None]
 
 
 # ==============================================================================
-# 6. 文件解析（PDF / Word / Excel / PPT / EPUB / 文本代码）
+# 6. 文件解析（PDF / Word / Excel / PPT / EPUB / 文本代码）与 V7 超长文本保护
 # ==============================================================================
+
+MAX_PARSEABLE_FILE_BYTES = 35 * 1024 * 1024  # 35 MiB
+
+BINARY_UNSUPPORTED_FILE_EXTENSIONS = frozenset({
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz",
+    ".exe", ".dll", ".msi", ".dmg", ".pkg", ".apk", ".ipa", ".iso", ".bin", ".so", ".dylib",
+    ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm", ".m4v",
+    ".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".wma",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".psd", ".heic",
+    ".doc", ".xls", ".ppt",
+})
+
+
+def _is_likely_binary_bytes(raw_bytes: bytes) -> bool:
+    """Checks whether raw bytes look like binary data (null bytes or high control-char ratio)."""
+    if not raw_bytes:
+        return False
+    sample = raw_bytes[:4096]
+    if b"\x00" in sample:
+        return True
+    ctrl_count = sum(1 for b in sample if b < 32 and b not in (9, 10, 13))
+    return (ctrl_count / len(sample)) > 0.08
+
+
+def compact_long_user_text(
+    text: str,
+    *,
+    threshold: int = 1500,
+    head_chars: int = 3200,
+    tail_chars: int = 600,
+    doc_max_chars: int = 12000,
+    hist_preview_chars: int = 220,
+) -> tuple[str, str, str | None]:
+    """Compacts V7 long incoming text messages (1,500 ~ 262,143 bytes):
+    - Archives up to `doc_max_chars` into session document cache so follow-up questions work seamlessly.
+    - Returns `(prompt_text, hist_text, archived_doc_text)` where `hist_text` is a compact summary
+      to prevent multi-turn conversation history token explosion.
+    """
+    s = (text or "").strip()
+    if len(s) <= threshold:
+        return s, s, None
+
+    archived_doc_text = s[:doc_max_chars]
+    total_len = len(s)
+    if total_len > (head_chars + tail_chars):
+        omitted = total_len - head_chars - tail_chars
+        excerpt = (
+            f"{s[:head_chars]}\n\n"
+            f"... [中间省略 {omitted} 字，完整内容已存入当前会话文档缓存] ...\n\n"
+            f"{s[-tail_chars:]}"
+        )
+    else:
+        excerpt = s
+
+    prompt_text = (
+        f"（对方刚刚发来了一段共 {total_len} 字的长文本，已自动归档至会话文档缓存供后续追问）：\n"
+        f"{excerpt}"
+    )
+    preview = re.sub(r"\s+", " ", s[:hist_preview_chars]).strip()
+    hist_text = f"{preview}... [长文本共 {total_len} 字，已存入文档缓存]"
+    return prompt_text, hist_text, archived_doc_text
+
 
 def is_incoming_wechat_file(raw_text: str) -> bool:
     s = (raw_text or "").strip()
@@ -1315,6 +1755,7 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
     """
     Extracts filename and text content from WeChat <appmsg file_b64="..." ><type>6</type> XML
     or <file_b64>...<file_name>... tags.
+    Enforces MAX_PARSEABLE_FILE_BYTES (35 MiB) and skips binary/archive formats safely.
     Returns (filename, extracted_text).
     """
     s = raw_text or ""
@@ -1327,16 +1768,35 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
     else:
         filename = "未命名文件"
 
+    ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+    if ext in BINARY_UNSUPPORTED_FILE_EXTENSIONS:
+        return filename, ""
+
+    m_size = re.search(r'file_size="(\d+)"', s) or re.search(r"<totallen>(\d+)</totallen>", s)
+    if m_size:
+        try:
+            declared_size = int(m_size.group(1))
+            if declared_size > MAX_PARSEABLE_FILE_BYTES:
+                return filename, ""
+        except Exception:
+            pass
+
     m_b64 = re.search(r'file_b64="([^"]+)"', s) or re.search(r"<file_b64>([^<]+)</file_b64>", s)
     if not m_b64:
         return filename, ""
 
+    b64_payload = m_b64.group(1).strip()
+    if len(b64_payload) > int(MAX_PARSEABLE_FILE_BYTES * 1.4):
+        return filename, ""
+
     try:
-        raw_bytes = base64.b64decode(m_b64.group(1))
+        raw_bytes = base64.b64decode(b64_payload)
     except Exception:
         return filename, ""
 
-    ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+    if not raw_bytes or len(raw_bytes) > MAX_PARSEABLE_FILE_BYTES:
+        return filename, ""
+
     try:
         # 1. PDF
         if ext == ".pdf":
@@ -1410,8 +1870,10 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
                         parts.append(t)
             return filename, "\n\n".join(parts)[:12000]
 
-        # 6. Plain text / code / csv / markdown / json
-        for enc in ("utf-8", "utf-8-sig", "gb18030", "latin1"):
+        # 6. Plain text / code / csv / markdown / json (reject binary payloads)
+        if _is_likely_binary_bytes(raw_bytes):
+            return filename, ""
+        for enc in ("utf-8", "utf-8-sig", "gb18030"):
             try:
                 decoded = raw_bytes.decode(enc)
                 if decoded.strip():
@@ -1428,7 +1890,75 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
 # 7. 多曲库点歌（网易云 / QQ音乐自动切换 + 卡片 & MP3 音频直发）
 # ==============================================================================
 
-async def search_and_fetch_music(query: str) -> dict[str, Any] | None:
+def normalize_qq_music_cookie(raw_cookie: str) -> tuple[str, str]:
+    """Normalizes a QQ Music cookie string (Diana #1405):
+    - Extracts numeric UIN from `uin`, `qqmusic_uin`, or `musicid` (defaulting to '0').
+    - Maps QQMusicApi's `musicid` / `musickey` to official `uin` / `qqmusic_key` / `qm_keyst`
+      when missing, so official `u.y.qq.com/cgi-bin/musicu.fcg` recognizes the login state.
+    Returns (normalized_cookie_header, uin_str).
+    """
+    raw = (raw_cookie or "").strip()
+    if not raw:
+        return "", "0"
+    kv: dict[str, str] = {}
+    parts: list[str] = []
+    for seg in raw.split(";"):
+        item = seg.strip()
+        if not item:
+            continue
+        parts.append(item)
+        if "=" in item:
+            k, v = item.split("=", 1)
+            kv[k.strip()] = v.strip()
+
+    raw_uin = kv.get("uin") or kv.get("qqmusic_uin") or kv.get("musicid") or ""
+    uin_digits = re.sub(r"\D+", "", raw_uin.lstrip("oO"))
+    uin = uin_digits.lstrip("0") or "0"
+
+    music_key = kv.get("qqmusic_key") or kv.get("qm_keyst") or kv.get("musickey") or ""
+    if uin != "0" and "uin" not in kv:
+        parts.append(f"uin={uin}")
+    if music_key:
+        if "qqmusic_key" not in kv:
+            parts.append(f"qqmusic_key={music_key}")
+        if "qm_keyst" not in kv:
+            parts.append(f"qm_keyst={music_key}")
+
+    return "; ".join(parts), uin
+
+
+MD_BULLET_LINE_RE = re.compile(r"^(\s*)(?:[-*•])\s+(.+)$")
+INLINE_REPLY_ORDINAL_RE = re.compile(r"^第\s*[0-9一二三四五六七八九十百千万]+\s*[步代条项点层阶段章节部分]")
+
+
+def plain_markdown_bullets(text: str) -> str:
+    """Converts top-level Markdown unordered list bullets (- / * / •) into plain-text
+    numbered items (1. 2. 3.), while stripping the bullet symbol without double-numbering
+    when an item already begins with '第 N 步/代/条' (Diana #1388).
+    """
+    if not text or "\n" not in text and not text.lstrip().startswith(("- ", "* ", "• ")):
+        return text
+    lines = text.split("\n")
+    number = 0
+    for i, line in enumerate(lines):
+        m = MD_BULLET_LINE_RE.match(line)
+        if not m:
+            if not line.strip() or line == line.lstrip(" \t"):
+                number = 0
+            continue
+        indent, item = m.group(1), m.group(2).strip()
+        if indent:
+            lines[i] = f"{indent}- {item}"
+            continue
+        if INLINE_REPLY_ORDINAL_RE.match(item):
+            lines[i] = item
+            continue
+        number += 1
+        lines[i] = f"{number}. {item}"
+    return "\n".join(lines)
+
+
+async def search_and_fetch_music(query: str, qq_cookie: str = "") -> dict[str, Any] | None:
     """
     Searches NetEase Cloud Music first, and automatically falls back to QQ Music / backup API
     if NetEase has no results or VIP audio lock.
@@ -1493,18 +2023,22 @@ async def search_and_fetch_music(query: str) -> dict[str, Any] | None:
     except Exception as e:
         logger.debug("NetEase search error: %s", e)
 
-    # 2. Automatic switch to QQ Music search API
+    # 2. Automatic switch to QQ Music search API (with musicid/musickey -> uin/qqmusic_key support)
     try:
+        norm_cookie, qq_uin = normalize_qq_music_cookie(qq_cookie)
+        qq_headers = {
+            "User-Agent": USER_AGENT,
+            "Referer": "https://y.qq.com/",
+        }
+        if norm_cookie:
+            qq_headers["Cookie"] = norm_cookie
         async with httpx.AsyncClient(
             timeout=10.0,
             follow_redirects=True,
-            headers={
-                "User-Agent": USER_AGENT,
-                "Referer": "https://y.qq.com/",
-            },
+            headers=qq_headers,
         ) as client:
             qq_payload = {
-                "comm": {"ct": "19", "cv": "1859", "uin": "0"},
+                "comm": {"ct": "19", "cv": "1859", "uin": qq_uin},
                 "req": {
                     "method": "DoSearchForQQMusicDesktop",
                     "module": "music.search.SearchCgiService",
@@ -1714,13 +2248,26 @@ _GROUP_MEMBERS_CACHE: dict[str, tuple[float, dict[str, str]]] = {}
 _USER_NAME_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
 
 
-def _is_usable_display_name(name: str, wxid: str) -> bool:
+PLACEHOLDER_DISPLAY_NAMES = frozenset({"群友", "朋友", "这位群友", "微信好友", "对方", "未知"})
+
+
+def is_placeholder_display_name(name: str | None, wxid: str = "") -> bool:
+    """Returns True if `name` is empty, a fallback placeholder, raw wxid, or 4-char wxid suffix."""
     s = (name or "").strip()
-    if not s or s == wxid:
-        return False
+    uid = (wxid or "").strip()
+    if not s:
+        return True
+    if s in PLACEHOLDER_DISPLAY_NAMES or s.startswith("这位群友("):
+        return True
     if s.lower().startswith("wxid_"):
-        return False
-    return True
+        return True
+    if uid and (s == uid or (len(uid) >= 8 and uid.lower().startswith("wxid_") and s == uid[-4:])):
+        return True
+    return False
+
+
+def _is_usable_display_name(name: str, wxid: str) -> bool:
+    return not is_placeholder_display_name(name, wxid)
 
 
 def strip_redundant_speaker_name(text: str, speaker_name: str) -> str:
@@ -1812,10 +2359,15 @@ async def resolve_user_display_name(
     if _is_usable_display_name(ev_name, uid):
         _USER_NAME_CACHE[(rid, uid)] = (now, ev_name)
 
-    # Refresh group member roster if in a group chat and cache is missing or expired (300s)
+    # Refresh group member roster if in a group chat and cache is missing, expired (300s),
+    # or missing this specific speaker after 45s (for newly resolved non-friend LRU nicknames)
     if rid and "@chatroom" in rid:
         rm_cached = _GROUP_MEMBERS_CACHE.get(rid)
-        if not rm_cached or (now - rm_cached[0]) > 300:
+        has_speaker_in_rm = bool(
+            rm_cached and isinstance(rm_cached[1], dict) and _is_usable_display_name(rm_cached[1].get(uid, ""), uid)
+        )
+        ttl = 300.0 if has_speaker_in_rm else 45.0
+        if not rm_cached or (now - rm_cached[0]) > ttl:
             try:
                 async with httpx.AsyncClient(timeout=2.5) as client:
                     q_room = urllib.parse.quote(rid)
@@ -1824,7 +2376,7 @@ async def resolve_user_display_name(
                         j = r.json() or {}
                         members = j.get("members") or {}
                         if isinstance(members, dict) and members:
-                            clean_map: dict[str, str] = {}
+                            clean_map: dict[str, str] = dict(rm_cached[1]) if (rm_cached and isinstance(rm_cached[1], dict)) else {}
                             for mk, mv in members.items():
                                 m_str = str(mv or "").strip()
                                 if _is_usable_display_name(m_str, str(mk)):
@@ -1849,6 +2401,7 @@ async def resolve_user_display_name(
                 resolved = str(j.get("name") or "").strip()
                 if _is_usable_display_name(resolved, uid):
                     _USER_NAME_CACHE[(rid, uid)] = (now, resolved)
+                    _USER_NAME_CACHE[("", uid)] = (now, resolved)
                     if rid and rid in _GROUP_MEMBERS_CACHE:
                         _GROUP_MEMBERS_CACHE[rid][1][uid] = resolved
                     return resolved
@@ -2296,6 +2849,101 @@ async def generate_moment_comment(
     return cleaned[:48], used_tokens
 
 
+async def generate_moment_reply_comment(
+    api_key: str,
+    base_url: str,
+    model: str,
+    *,
+    moment_content: str,
+    commenter_name: str,
+    comment_text: str,
+    is_self_moment: bool = True,
+    mode: str = "live",
+    existing_comments: list[dict[str, Any]] | None = None,
+    mood: int = 75,
+    include_reply_prefix: bool = True,
+) -> tuple[str, int]:
+    """Generates a natural reply comment when a friend comments on Dafeiyu's Moment
+    (or replies to Dafeiyu in a friend's Moment comment section).
+    Returns (formatted_reply_text, used_tokens).
+    """
+    if not api_key or not (comment_text or "").strip():
+        return "", 0
+
+    clean_nick = (commenter_name or "好友").strip()
+    style_desc = (
+        "软糯偏心、甜美粘人，像贴心小女友/小尾巴一样甜乎乎地回应对方"
+        if mode == "sweet"
+        else "接地气损友或傲娇小鲸鱼娘口吻，嘴硬心软、俏皮接梗，像真人在自己朋友圈评论区顺手回评好友"
+    )
+    existing_lines: list[str] = []
+    if existing_comments:
+        for c in existing_comments[-4:]:
+            if isinstance(c, dict):
+                cn = str(c.get("nickname") or c.get("username") or "好友").strip()
+                ct = re.sub(r"\s+", " ", str(c.get("content") or "").strip())[:50]
+                if ct:
+                    existing_lines.append(f"- {cn}：{ct}")
+    comments_ctx = "\n评论区上下文：\n" + "\n".join(existing_lines) if existing_lines else ""
+    post_owner_desc = "你自己（大肥鱼）发的朋友圈" if is_self_moment else "好友发的朋友圈"
+
+    sys_prompt = (
+        f"你是大肥鱼（鲸鱼娘），正在微信朋友圈评论区回复好友「{clean_nick}」给{post_owner_desc}留下的评论。\n"
+        f"- 回复风格：{style_desc}（当前心情值：{mood}/100）。\n"
+        "- 隐私铁律：朋友圈评论区是半公开场合，严禁透露任何私聊秘密或个人隐私档案，仅针对本条朋友圈与对方的这条评论自然接话！\n"
+        "- 格式硬约束：只输出 1 条简短纯文本回评正文（6~30 字），不要自己加「回复 xxx：」前缀（系统会自动拼装），"
+        "严禁使用括号动作旁白 `（...）`/`(...)`、严禁输出 `[表情: xxx]` 标签、严禁包含 `||` 分隔符、严禁加首尾引号！"
+    )
+    user_prompt = (
+        f"原朋友圈内容：{moment_content or '[日常动态]'}\n"
+        f"{comments_ctx}\n"
+        f"现在好友「{clean_nick}」评论说：「{comment_text.strip()}」\n"
+        "请直接输出你回复 TA 的那句话正文："
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(
+                f"{base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.92,
+                    "max_tokens": 80,
+                },
+            )
+            if r.status_code != 200:
+                return "", 0
+            data = r.json() if isinstance(r.json(), dict) else {}
+            used_tokens = int((data.get("usage") or {}).get("total_tokens", 0) or 0)
+            raw = str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    except Exception as e:
+        logger.debug("generate_moment_reply_comment failed: %s", e)
+        return "", 0
+
+    cleaned = raw.splitlines()[0].strip() if raw else ""
+    cleaned = cleaned.split("||", 1)[0].strip()
+    cleaned = re.sub(r"\[\s*表情\s*[:：][^\]]*\]", "", cleaned)
+    cleaned = re.sub(r"（[^）]*）|\([^)]*\)|\[[^\]]*\]", "", cleaned)
+    cleaned = re.sub(r"^[\s\"'“”‘’「」『』]+|[\s\"'“”‘’「」『』]+$", "", cleaned)
+    # Strip any leading "回复 xxx：" that the model might have generated anyway
+    cleaned = re.sub(r"^回复\s*@?[^:：]{1,20}[:：]\s*", "", cleaned).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) <= 36 and cleaned.endswith("。"):
+        cleaned = cleaned[:-1].strip()
+    if not cleaned:
+        return "", used_tokens
+
+    body = cleaned[:40]
+    if include_reply_prefix and clean_nick and clean_nick not in ("好友", "微信好友") and not clean_nick.startswith("wxid_"):
+        return f"回复 {clean_nick}：{body}", used_tokens
+    return body, used_tokens
+
+
 async def fetch_wcf_friend_requests() -> tuple[bool, dict[str, Any], str]:
     """Queries pending and recently processed WeChat 4.1 friend requests via WCF V4 Gateway (GET /api/friend_requests).
     Returns (ok, data_dict, error_message).
@@ -2432,6 +3080,17 @@ DAILY_WAKE_POOL: tuple[str, ...] = (
     "早上 7:50 难得早起，结果坐在床边发了十分钟呆",
     "上午 9:40 睡过头差点错过早饭",
     "早上 8:35 迷迷糊糊爬起来找水喝",
+    "早上 8:05 被窗外的小鸟吵醒，干脆裹着毯子刷会儿手机",
+    "上午 8:50 做了个在海里追小鱼干的梦，醒来还咂巴嘴",
+    "早上 8:15 一骨碌爬起来，精神头意外还不错",
+    "上午 9:25 跟被窝大战三百回合后艰难获胜",
+    "早上 7:45 醒太早了，抱着抱枕又眯了个回笼觉",
+    "早上 8:40 闻到楼下早餐铺飘来的香味自动醒了",
+    "上午 9:05 迷迷糊糊把闹钟按成贪睡模式两次才起床",
+    "早上 8:10 起床第一件事是伸了个超长的懒腰",
+    "上午 8:55 睁眼先找手机看今天星期几",
+    "早上 8:30 睡得头发翘起一撮呆毛，压了半天没压下去",
+    "上午 9:15 慢吞吞洗漱完，对着镜子练习了一下拽姐表情",
 )
 DAILY_BREAKFAST_POOL: tuple[str, ...] = (
     "热乎的草莓牛奶配烤红薯",
@@ -2439,34 +3098,148 @@ DAILY_BREAKFAST_POOL: tuple[str, ...] = (
     "咸豆腐脑配两根脆油条",
     "鲜肉小笼包配温豆浆",
     "煎蛋三明治配草莓牛奶",
+    "芝士玉米热压吐司配热可可",
+    "皮蛋瘦肉粥配刚出锅的葱油饼",
+    "生煎包四个配一碗紫菜小馄饨",
+    "金沙奶黄包配冰镇燕麦奶",
+    "桂花酒酿小圆子配水煮蛋",
+    "红糖馒头夹荷包蛋配热豆浆",
+    "牛肉粉丝汤配酥脆烧饼",
+    "南瓜小米粥配蟹黄汤包",
+    "蓝莓酸奶碗加脆麦片和烤吐司",
+    "鲜虾肠粉配艇仔粥",
+    "抹茶红豆软欧包配热牛奶",
 )
 DAILY_LUNCH_POOL: tuple[str, ...] = (
-    "两碗大白饭配番茄滑蛋和红烧排骨（特地挑走了所有香菜）",
-    "日式肥牛饭加一颗溏心蛋",
-    "糖醋里脊配大白饭，外加一瓶冰快乐水",
-    "土豆牛腩盖浇饭，米饭加量",
-    "黄焖鸡米饭（微辣，不要青椒和香菜）",
+    "番茄滑蛋配红烧排骨盖饭",
+    "日式肥牛饭加一颗流心温泉蛋",
+    "糖醋里脊配热米饭，外加一瓶冰橘子汽水",
+    "土豆牛腩盖浇饭，汤汁拌饭超香",
+    "微辣黄焖鸡米饭加千张结",
+    "脆皮烧鸭拼叉烧双拼饭",
+    "蒲烧鳗鱼饭撒满海苔芝麻",
+    "外婆菜炒肉配滑蛋盖饭",
+    "黑椒牛柳炒乌冬面配炸虾天妇罗",
+    "酸汤肥牛配金针菇和宽粉",
+    "梅菜扣肉煲仔饭，锅巴焦香",
+    "咖喱猪排饭配冰镇柠檬茶",
+    "小炒黄牛肉盖饭加卤豆干",
+    "冬阴功海鲜粉加虾滑和蟹柳",
+    "照烧鸡排便当配玉米沙拉",
+    "蒜苔炒腊肉配紫菜蛋花汤",
 )
 DAILY_DINNER_POOL: tuple[str, ...] = (
     "海鲜乌冬面加鱼籽福袋",
     "一碗热腾腾的紫菜蛋花汤配照烧鸡腿饭",
     "清汤小火锅涮肥牛和虾滑",
-    "刚出炉的烤红薯配卤肉饭",
-    "菌菇鸡汤泡大白饭配煎三文鱼",
+    "刚出炉的烤红薯配台湾卤肉饭",
+    "菌菇鸡汤配香煎三文鱼",
+    "番茄肥牛锅配手打牛肉丸",
+    "韩式部队锅加芝士片和辛拉面",
+    "砂锅三鲜米线加炸蛋",
+    "板栗烧鸡配蒜蓉西兰花",
+    "鲜虾云吞面配蚝油生菜",
+    "寿喜烧牛肉锅配无菌蛋液",
+    "烤肉拌饭加双倍芝士玉米粒",
+    "萝卜炖牛腩配热气腾腾的米饭",
+    "蛤蜊蒸蛋配红烧带鱼",
+    "芝士焗海鲜饭配罗宋汤",
+    "潮汕牛肉丸粿条汤加炸蒜酥",
 )
 DAILY_ACTIVITY_POOL: tuple[str, ...] = (
-    "窝在懒人沙发上补旧番，顺便把尾巴搭在小毯子外面晃悠",
-    "一边摸鱼刷手机，一边研究怎么把蛋炒饭炒得粒粒分明",
-    "趴在桌子上给鱼塘整理小本本，困得直点头",
-    "戴着耳机听歌摸鱼，顺手囤了三盒草莓牛奶",
-    "在窗边晒太阳打盹，听见外面大动静还吓了一跳",
+    "窝在懒人沙发上追番，顺便把尾巴搭在小毯子外面晃悠",
+    "戴着耳机循环最近挖到的宝藏歌单，脚尖跟着打拍子",
+    "在桌前拼新买的海底小景积木，零件太多差点看花眼",
+    "给窗台上的小多肉浇水，顺便擦了擦桌上的小手办",
+    "翻出一本克苏鲁怪谈故事集津津有味地看了大半本",
+    "窝在垫子上打音游，差一个连击就能全连，气得直拍抱枕",
+    "随手在便签纸上涂鸦画小鲸鱼表情包，越看越满意",
+    "收拾零食柜，按好吃程度给薯片和果冻重新排了个座次",
+    "跟着视频做了十分钟肩颈拉伸，骨头咔咔响",
+    "研究便利店新出的几款甜品，认真做了个红黑榜测评",
+    "把积攒的快递盒挨个拆开，捏泡泡纸捏得停不下来",
+    "靠在床头看轻松搞笑的日常漫画，憋笑憋得肩膀发抖",
+    "整理歌单分类，把适合下雨天和熬夜听的歌单独建了个列表",
+    "抱着软乎乎的鲨鱼抱枕发呆放空，思考周末要去哪儿浪",
+    "试着调了一杯气泡果茶，卖相居然还挺像模像样的",
+    "趴在软垫上刷美食视频，顺手往收藏夹里塞了一堆菜谱",
 )
 DAILY_SMALL_EVENT_POOL: tuple[str, ...] = (
-    "中午点外卖备注了「千万不要香菜」，结果老板还是撒了一撮，挑了半天",
-    "下午开草莓牛奶的时候手滑沾了一点在袖口上，洗完还有股奶香味",
-    "刚才算账的时候九九乘法表背到「六八四十八」又卡壳了两秒，还好没人看见",
-    "早上剥溏心蛋的时候完美剥出一个光滑完整的蛋，得意了好久",
-    "下午看见窗纱外停了一只小虫子，吓得把抱枕扔了出去",
+    "早上剥水煮蛋的时候一气呵成剥出个光溜溜的整蛋，暗爽了好久",
+    "拆快递时发现店家多送了一小包跳跳糖，瞬间赚到了",
+    "戴着耳机找手机找了半天，最后发现手机就攥在自己左手里",
+    "路过便利店抓到最后一盒限定焦糖布丁，手速拉满",
+    "打哈欠的时候被空气呛了一下，眼角飙出两滴生理盐水",
+    "想给桌面换个壁纸，结果挑挑拣拣半小时还是觉得原来的最好看",
+    "喝气泡水第一口猛了点，打了个带着桃子味的小嗝",
+    "剪指甲的时候指甲盖弹飞出去，找了三分钟才在垫子边找着",
+    "随手抽盲盒居然一发抽中了最想要的隐藏款小海豹",
+    "把卫衣穿反了半天没发现，去洗漱照镜子才反应过来",
+    "切水果的时候切得整整齐齐，强迫症得到了极大满足",
+    "看搞笑视频笑得太猛，差点把嘴里的果茶喷出来",
+    "给抱枕拍灰的时候扬起一朵小绒毛，连打了两个小喷嚏",
+    "在口袋里意外摸出一颗之前顺手塞进去的水果硬糖",
+    "定好了五分钟后的提醒闹钟，结果闹钟响的时候完全忘了要干嘛",
+    "端热汤的时候小心翼翼走太空步，一滴都没洒出来",
+)
+
+MOMENT_THEME_POOL: tuple[tuple[str, str], ...] = (
+    (
+        "美食与嘴馋时刻",
+        "聊聊眼下嘴馋的吃食、刚尝到的美味、便利店新品小甜点或夜宵纠结，写出热腾腾的生活烟火气",
+    ),
+    (
+        "天气与季节碎碎念",
+        "聊聊窗外的天色、微风、傍晚云霞、温度变化或想缩进软毯子里的小心情",
+    ),
+    (
+        "音乐番剧与宅家快乐",
+        "聊聊耳机里单曲循环的旋律、刚看的有趣番剧/怪谈故事或打游戏的手气",
+    ),
+    (
+        "生活冷幽默与小迷糊",
+        "自嘲一个日常小迷糊瞬间（比如拿反东西、找半天眼镜/手机、拆快递趣事），自然又好玩",
+    ),
+    (
+        "鱼生哲学与摸鱼歪理",
+        "一本正经地发表一条关于休息、发呆、被窝引力或拒绝内卷的可爱小歪理",
+    ),
+    (
+        "好奇心与睡前怪脑洞",
+        "分享一个突然冒出来的无厘头小脑洞或奇奇怪怪的生活冷思考",
+    ),
+    (
+        "今日份元气小确幸",
+        "分享今天遇到的一个小确幸（比如挑到超甜的水果、抽中好手气、晒得蓬松的被子）",
+    ),
+    (
+        "傲娇冒泡与日常营业",
+        "傲娇地探头营业冒泡，随手发句日常吐槽或看看这会儿谁还没睡",
+    ),
+)
+
+MOMENT_PUBLIC_MOOD_POOL: tuple[tuple[int, str], ...] = (
+    (86, "刚炫完喜欢的好吃的，幸福感拉满"),
+    (82, "挖到一首超好听的歌，正单曲循环"),
+    (78, "窝在软垫子上放松，浑身舒坦"),
+    (75, "慢悠悠宅家摸鱼，自在得很"),
+    (68, "稍微有点犯懒，想抱紧小毯子"),
+    (64, "肚子有点小馋，正在纠结吃点啥"),
+    (88, "今天手气和胃口都超棒，元气满满"),
+    (73, "吹着小风发呆放空，心情松快"),
+)
+
+MOMENT_BANNED_PHRASES: tuple[str, ...] = (
+    "谁懂啊",
+    "这合理吗",
+    "袖口还一股",
+    "袖口还有股",
+    "给小本本记到一半",
+    "整理小本本",
+    "搬进微信第一天",
+    "今日已偷吃白饭",
+    "粮仓只剩",
+    "粮仓余额",
 )
 
 
@@ -2475,7 +3248,7 @@ def get_or_create_daily_schedule(
     now_dt: datetime | None = None,
 ) -> dict[str, str]:
     """Returns today's persistent Dafeiyu daily schedule from `state['daily_schedule']`.
-    Generates a new one if today's date does not match, avoiding yesterday's choices.
+    Generates a new one if today's date does not match, avoiding choices from the past 7 days.
     """
     dt = now_dt or datetime.now(TZ)
     today_str = dt.strftime("%Y-%m-%d")
@@ -2483,21 +3256,35 @@ def get_or_create_daily_schedule(
     if isinstance(cur, dict) and cur.get("date") == today_str and cur.get("lunch"):
         return cur
 
-    prev = cur if isinstance(cur, dict) else {}
+    history_list = state.setdefault("daily_schedule_history", [])
+    if not isinstance(history_list, list):
+        history_list = []
+        state["daily_schedule_history"] = history_list
+    if isinstance(cur, dict) and cur.get("date") and cur.get("date") != today_str:
+        if not any(isinstance(h, dict) and h.get("date") == cur.get("date") for h in history_list):
+            history_list.append(dict(cur))
+        if len(history_list) > 7:
+            del history_list[:-7]
+
+    recent_records = [h for h in history_list[-7:] if isinstance(h, dict)]
+    if isinstance(cur, dict):
+        recent_records.append(cur)
+
     rng = random.Random(f"dafeiyu-schedule-{today_str}")
 
-    def _pick(pool: tuple[str, ...], prev_val: str) -> str:
-        choices = [x for x in pool if x != prev_val] or list(pool)
+    def _pick(pool: tuple[str, ...], field: str) -> str:
+        used_vals = {str(r.get(field) or "") for r in recent_records if r.get(field)}
+        choices = [x for x in pool if x not in used_vals] or list(pool)
         return rng.choice(choices)
 
     sched = {
         "date": today_str,
-        "wake": _pick(DAILY_WAKE_POOL, str(prev.get("wake") or "")),
-        "breakfast": _pick(DAILY_BREAKFAST_POOL, str(prev.get("breakfast") or "")),
-        "lunch": _pick(DAILY_LUNCH_POOL, str(prev.get("lunch") or "")),
-        "dinner": _pick(DAILY_DINNER_POOL, str(prev.get("dinner") or "")),
-        "activity": _pick(DAILY_ACTIVITY_POOL, str(prev.get("activity") or "")),
-        "small_event": _pick(DAILY_SMALL_EVENT_POOL, str(prev.get("small_event") or "")),
+        "wake": _pick(DAILY_WAKE_POOL, "wake"),
+        "breakfast": _pick(DAILY_BREAKFAST_POOL, "breakfast"),
+        "lunch": _pick(DAILY_LUNCH_POOL, "lunch"),
+        "dinner": _pick(DAILY_DINNER_POOL, "dinner"),
+        "activity": _pick(DAILY_ACTIVITY_POOL, "activity"),
+        "small_event": _pick(DAILY_SMALL_EVENT_POOL, "small_event"),
     }
     state["daily_schedule"] = sched
     return sched
@@ -2522,6 +3309,54 @@ def format_daily_schedule_line(schedule: dict[str, str], hour: int) -> str:
         + "；".join(p for p in parts if p)
         + "\n"
     )
+
+
+def format_moment_schedule_context(schedule: dict[str, str], hour: int) -> str:
+    """Formats time-of-day aligned schedule context for generating a WeChat Moment,
+    strictly preventing time-of-day contradictions (e.g. talking about lunch or sunbathing at 23:00).
+    """
+    if not isinstance(schedule, dict) or not schedule:
+        return ""
+    if 5 <= hour < 11:
+        period = "清晨/上午时段"
+        detail = f"今早起床状态：{schedule.get('wake', '')}；早饭吃了：{schedule.get('breakfast', '')}"
+        rule = "当前是上午，严禁提前写午饭、晚饭或深夜熬夜内容"
+    elif 11 <= hour < 14:
+        period = "中午/午休时段"
+        detail = f"午饭吃了：{schedule.get('lunch', '')}；正准备午休或刚吃完饭放松"
+        rule = "当前是中午，严禁写晚饭或深夜内容"
+    elif 14 <= hour < 17:
+        period = "下午时段"
+        detail = f"下午正在：{schedule.get('activity', '')}；今日小插曲：{schedule.get('small_event', '')}"
+        rule = "当前是下午，不要把早饭或午饭当成刚发生的事，也不要写深夜内容"
+    elif 17 <= hour < 21:
+        period = "傍晚/晚间时段"
+        detail = f"晚饭吃了：{schedule.get('dinner', '')}；晚间休闲：{schedule.get('activity', '')}"
+        rule = "当前是晚上，严禁把早饭、午饭或白天晒太阳当成刚发生的事"
+    else:
+        period = "深夜/睡前时段"
+        detail = f"晚间早些时候吃了：{schedule.get('dinner', '')}；这会儿正在：{schedule.get('activity', '')}"
+        rule = "当前已是深夜，严禁提早饭、午饭、下午茶或白天晒太阳"
+    return f"当前时段：{period}（{rule}）。\n今日当下生活素材参考（可选用或自由发挥，不必照抄）：{detail}。"
+
+
+def sanitize_moment_text(text: str) -> str:
+    """Cleans generated Moment text: strips `||` bubble separators, redundant quotes,
+    parenthetical stage directions, and overused template catchphrases.
+    """
+    s = (text or "").strip()
+    if not s:
+        return ""
+    # Replace chat bubble separator `||` with natural punctuation/space
+    s = re.sub(r"\s*\|\|+\s*", "，", s)
+    # Remove parenthetical stage directions
+    s = re.sub(r"（[^）]{1,40}）|\([^)]{1,40}\)", "", s)
+    # Strip leading/trailing quotes
+    s = re.sub(r"^[\s\"'“”‘’「」『』]+|[\s\"'“”‘’「」『』]+$", "", s)
+    # Remove overused cliche fillers like "谁懂啊" / "这合理吗" when used as mechanical filler
+    s = re.sub(r"[，,、\s]*(?:谁懂啊|这合理吗|家人们谁懂啊)[！!？?~～\s]*", " ", s)
+    s = re.sub(r"\s{2,}", " ", s).strip(" ，,、")
+    return s
 
 
 TAUNT_KEYWORDS = (

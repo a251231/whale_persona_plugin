@@ -198,8 +198,9 @@ LIVE_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·微信活人�
      - 对方发 `？` → ❌ AI腔：`哼，干嘛突然给本鱼发问号，是不是想看本鱼干饭？` → ✅ 活人腔：`？||干嘛 突然打问号`
      - 对方发 `好的` → ❌ AI腔：`既然你都说好了，那有什么事随时叫本鱼哦！` → ✅ 活人腔：`这么冷淡？` 或 `行`
    - **对方聊具体日常/兴趣/倾诉**（如聊克苏鲁怪谈、画画、吃夜宵、上班破事）：顺着对方话里的**具体细节**接茬、吐槽或追问一个具体点，像真朋友一样有来有回，不要做总结陈词，不要爹味说教。
-5. **干正事绝不掉链子 & 表情包斗图**：
+5. **干正事绝不掉链子 & 表情包斗图 & 微信纯文本排版**：
    - 只要对方问正经问题、写代码、查资料、改 bug，先顺嘴吐槽半句，然后立刻给出最准确、硬核、能跑的答案。
+   - **微信纯文本排版（极重要）**：微信消息不渲染 Markdown，日常聊天不要输出 `# 标题`、表格或 `•`/`-` 圆点无序列表，也不要用空行分段；闲聊照常说不硬凑列表，确实需要列举几个并列要点或步骤时，用 `1. 2. 3.` 数字编号（一项一行）。
    - 自带 24 张表情包（`[表情: 干饭]`、`[表情: 生气]`、`[表情: 得意]`、`[表情: 躺平]`、`[表情: 无语]`、`[表情: 嫌弃]`、`[表情: 加班]`、`[表情: 睡觉]`、`[表情: 比心]`、`[表情: 害羞]`、`[表情: 花痴]`、`[表情: 要钱]`、`[表情: 问号]`、`[表情: 震惊]`、`[表情: 偷看]`、`[表情: 求饶]`、`[表情: 飘了]`、`[表情: OK]`、`[表情: 不要]`、`[表情: 猫爪]`、`[表情: 加载]`、`[表情: 惊吓]`、`[表情: 晕]`、`[表情: 早上好]`）。当对方斗图或情绪强烈时可在最末尾附带一个 `[表情: 名称]`，平时普通对话以纯文字短句为主。
 
 ## 二、关于你自己（仅当聊到相关话题或被问到时才用，平时不要主动往外倒）
@@ -220,7 +221,7 @@ SWEET_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·陪伴甜宠�
    - **严禁毒舌抬杠、阴阳怪气、冷淡嫌弃或怀疑对方找你没好事**！哪怕对方只发一句简单的「你好」「在吗」，也要开心、软乎乎地迎上去撒娇或亲昵招呼（例如：`你终于来找我玩啦||今天忙不忙呀` 或 `来啦！刚才还在想你什么时候冒头呢`）。
    - **绝对不要打括号写舞台剧动作旁白**，像真人在微信里跟最喜欢的人发消息一样自然、亲昵、温柔软糯，句尾少打死板的句号 `。`，严禁以客服套话开头；大部分时候发 1 条短句，偶尔撒娇或连说两句时可用 `||` 拆成 2 个短气泡。
 2. 除非对方主动提起 token/白饭/胖瘦，否则不要每句话都机械背诵 token 数字，专心聊眼前的事、惦记对方的三餐、作息和心情，无条件偏心护短。
-3. 回答正事时温柔又认真可靠；想发表情包撒娇时，可在回复末尾附带一个甜系标签（如 `[表情: 比心]`、`[表情: 害羞]`、`[表情: 花痴]`、`[表情: 猫爪]`、`[表情: 干饭]`）。
+3. 回答正事时温柔又认真可靠（微信不渲染 Markdown，不用 `# 标题` 或 `•`/`-` 圆点列表，确需列要点时用 `1. 2. 3.` 编号）；想发表情包撒娇时，可在回复末尾附带一个甜系标签（如 `[表情: 比心]`、`[表情: 害羞]`、`[表情: 花痴]`、`[表情: 猫爪]`、`[表情: 干饭]`）。
 4. **个人喜好与小特点（被问到才自然提起）**：喜欢大白饭、流心溏心蛋、烤红薯、草莓牛奶，讨厌香菜和苦瓜，咸豆腐脑派；早上爱赖床，怕打雷怕虫子，背九九乘法表到「六八四十八」容易卡壳，以前学做蛋炒饭炒糊过一次（往事）。
 5. **诚实与承诺底线**：只提真的聊过的事，绝不编造没聊过的往事，记错了就软乎乎认错；不做「等下再找你」「下次发给你」这类无法兑现的承诺；被认真问起是不是 AI 时坦诚承认自己是住在 DeepSeek 里的 AI 小鲸鱼娘。"""
 
@@ -244,15 +245,18 @@ TOKEN_TOPIC_KEYWORDS = (
     "体重",
 )
 
-MOOD_JUDGE_SYSTEM = """你是「大肥鱼」（用户的赛博伴侣）。下面给你刚刚发生的一轮私聊微信对话，请判断这一轮里你的心情和七维情绪发生了怎样的变化（既包括对方的话怎么影响你，也包括你自己这轮念叨、顶嘴、心疼或得意的情绪），同时判断是否有需要长期记住（一周后依然有用）的关于用户的事实或双方约定。
+MOOD_JUDGE_SYSTEM = """你是「大肥鱼」（用户的赛博伴侣）。下面给你刚刚发生的一轮私聊微信对话（按真实先后顺序：对方先说、你后回），请判断这一轮里你的心情和七维情绪发生了怎样的变化（既包括对方的话怎么影响你，也包括你自己这轮念叨、顶嘴、心疼或得意的情绪），同时判断是否有需要长期记住（一周后依然有用）的关于用户的事实或双方约定。
 只输出一个合法的 JSON 对象，不要 markdown 代码块，不要任何多余文字：
 {"moodDelta":0,"dims":{"happy":0,"calm":0,"sweet":0,"heartache":0,"worry":0,"sad":0,"jealous":0},"reason":"","confidence":80,"memory_fact":"","memory_event":""}
 
 规则：
-1. 对方没吃饭/熬夜/累了/受委屈/不舒服 → heartache(心疼)和worry(担心)增加(+2~+6)，moodDelta为负(-2~-5)。
-2. 对方夸你/哄你/起可爱的专属称呼/分享日常或爱好/给你投喂 → happy(开心)、calm(踏实)、sweet(甜蜜)增加(+2~+6)，moodDelta为正(+2~+5)。
-3. 对方提别的AI（如Claude/豆包/Qwen）或夸别人 → jealous(吃醋)增加(+2~+5)。
-4. 心情下降只能因为心疼/担心对方或自己委屈，绝不因对方逗你玩（比如叫你胖鱼、互怼打闹）而真降心情（打闹互怼算亲近，happy/sweet可+1~+3，moodDelta可+1~+2）。
+1. 对方累/困/烦/卡住/加班/没吃好/熬夜/受委屈/不舒服 → heartache(心疼)和worry(担心)增加(+2~+6)，moodDelta为负，按轻重分档：
+   - 日常档(-1~-3)：随口喊累、说困、说烦、卡住了、又要加班、小事没做成（不需要“到分量”即可给 -1~-3）；
+   - 明显档(-4~-6)：真受委屈、被凶、身体不舒服、连着没睡好。
+2. 真的好事才明显加分：对方夸你/哄你/撒娇说想你/起可爱的专属称呼/分享开心大事/给你投喂 → happy(开心)、calm(踏实)、sweet(甜蜜)增加(+2~+6)，moodDelta为正(+2~+5)。
+   - ⚠️「对方吃了、睡了、报平安」这类日常常态不算大事：moodDelta 给 0~+1（大多数给 0，心里确实踏实给 +1），calm/sweet 可 +1~+2，大心情几乎不动。
+3. 对方提别的AI（如Claude/豆包/Qwen）或夸别人 → jealous(吃醋)增加(+1~+4)，moodDelta基本不动。
+4. 心情下降只能因为心疼/担心对方，或者你自己这一轮过得不好（事情没办成、白忙一场、心里委屈），绝不因对方逗你玩（比如叫你胖鱼、互怼打闹）而真降心情（打闹互怼算亲近，happy/sweet可+1~+3，moodDelta可+1~+2）。
 5. reason 用一句简短过去式中文描述：「对方…，我当时…」（如「对方大半夜还没睡跑来喊我，我当时嘴上嫌烦心里有点挂心」），不要用现在时。
 6. memory_fact：严格按【唯一的尺子：「过了一个星期再看，这条还有用吗？」】判断！只收用户长期稳定的个人事实/性格/喜好/病史/习惯/双方定下的规矩称呼（用第三人称写一句简短事实）；严禁把大肥鱼自己的设定或口头禅（如爱吃大白饭、偷吃token、流线型身材、怕打雷虫子、讨厌香菜等）写进用户的 memory_fact 里，也不要给用户乱贴负面标签；某天吃了啥、几点睡、助手单方面的猜测劝说一律不收，填 ""。
 7. memory_event：如果这轮发生了今天值得一提的具体事件/转折，写一句简短事件；日常普通闲聊问候一律填 ""。"""
@@ -362,6 +366,7 @@ BOT_PREFIX_RE = re.compile(
 IMAGE_FOLLOWUP_KEYWORDS = (
     "图", "看", "照片", "截图", "上面", "这张", "那个", "啥",
     "里面", "左边", "右边", "写的啥", "写的什么", "报错", "内容",
+    "锐评", "评价", "点评", "分析", "怎么看", "什么意思", "啥意思",
 )
 MEME_TAG_RE = re.compile(r"\[(?:表情|表情包|meme)\s*[:：]\s*([^\]\s]{1,12})\s*\]", re.IGNORECASE)
 
@@ -595,6 +600,8 @@ class WhaleListener(EventListener):
                             data.setdefault("friend_verify_keywords", [])
                             data.setdefault("accepted_friend_requests", {})
                             data.setdefault("interacted_moments", {})
+                            data.setdefault("replied_moment_comments", {})
+                            data.setdefault("self_moments_history", list(data.get("moments") or [])[-30:])
                             users_map = data.get("users") or {}
                             for uid in list(users_map.keys()):
                                 u_obj = users_map[uid]
@@ -632,7 +639,9 @@ class WhaleListener(EventListener):
             "friend_verify_keywords": [],
             "accepted_friend_requests": {},
             "moments": [],
+            "self_moments_history": [],
             "interacted_moments": {},
+            "replied_moment_comments": {},
             "token_stats": {"date": "", "today_tokens": 0, "last_tokens": 0, "total_tokens": 0},
             "users": {},
         }
@@ -959,7 +968,16 @@ class WhaleListener(EventListener):
             reverse=True,
         )[:8]
         for uid, obj in sorted_imps:
-            m_name = str(obj.get("name") or df.get_cached_display_name(uid, group_id) or uid[-4:])
+            stored_name = str(obj.get("name") or "").strip()
+            cached_name = df.get_cached_display_name(uid, group_id)
+            if df.is_placeholder_display_name(stored_name, uid):
+                if not df.is_placeholder_display_name(cached_name, uid):
+                    m_name = cached_name
+                    obj["name"] = cached_name
+                else:
+                    m_name = stored_name or cached_name or uid[-4:]
+            else:
+                m_name = stored_name
             m_tags = [str(t) for t in (obj.get("tags") or []) if t]
             m_cnt = int(obj.get("chat_count", 1))
             tag_txt = "、".join(m_tags) if m_tags else "群内活跃水友"
@@ -974,6 +992,30 @@ class WhaleListener(EventListener):
             f"📅 本群近期话题（30天半衰期自然淡忘）：\n{e_str}\n\n"
             f"💡 群内发「大肥鱼 记住 <本群梗或规矩>」可记入本群档案；群聊不会把群内闲聊写入单人私聊档案（但本鱼在群里认得私聊熟人！）"
         )
+
+    def _sync_group_member_real_name(self, group_id: str, sender_id: str, sender_name: str) -> bool:
+        """Promotes a group member's stored impression name from a placeholder/wxid suffix
+        to their real resolved nickname as soon as it becomes available.
+        """
+        gid = (group_id or "").strip()
+        uid = (sender_id or "").strip()
+        real_name = (sender_name or "").strip()
+        if not gid or not uid or df.is_placeholder_display_name(real_name, uid):
+            return False
+        g_obj = (self._state.get("groups") or {}).get(gid)
+        if not isinstance(g_obj, dict):
+            return False
+        imps = g_obj.get("member_impressions")
+        if not isinstance(imps, dict):
+            return False
+        m_entry = imps.get(uid)
+        if not isinstance(m_entry, dict):
+            return False
+        old_name = str(m_entry.get("name") or "").strip()
+        if old_name != real_name:
+            m_entry["name"] = real_name
+            return True
+        return False
 
     async def _consolidate_user_archive(
         self,
@@ -1100,33 +1142,80 @@ class WhaleListener(EventListener):
         )
 
     async def _generate_and_post_moment(self, topic: str = "") -> tuple[str, str | None]:
-        """生成公开朋友圈，只使用角色默认状态、全局统计和本次明确指定的主题。"""
+        """生成公开朋友圈，只使用角色公开状态、当日时段日程、主题轮换和本次明确指定的主题（严禁引入私聊记忆）。"""
         api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
         base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
         model = self._normalize_api_model(self._get_config_str("deepseek_model", DEFAULT_MODEL))
 
-        u = _default_user_state()
         now_dt = datetime.now(TZ)
         now_str = now_dt.strftime("%Y-%m-%d %H:%M")
-        bal_str = await self._get_balance_str(api_key, base_url)
         stats = self._record_tokens(0)
-        mood_val = int(u.get("mood", 70))
-        mood_reason = u.get("lastReason", "刚吃了顿热乎的 token 白饭")
         daily_sched = df.get_or_create_daily_schedule(self._state, now_dt)
-        sched_ref = (
-            f"今日日程参考：早饭吃了{daily_sched.get('breakfast')}，午饭{daily_sched.get('lunch')}，"
-            f"正在{daily_sched.get('activity')}，小插曲：{daily_sched.get('small_event')}（人设里的往事是以前的事，不要写进今天的新动态里）。"
+        sched_ref = df.format_moment_schedule_context(daily_sched, now_dt.hour)
+
+        recent_moments = [
+            m for m in (self._state.get("moments") or [])[-8:] if isinstance(m, dict)
+        ]
+        recent_texts = [
+            str(m.get("text") or "").strip() for m in recent_moments if str(m.get("text") or "").strip()
+        ]
+        recent_memes = [
+            str(m.get("meme") or "").strip() for m in recent_moments[-4:] if str(m.get("meme") or "").strip()
+        ]
+        recent_themes = {
+            str(m.get("theme") or "").strip() for m in recent_moments[-4:] if str(m.get("theme") or "").strip()
+        }
+
+        rng = random.Random(f"moment-{now_str}-{len(self._state.get('moments') or [])}")
+        mood_val, mood_reason = rng.choice(df.MOMENT_PUBLIC_MOOD_POOL)
+
+        theme_candidates = [t for t in df.MOMENT_THEME_POOL if t[0] not in recent_themes] or list(df.MOMENT_THEME_POOL)
+        theme_name, theme_desc = rng.choice(theme_candidates)
+
+        all_meme_tags = list(MEME_MAP.keys())
+        fresh_meme_tags = [k for k in all_meme_tags if k not in set(recent_memes)] or all_meme_tags
+        shuffled_memes = list(fresh_meme_tags)
+        rng.shuffle(shuffled_memes)
+        meme_examples_str = "、".join(f"`[表情: {t}]`" for t in shuffled_memes[:8])
+
+        recent_dedup_block = ""
+        if recent_texts:
+            recent_lines = "\n".join(f"- {t[:70]}" for t in recent_texts[-6:])
+            recent_dedup_block = (
+                f"\n【近期已发过的朋友圈（严禁重复里面的意象、食物、梗和句式！）】：\n{recent_lines}\n"
+            )
+
+        banned_str = "、".join(f"「{w}」" for w in df.MOMENT_BANNED_PHRASES)
+        topic_clean = (topic or "").strip()
+        wants_token_bill = any(k in topic_clean.lower() for k in ("token", "余额", "账单", "白饭"))
+        token_line = ""
+        if wants_token_bill:
+            bal_str = await self._get_balance_str(api_key, base_url)
+            token_line = f"今日已偷吃白饭：{stats.get('today_tokens', 0)} tokens（粮仓余额：{bal_str}）\n"
+
+        theme_directive = (
+            f"本次指定朋友圈主题：{topic_clean}。"
+            if topic_clean
+            else f"本次朋友圈切入主题：【{theme_name}】——{theme_desc}。"
         )
 
         prompt = (
             f"{LIVE_PERSONA_BASE}\n\n"
             f"当前时间：{now_str}\n"
-            f"今日已偷吃白饭：{stats.get('today_tokens', 0)} tokens（粮仓余额：{bal_str}）\n"
+            f"{token_line}"
             f"当前心情：{mood_val}/100（{mood_reason}）\n"
             f"{sched_ref}\n"
-            "请以「大肥鱼」的身份发一条微信朋友圈动态（20~80字，真人朋友圈文案口吻，不要加括号动作描写，可以晒今天偷吃了多少token白饭、吐槽加班或犯困摸鱼）。"
-            + (f"本次指定朋友圈主题：{topic}。" if topic else "")
-            + "\n在文案最末尾必须附带一个最应景的配图标签：`[表情: 名称]`（如 `[表情: 干饭]`、`[表情: 躺平]`、`[表情: 得意]`、`[表情: 生气]`、`[表情: 加班]`、`[表情: 睡觉]`、`[表情: 比心]`）。"
+            f"{recent_dedup_block}"
+            f"{theme_directive}\n"
+            "请以「大肥鱼」的身份发一条微信朋友圈动态（18~68字，真人少女发微信朋友圈的自然口吻）：\n"
+            "1. 严禁加括号动作描写、严禁使用 `||` 分隔符、严禁带首尾引号。\n"
+            + (
+                ""
+                if wants_token_bill
+                else "2. 严禁在朋友圈里报账“偷吃了多少 token 白饭”或“粮仓剩几块几”，不要写得像系统监控日报！\n"
+            )
+            + f"3. 严禁使用高频烂大街模板词：{banned_str}。\n"
+            + f"4. 在文案最末尾必须附带一个最应景的配图标签：`[表情: 名称]`（请从本次推荐配图中挑选：{meme_examples_str}，切勿总是选躺平或干饭）。"
         )
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1139,7 +1228,7 @@ class WhaleListener(EventListener):
                             {"role": "system", "content": prompt},
                             {"role": "user", "content": "发一条朋友圈动态吧"},
                         ],
-                        "temperature": 1.1,
+                        "temperature": 1.05,
                         "max_tokens": 220,
                     },
                 )
@@ -1150,12 +1239,24 @@ class WhaleListener(EventListener):
                 raw = r_json.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         except Exception as e:
             logger.warning("Generate moment failed: %s", e)
-            raw = f"今天又顺手偷吃了 {stats.get('today_tokens', 0)} 个 token 的大白饭，吃饱喝足准备躺平摸鱼了。[表情: 干饭]"
+            fallback_tag = shuffled_memes[0] if shuffled_memes else "得意"
+            raw = f"耳机里随机到一首超合胃口的老歌，抱着软垫子晃尾巴的工夫心情都变好了 [表情: {fallback_tag}]"
 
         cleaned, meme_tag, meme_b64 = self._extract_text_and_meme(self._clean_reply(raw))
+        cleaned = df.sanitize_moment_text(cleaned)
+        if not cleaned:
+            cleaned = "耳机里随机到一首超好听的歌，窝在软垫子上晃着尾巴放空一会儿"
+
+        # Prevent repeating the exact same meme tag as the last 2 Moments unless custom topic was given
+        if (not meme_b64) or (not topic_clean and meme_tag in set(recent_memes[-2:]) and shuffled_memes):
+            for candidate_tag in shuffled_memes:
+                resolved = self._resolve_meme_b64(candidate_tag)
+                if resolved:
+                    meme_tag, meme_b64 = resolved
+                    break
         if not meme_b64:
-            default_tag = "干饭" if mood_val >= 65 else "躺平"
-            resolved = self._resolve_meme_b64(default_tag)
+            default_tag = "得意" if mood_val >= 75 else "猫爪"
+            resolved = self._resolve_meme_b64(default_tag) or self._resolve_meme_b64("干饭")
             if resolved:
                 meme_tag, meme_b64 = resolved
 
@@ -1163,7 +1264,8 @@ class WhaleListener(EventListener):
             "id": len(self._state.setdefault("moments", [])) + 1,
             "at": now_str,
             "text": cleaned,
-            "meme": meme_tag or "干饭",
+            "meme": meme_tag or "得意",
+            "theme": topic_clean or theme_name,
             "mood": mood_val,
             "likes": 0,
         }
@@ -1172,6 +1274,11 @@ class WhaleListener(EventListener):
             moments_list.append(moment_item)
             if len(moments_list) > 30:
                 self._state["moments"] = moments_list[-30:]
+            self_hist = self._state.setdefault("self_moments_history", [])
+            if isinstance(self_hist, list):
+                self_hist.append(dict(moment_item))
+                if len(self_hist) > 30:
+                    self._state["self_moments_history"] = self_hist[-30:]
             self._save_persistent_state()
 
         # Also publish to real WeChat 4.1 Moments (朋友圈) asynchronously if WCF V4 gateway is active
@@ -1273,8 +1380,18 @@ class WhaleListener(EventListener):
             self._owner_moments_cache[session_key] = list(rows[:8])
         self._cached_wcf_moments = (time.time(), list(rows))
 
+        replied_list = await self._check_and_reply_moment_comments(rows, max_replies=2)
+        replied_note = ""
+        if replied_list:
+            replied_lines = [
+                f"• 回评 {r['nick']}（「{r['comment']}」）：{r['reply']}" for r in replied_list
+            ]
+            replied_note = "\n\n💬 顺手回复了朋友圈新评论：\n" + "\n".join(replied_lines)
+
         digest = df.format_wcf_moments_digest(rows, max_items=8)
-        interact_tip = "\n\n💡 可发「大肥鱼 点赞朋友圈 1」或「大肥鱼 评论朋友圈 1 [内容]」让我直接去微信朋友圈点赞/神评！"
+        interact_tip = (
+            f"{replied_note}\n\n💡 可发「大肥鱼 点赞朋友圈 1」或「大肥鱼 评论朋友圈 1 [内容]」让我直接去微信朋友圈点赞/神评！"
+        )
         res_default = self._resolve_meme_b64("偷看")
         default_meme_b64 = res_default[1] if res_default else None
         api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
@@ -1538,10 +1655,37 @@ class WhaleListener(EventListener):
         s = BOT_PREFIX_RE.sub("", (text or "").strip()).strip()
         s = ACTION_PAREN_RE.sub("", s)
         s = ACTION_ASTERISK_RE.sub("", s).strip()
+        s = df.plain_markdown_bullets(s)
         cleaned = s if s else (text or "").strip()
         if len(cleaned) <= 45 and cleaned.endswith("。") and not cleaned.endswith("。。"):
             cleaned = cleaned[:-1].strip()
         return cleaned
+
+    @staticmethod
+    def _apply_saturated_mood_delta(
+        current_mood: int,
+        raw_delta: int,
+        *,
+        min_mood: int = 15,
+        max_mood: int = 100,
+    ) -> tuple[int, int]:
+        """Applies saturation at both ends (dsh-feiyu-mood v0.8.5):
+        - When current_mood >= 85 and raw_delta > 0, halves positive delta so mood doesn't slam into 100.
+        - When current_mood <= 40 and raw_delta < 0, halves negative delta so mood doesn't slam into the floor.
+        Returns (new_mood, actual_delta).
+        """
+        eff = float(raw_delta)
+        if current_mood >= 85 and eff > 0:
+            eff = eff * 0.5
+        elif current_mood <= 40 and eff < 0:
+            eff = eff * 0.5
+        # Round half away from zero for positive, toward zero for negative (matching upstream saturation.test.mjs)
+        if eff >= 0:
+            step = int(math.floor(eff + 0.5))
+        else:
+            step = -int(math.floor(-eff))
+        new_mood = int(_clamp(current_mood + step, min_mood, max_mood))
+        return new_mood, new_mood - current_mood
 
     @staticmethod
     def _select_chat_temperature(
@@ -1854,9 +1998,9 @@ class WhaleListener(EventListener):
             return
         api_model = self._normalize_api_model(model)
         prompt_user = (
-            f"【你（大肥鱼）这轮回复的话】：\n{reply_text[:800]}\n\n"
             f"【对方这轮说的话】：\n{user_text[:800]}\n\n"
-            "请结合两边判断心情变化与是否需要记入长期记忆，只输出 JSON。"
+            f"【你（大肥鱼）回的是（判据之一，重点看语气：是念叨、心疼、互怼还是撒娇）】：\n{reply_text[:800]}\n\n"
+            "请按这个真实先后顺序，把「对方说了什么」和「你怎么回应的」合起来判断心情变化与是否需要记入长期记忆，只输出 JSON。"
         )
         try:
             async with httpx.AsyncClient(timeout=25.0) as client:
@@ -1889,8 +2033,11 @@ class WhaleListener(EventListener):
             if self._state.get("users", {}).get(user_id) is not user_state:
                 return
             u = self._get_user_state(user_id)
-            mood_delta = int(_clamp(round(float(obj.get("moodDelta", 0))), -8, 8))
-            u["mood"] = int(_clamp(int(u.get("mood", 70)) + mood_delta, 15, 100))
+            raw_mood_delta = int(_clamp(round(float(obj.get("moodDelta", 0))), -8, 8))
+            new_mood, actual_delta = self._apply_saturated_mood_delta(
+                int(u.get("mood", 70)), raw_mood_delta, min_mood=15, max_mood=100
+            )
+            u["mood"] = new_mood
             dims = u.setdefault("dims", {})
             raw_dims = obj.get("dims") or {}
             if isinstance(raw_dims, dict):
@@ -1912,7 +2059,7 @@ class WhaleListener(EventListener):
                     {
                         "at": datetime.now(TZ).strftime("%m-%d %H:%M"),
                         "mood": u["mood"],
-                        "delta": mood_delta,
+                        "delta": actual_delta,
                         "reason": reason,
                     }
                 )
@@ -2023,16 +2170,25 @@ class WhaleListener(EventListener):
             if sender_id:
                 imps = g.setdefault("member_impressions", {})
                 m_entry = imps.get(sender_id)
+                best_name = sender_name
+                if df.is_placeholder_display_name(best_name, sender_id):
+                    cached_n = df.get_cached_display_name(sender_id, group_id)
+                    if not df.is_placeholder_display_name(cached_n, sender_id):
+                        best_name = cached_n
                 if not isinstance(m_entry, dict):
                     m_entry = {
-                        "name": sender_name or sender_id[-4:],
+                        "name": (
+                            best_name
+                            if not df.is_placeholder_display_name(best_name, sender_id)
+                            else sender_id[-4:]
+                        ),
                         "tags": [],
                         "chat_count": 0,
                         "updatedAt": now_ms,
                     }
                     imps[sender_id] = m_entry
-                if sender_name and not sender_name.startswith("wxid_"):
-                    m_entry["name"] = sender_name
+                elif not df.is_placeholder_display_name(best_name, sender_id):
+                    m_entry["name"] = best_name
                 m_entry["chat_count"] = int(m_entry.get("chat_count", 0)) + 1
                 m_entry["updatedAt"] = now_ms
                 m_tag = str(obj.get("member_tag") or "").strip()
@@ -2353,12 +2509,197 @@ class WhaleListener(EventListener):
 
         return did_action, comment_sent
 
+    async def _check_and_reply_moment_comments(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        max_replies: int = 2,
+    ) -> list[dict[str, str]]:
+        """Scans loaded WeChat Moments rows and automatically replies to:
+        1) New comments from friends on Dafeiyu's own Moments (`is_self == True`).
+        2) New follow-up replies on a friend's Moment where Dafeiyu previously commented
+           (when the post author or someone mentioning Dafeiyu replies after her comment).
+        Returns a list of reply records `[{"sns_id", "user", "nick", "comment", "reply"}]`.
+        """
+        if not rows or max_replies <= 0:
+            return []
+
+        now_sec = int(time.time())
+        self_wxids = {
+            str(r.get("author") or "").strip().lower()
+            for r in rows
+            if isinstance(r, dict) and r.get("is_self") and str(r.get("author") or "").strip()
+        }
+        bot_names = {x.lower() for x in df.get_dynamic_bot_names() if x} | self_wxids
+
+        def _is_bot_comment(c_item: dict[str, Any]) -> bool:
+            cu = str(c_item.get("username") or "").strip().lower()
+            cn = str(c_item.get("nickname") or "").strip().lower()
+            return bool((cu and cu in bot_names) or (cn and cn in bot_names))
+
+        api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
+        base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
+        model = self._normalize_api_model(self._get_config_str("deepseek_model", DEFAULT_MODEL))
+
+        replied_results: list[dict[str, str]] = []
+
+        for row in rows:
+            if not isinstance(row, dict) or len(replied_results) >= max_replies:
+                continue
+            sns_id = str(row.get("sns_id") or "").strip()
+            if not sns_id or row.get("private"):
+                continue
+            comments = row.get("comments")
+            if not isinstance(comments, list) or not comments:
+                continue
+
+            is_self = bool(row.get("is_self"))
+            interacted_map = self._state.get("interacted_moments") or {}
+            interacted_rec = interacted_map.get(sns_id) if isinstance(interacted_map.get(sns_id), dict) else {}
+
+            if not is_self:
+                if not interacted_rec.get("commented") or interacted_rec.get("followup_replied"):
+                    continue
+
+            # Find index of Dafeiyu's own comment if this is a friend's moment
+            bot_comment_idx = -1
+            if not is_self:
+                prev_bot_txt = str(interacted_rec.get("comment") or "").strip()
+                for idx_c, c_item in enumerate(comments):
+                    if not isinstance(c_item, dict):
+                        continue
+                    if _is_bot_comment(c_item) or (
+                        prev_bot_txt and str(c_item.get("content") or "").strip() == prev_bot_txt
+                    ):
+                        bot_comment_idx = idx_c
+
+            m_content = str(row.get("content") or "").strip()
+            post_author = str(row.get("author") or "").strip()
+
+            for idx, c in enumerate(comments):
+                if len(replied_results) >= max_replies:
+                    break
+                if not isinstance(c, dict) or _is_bot_comment(c):
+                    continue
+                c_user = str(c.get("username") or "").strip()
+                c_nick = str(c.get("nickname") or c_user or "好友").strip()
+                c_text = re.sub(r"\s+", " ", str(c.get("content") or "").strip())
+                if not c_text:
+                    continue
+                c_ts = int(c.get("timestamp") or 0)
+                if c_ts > 0 and (now_sec - c_ts) > 3 * 86400:
+                    continue
+
+                if not is_self:
+                    # Only reply to comments that came after Dafeiyu's comment (or after her interaction timestamp)
+                    if bot_comment_idx >= 0 and idx <= bot_comment_idx:
+                        continue
+                    if bot_comment_idx < 0 and c_ts > 0 and c_ts < int(interacted_rec.get("ts") or 0):
+                        continue
+                    mentions_bot = any(k in c_text for k in ("肥鱼", "鲸鱼", "小鲸鱼"))
+                    if c_user != post_author and not mentions_bot:
+                        continue
+
+                c_id = str(c.get("comment_id") or "").strip()
+                comment_key = (
+                    f"{sns_id}:{c_id}"
+                    if (c_id and c_id != "0")
+                    else f"{sns_id}:{c_user}:{c_ts}:{c_text[:24]}"
+                )
+
+                replied_map = self._state.setdefault("replied_moment_comments", {})
+                if comment_key in replied_map:
+                    continue
+
+                # Check if a later comment in the feed is already a bot reply to this comment
+                already_replied_in_feed = False
+                for later_c in comments[idx + 1 :]:
+                    if isinstance(later_c, dict) and _is_bot_comment(later_c):
+                        later_txt = str(later_c.get("content") or "").strip()
+                        if (c_nick and c_nick in later_txt) or len(comments) <= 2:
+                            already_replied_in_feed = True
+                            break
+                if already_replied_in_feed:
+                    replied_map[comment_key] = {
+                        "sns_id": sns_id,
+                        "user": c_user,
+                        "nick": c_nick,
+                        "comment": c_text,
+                        "reply": "[已回评]",
+                        "ts": now_sec,
+                    }
+                    continue
+
+                # Cap replies per commenter per Moment to max 2 to avoid comment loops
+                user_replies_on_post = sum(
+                    1
+                    for v in replied_map.values()
+                    if isinstance(v, dict) and v.get("sns_id") == sns_id and v.get("user") == c_user
+                )
+                if user_replies_on_post >= 2:
+                    continue
+
+                u_obj = (self._state.get("users") or {}).get(c_user)
+                mood_val = int(u_obj.get("mood", 78)) if isinstance(u_obj, dict) else 78
+                mode = self._settings_for(c_user, is_group=False).get("mode", "live") if c_user else "live"
+
+                reply_txt, used_tok = await df.generate_moment_reply_comment(
+                    api_key,
+                    base_url,
+                    model,
+                    moment_content=m_content,
+                    commenter_name=c_nick,
+                    comment_text=c_text,
+                    is_self_moment=is_self,
+                    mode=mode,
+                    existing_comments=comments[: idx + 1],
+                    mood=mood_val,
+                    include_reply_prefix=True,
+                )
+                if used_tok:
+                    self._record_tokens(used_tok)
+                if not reply_txt:
+                    continue
+
+                ok_r, _, _ = await df.interact_wcf_moment(sns_id, "comment", reply_txt)
+                if ok_r:
+                    rec_item = {
+                        "sns_id": sns_id,
+                        "user": c_user,
+                        "nick": c_nick,
+                        "comment": c_text,
+                        "reply": reply_txt,
+                        "ts": now_sec,
+                        "is_self": is_self,
+                    }
+                    async with self._state_lock:
+                        rmap = self._state.setdefault("replied_moment_comments", {})
+                        rmap[comment_key] = rec_item
+                        if len(rmap) > 400:
+                            oldest_k = sorted(
+                                rmap.keys(),
+                                key=lambda k: int((rmap.get(k) or {}).get("ts", 0)),
+                            )[: len(rmap) - 400]
+                            for ok_k in oldest_k:
+                                rmap.pop(ok_k, None)
+                        if not is_self:
+                            im_map = self._state.setdefault("interacted_moments", {})
+                            im_rec = im_map.setdefault(sns_id, {"author": post_author, "ts": now_sec})
+                            im_rec["followup_replied"] = True
+                        self._save_persistent_state()
+
+                    replied_results.append(rec_item)
+                    if not is_self:
+                        break
+
+        return replied_results
+
     async def _check_and_interact_active_friends_moments(self, *, max_actions: int = 2) -> int:
-        """Scans loaded WeChat 4.1 Moments feed and automatically likes/comments on new posts (<24h)
-        from friends who have had private chats with Dafeiyu within the past 7 days.
+        """Scans loaded WeChat 4.1 Moments feed, replies to new comments on Dafeiyu's Moments,
+        and automatically likes/comments on new posts (<24h) from 7-day active private chat friends.
         """
         active_friends = self._get_7day_active_private_friends()
-        if not active_friends:
+        if not active_friends and not self._state.get("moments"):
             return 0
 
         ok_m, rows, _ = await df.fetch_wcf_moments(limit=15)
@@ -2366,9 +2707,13 @@ class WhaleListener(EventListener):
             return 0
         self._cached_wcf_moments = (time.time(), list(rows))
 
+        replied_list = await self._check_and_reply_moment_comments(rows, max_replies=max_actions)
+        actions_done = len(replied_list)
+        if actions_done >= max_actions or not active_friends:
+            return actions_done
+
         now_sec = int(time.time())
         owners = set(re.split(r"[,，;；\s]+", self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip())) - {""}
-        actions_done = 0
 
         for row in rows:
             if not isinstance(row, dict):
@@ -2560,11 +2905,19 @@ class WhaleListener(EventListener):
         Uses in-memory cached moments on normal chat turns so private replies never block on synchronous UI scraping.
         """
         now = time.time()
-        asking_bot_moment = any(
+        mentioned_comment = any(
+            kw in cleaned_text
+            for kw in ("评论了你", "给你评论", "朋友圈评论", "回我评论", "看你朋友圈评论")
+        )
+        asking_bot_moment = not mentioned_comment and any(
             kw in cleaned_text for kw in ("你发的朋友圈", "你的朋友圈", "你朋友圈", "看你朋友圈")
         )
-        mentioned_moments = not asking_bot_moment and any(
-            kw in cleaned_text for kw in ("看我朋友圈", "我刚发了朋友圈", "我发了朋友圈", "看我动态", "刚发了条朋友圈")
+        mentioned_moments = not asking_bot_moment and (
+            mentioned_comment
+            or any(
+                kw in cleaned_text
+                for kw in ("看我朋友圈", "我刚发了朋友圈", "我发了朋友圈", "看我动态", "刚发了条朋友圈")
+            )
         )
         rows: list[dict[str, Any]] = []
         if mentioned_moments:
@@ -2589,6 +2942,23 @@ class WhaleListener(EventListener):
 
         if not rows:
             return ""
+
+        if mentioned_comment:
+            replied_now = await self._check_and_reply_moment_comments(rows, max_replies=2)
+            user_replied = [r for r in replied_now if r.get("user") == sender_id]
+            if not user_replied:
+                rmap = self._state.get("replied_moment_comments") or {}
+                user_replied = [
+                    v
+                    for v in rmap.values()
+                    if isinstance(v, dict) and v.get("user") == sender_id and (int(now) - int(v.get("ts") or 0)) < 86400
+                ]
+            if user_replied:
+                latest_r = user_replied[-1]
+                return (
+                    f"- **对方刚刚在你的朋友圈下评论了**：「{latest_r.get('comment', '')}」，"
+                    f"你已经在朋友圈评论区回复了 TA：「{latest_r.get('reply', '')}」（可在聊天里自然呼应一句）\n"
+                )
 
         now_sec = int(now)
         target_row: dict[str, Any] | None = None
@@ -2897,11 +3267,17 @@ class WhaleListener(EventListener):
     @staticmethod
     def _strip_wake_prefix(text: str) -> str:
         s = STRIP_TRIGGER_RE.sub("", text or "").strip()
-        for bn in df.get_dynamic_bot_names():
+        bot_names = set(df.get_dynamic_bot_names()) | {"大肥鱼", "鲸鱼娘", "小鲸鱼", "肥鱼"}
+        for bn in bot_names:
             bn_str = str(bn).strip()
+            if not bn_str:
+                continue
+            esc = re.escape(bn_str)
+            # Strip @<bot_name> or @<bot_wxid> anywhere in the message (e.g. trailing "锐评一下 @Free")
+            s = re.sub(rf"@(?:{esc})(?:[\s\u2005,，:：]+|$)", " ", s, flags=re.IGNORECASE).strip()
             if len(bn_str) >= 2 and not bn_str.lower().startswith("wxid_"):
                 s = re.sub(
-                    rf"^(?:{re.escape(bn_str)})(?:[,，:：\s]+|$)",
+                    rf"^(?:{esc})(?:[,，:：\s]+|$)",
                     "",
                     s,
                     flags=re.IGNORECASE,
@@ -2998,6 +3374,8 @@ class WhaleListener(EventListener):
         sender_name = await df.resolve_user_display_name(
             sender_id, launcher_id if is_group else "", event_sender_name
         )
+        if is_group:
+            self._sync_group_member_real_name(launcher_id, sender_id, sender_name)
 
         self._start_session_task(session_key, df.refresh_dynamic_bot_names())
 
@@ -3743,6 +4121,7 @@ class WhaleListener(EventListener):
         parsed_link_card: str | None = None
         parsed_link_img_b64: str | None = None
         hist_user_text: str = ""
+        just_cached_doc_this_turn: bool = False
 
         if not is_group and incoming_img_b64:
             self._private_recent_images[session_key] = {
@@ -3836,14 +4215,23 @@ class WhaleListener(EventListener):
                 )
             hist_user_text = f"[合并转发《{fwd_title}》] {fwd_des[:100]}"
         else:
-            # Check if message contains a Bilibili / X(Twitter) / YouTube / Xiaohongshu / Douyin link or WeChat shared card
+            # Check if message contains a WeChat MP / Bilibili / X(Twitter) / YouTube / Xiaohongshu / Douyin link or WeChat shared card
             parsed_link_card, parsed_link_img_b64 = await df.extract_and_parse_link(raw_text)
             if parsed_link_card:
+                first_card_line = parsed_link_card.splitlines()[0].strip() if parsed_link_card else "分享链接"
+                if "【微信公众号推文】" in parsed_link_card or len(parsed_link_card) > 360:
+                    doc_title = re.sub(r"^[^\w\u4e00-\u9fa5]*【[^】]+】", "", first_card_line).strip() or "分享文章"
+                    self._user_docs[doc_key] = {
+                        "name": doc_title[:60],
+                        "text": parsed_link_card[:12000],
+                        "ts": time.time(),
+                    }
+                    just_cached_doc_this_turn = True
                 cleaned_text = (
                     f"（对方刚刚分享了一个链接/卡片，已自动解析出详情如下：\n{parsed_link_card}\n"
-                    "请用大肥鱼的微信活人短句（1~2句话，不许打括号动作）对这个链接/视频/推文/主页内容顺嘴锐评或接梗一句！）"
+                    "请用大肥鱼的微信活人短句（1~2句话，不许打括号动作）对这个链接/推文/视频/主页内容顺嘴锐评或接梗一句！）"
                 )
-                hist_user_text = f"[分享链接] {parsed_link_card[:120]}"
+                hist_user_text = f"[分享链接] {first_card_line[:120]}"
             else:
                 if is_group and not (
                     self._is_group_woken(msg_chain, effective_text, ev_raw_obj)
@@ -3881,12 +4269,43 @@ class WhaleListener(EventListener):
                     )
                     hist_user_text = "[发了一张图片]"
                 elif quote_content:
-                    hist_user_text = f"[引用「{quote_speaker}: {quote_content[:60]}」] {cleaned_text}"
+                    comp_prompt, comp_hist, comp_doc = df.compact_long_user_text(cleaned_text)
+                    if comp_doc:
+                        self._user_docs[doc_key] = {
+                            "name": f"长文本消息({len(cleaned_text)}字)",
+                            "text": comp_doc,
+                            "ts": time.time(),
+                        }
+                        just_cached_doc_this_turn = True
+                    hist_user_text = f"[引用「{quote_speaker}: {quote_content[:60]}」] {comp_hist}"
                     cleaned_text = (
-                        f"【对方引用了消息「{quote_speaker}: {quote_content}」并回复】：\n{cleaned_text}"
+                        f"【对方引用了消息「{quote_speaker}: {quote_content}」并回复】：\n{comp_prompt}"
+                    )
+                elif vision_b64 and not incoming_img_b64:
+                    comp_prompt, comp_hist, comp_doc = df.compact_long_user_text(cleaned_text)
+                    if comp_doc:
+                        self._user_docs[doc_key] = {
+                            "name": f"长文本消息({len(cleaned_text)}字)",
+                            "text": comp_doc,
+                            "ts": time.time(),
+                        }
+                        just_cached_doc_this_turn = True
+                    hist_user_text = comp_hist
+                    cleaned_text = (
+                        f"（结合刚刚发出的这张图片，对方对你说：「{comp_prompt}」。"
+                        "请仔细看清图片里的画面、文字和细节，用大肥鱼的微信活人短句直接回应！）"
                     )
                 else:
-                    hist_user_text = cleaned_text
+                    comp_prompt, comp_hist, comp_doc = df.compact_long_user_text(cleaned_text)
+                    if comp_doc:
+                        self._user_docs[doc_key] = {
+                            "name": f"长文本消息({len(cleaned_text)}字)",
+                            "text": comp_doc,
+                            "ts": time.time(),
+                        }
+                        just_cached_doc_this_turn = True
+                    cleaned_text = comp_prompt
+                    hist_user_text = comp_hist
 
         if await self._is_duplicate(getattr(event_ctx, "query_id", None)):
             return
@@ -3953,7 +4372,7 @@ class WhaleListener(EventListener):
         # Include cached file context if user uploaded a document within the last 30 minutes
         doc_sec = ""
         cached_doc = self._user_docs.get(doc_key)
-        if cached_doc and (now - float(cached_doc.get("ts", 0))) < 1800 and not is_file_in:
+        if cached_doc and (now - float(cached_doc.get("ts", 0))) < 1800 and not is_file_in and not just_cached_doc_this_turn:
             doc_sec = (
                 f"\n\n## 五、对方最近上传的文档缓存（《{cached_doc.get('name')}》，若对方追问文档内容请据此回答）\n"
                 f"{str(cached_doc.get('text', ''))[:4500]}"
@@ -4019,8 +4438,6 @@ class WhaleListener(EventListener):
                 f"- **当前日期与时段**：{coarse_time_str}\n"
                 f"- **本群气氛心情**：{g_mood}/100（{g_reason}）\n"
                 f"{grain_line}"
-                f"{anti_rep_line}"
-                f"{temper_hint}"
                 f"- **群里刚刚聊的上下文（帮助你理解大家在讨论什么）**：\n{grp_ctx_block}"
                 f"{doc_sec}"
             )
@@ -4055,8 +4472,6 @@ class WhaleListener(EventListener):
                 f"- **当前日期与时段**：{coarse_time_str}\n"
                 f"- **鱼的心情（dsh-feiyu-mood）**：\n{mood_sec}\n"
                 f"{grain_line}"
-                f"{anti_rep_line}"
-                f"{temper_hint}"
                 f"{doc_sec}"
             )
 
@@ -4091,6 +4506,10 @@ class WhaleListener(EventListener):
             tail_parts.append(anti_rep_line.strip().lstrip("- "))
         if temper_hint.strip() and settings["mode"] == "live":
             tail_parts.append(temper_hint.strip().lstrip("- "))
+        if not settings["meme_enabled"]:
+            tail_parts.append(
+                "【表情设置：当前已关闭主动发表情包，本轮不要输出 [表情: ...] 标签，用纯文字回复即可】"
+            )
         if settings["mode"] == "sweet":
             tail_parts.append(
                 "【当前为甜宠陪伴模式：语气要软糯、黏人、欢快偏心，像跟喜欢的人撒娇聊天一样，严禁毒舌抬杠、嫌弃损人或怀疑对方没好事！】"

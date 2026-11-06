@@ -803,6 +803,355 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         await self.ask("@Free 闭嘴", group=True, room="room-A", sender="wxid_member1")
         self.assertGreater(self.listener._group_mute_until.get("bot-A:group:room-A", 0.0), time.time())
 
+    def test_strip_wake_prefix_removes_trailing_and_inline_bot_mentions(self):
+        self._patch(df, "get_dynamic_bot_names", return_value=("大肥鱼", "鲸鱼娘", "小鲸鱼", "free"))
+        self.assertEqual(
+            self.listener._strip_wake_prefix("锐评一下 @Free"),
+            "锐评一下",
+        )
+        self.assertEqual(
+            self.listener._strip_wake_prefix("@Free 锐评一下这张图"),
+            "锐评一下这张图",
+        )
+        self.assertIn("锐评", wl.IMAGE_FOLLOWUP_KEYWORDS)
+
+    def test_xiaohongshu_state_json_and_ef4_video_stream(self):
+        body = (
+            "<script>window.__INITIAL_STATE__={"
+            '"global":{"x":undefined},'
+            '"AiNoteDetailStore":{"noteDetailMap":new Map([])},'
+            '"tags":new Set(["a"]),'
+            '"empty":new Map(),'
+            '"note":{"noteDetailMap":{"abc123":{"note":{'
+            '"title":"undefined 也能写 new Map(1)",'
+            '"desc":"引号\\"和)不算"'
+            "}}}}}</script>"
+        )
+        state = df.parse_xiaohongshu_state(body)
+        self.assertIsNotNone(state)
+        note = df.extract_xiaohongshu_note_from_state(state, "abc123")
+        self.assertIsNotNone(note)
+        self.assertEqual(note["title"], "undefined 也能写 new Map(1)")
+        self.assertEqual(note["desc"], '引号"和)不算')
+        self.assertEqual(state["tags"], ["a"])
+
+        vid_note = {
+            "video": {
+                "media": {
+                    "stream": {
+                        "EF4": [
+                            {
+                                "masterUrl": "https://sns-video.example/a.mp4",
+                                "backupUrls": ["https://sns-video.example/b.mp4"],
+                            }
+                        ],
+                        "EF5": [],
+                    }
+                }
+            }
+        }
+        self.assertEqual(
+            df.xiaohongshu_video_candidate_urls(vid_note),
+            ["https://sns-video.example/a.mp4", "https://sns-video.example/b.mp4"],
+        )
+
+    def test_normalize_qq_music_cookie_maps_musicid_and_musickey(self):
+        norm, uin = df.normalize_qq_music_cookie("musicid=o010001; musickey=Q_H_L_12345; refresh_key=rk-1")
+        self.assertEqual(uin, "10001")
+        self.assertIn("uin=10001", norm)
+        self.assertIn("qqmusic_key=Q_H_L_12345", norm)
+        self.assertIn("qm_keyst=Q_H_L_12345", norm)
+
+    def test_plain_markdown_bullets_numbers_items_without_double_numbering_ordinals(self):
+        raw = "要点：\n- 甲\n  补充说明\n  - 子项\n- 乙\n\n另一组：\n* 丙\n- 第 2 步启动"
+        want = "要点：\n1. 甲\n  补充说明\n  - 子项\n2. 乙\n\n另一组：\n1. 丙\n第 2 步启动"
+        self.assertEqual(df.plain_markdown_bullets(raw), want)
+        self.assertEqual(self.listener._clean_reply(raw), want)
+
+    async def test_mood_saturation_and_chronological_judge_order(self):
+        # 1) Normal range (60): +6 -> 66
+        self.assertEqual(self.listener._apply_saturated_mood_delta(60, 6), (66, 6))
+        # 2) Upper saturation (>=85): positive halved (88 + 3*0.5 -> 90), negative full (88 - 3 -> 85)
+        self.assertEqual(self.listener._apply_saturated_mood_delta(88, 3), (90, 2))
+        self.assertEqual(self.listener._apply_saturated_mood_delta(88, -3), (85, -3))
+        # 3) Lower saturation (<=40): negative halved (35 - 3*0.5 -> 34), positive full (35 + 3 -> 38)
+        self.assertEqual(self.listener._apply_saturated_mood_delta(35, -3), (34, -1))
+        self.assertEqual(self.listener._apply_saturated_mood_delta(35, 3), (38, 3))
+
+        # 4) Verify _async_post_turn_judge sends user_text BEFORE reply_text
+        u_state = self.listener._get_user_state("wxid_judge_order")
+        u_state["mood"] = 88
+        u_state["dims"] = {"happy": 0}
+        self.model_reply = json.dumps(
+            {
+                "moodDelta": 3,
+                "dims": {"happy": 6},
+                "reason": "对方夸我聪明，我心里美滋滋",
+                "confidence": 85,
+                "memory_fact": "",
+                "memory_event": "",
+            }
+        )
+        await wl.WhaleListener._async_post_turn_judge(
+            self.listener,
+            api_key="sk-test",
+            base_url="https://api.deepseek.com",
+            model="deepseek-chat",
+            user_id="wxid_judge_order",
+            user_text="USER-FIRST-MESSAGE",
+            reply_text="BOT-SECOND-REPLY",
+            expected_state=u_state,
+        )
+        judge_prompt = self.prompt()
+        self.assertLess(judge_prompt.index("USER-FIRST-MESSAGE"), judge_prompt.index("BOT-SECOND-REPLY"))
+        self.assertEqual(u_state["mood"], 90)
+        self.assertEqual(u_state["dims"]["happy"], 6)
+        self.assertEqual(u_state["timeline"][-1]["delta"], 2)
+
+    async def test_moments_generation_dedup_sanitization_and_7day_schedule(self):
+        # 1) 7-day rolling schedule deduplication
+        state_sched = {}
+        seen_lunches = set()
+        for day in range(1, 8):
+            dt = datetime(2026, 11, day, 12, 0, tzinfo=wl.TZ)
+            sc = df.get_or_create_daily_schedule(state_sched, dt)
+            seen_lunches.add(sc["lunch"])
+        self.assertEqual(len(seen_lunches), 7)
+
+        # 2) Recent Moments deduplication, no default token bill, `||` & cliche sanitization, meme dedup
+        self.listener._state["moments"] = [
+            {"id": 1, "at": "2026-11-03 20:00", "text": "旧动态一：草莓牛奶真好喝", "meme": "躺平", "theme": "美食与嘴馋时刻"},
+            {"id": 2, "at": "2026-11-04 12:00", "text": "旧动态二：困得直点头", "meme": "干饭", "theme": "今日份元气小确幸"},
+        ]
+        # Model tries to output `||`, `谁懂啊`, and a repeated meme `[表情: 干饭]`
+        self.model_reply = "刚拆开一包跳跳糖 || 噼里啪啦在嘴里炸开 谁懂啊 [表情: 干饭]"
+        card_txt, _ = await self.listener._generate_and_post_moment()
+        gen_prompt = self.prompt()
+        self.assertIn("旧动态一：草莓牛奶真好喝", gen_prompt)
+        self.assertIn("严禁在朋友圈里报账", gen_prompt)
+        self.assertNotIn("tokens（粮仓余额", gen_prompt)
+
+        latest_m = self.listener._state["moments"][-1]
+        self.assertNotIn("||", latest_m["text"])
+        self.assertNotIn("谁懂啊", latest_m["text"])
+        self.assertIn("跳跳糖", latest_m["text"])
+        # Because `干饭` and `躺平` were in the last 2 moments, meme tag must be rotated away
+        self.assertNotIn(latest_m["meme"], ("干饭", "躺平"))
+        self.assertEqual(self.listener._state["self_moments_history"][-1]["text"], latest_m["text"])
+        self.assertIn(latest_m["text"], card_txt)
+
+    async def test_auto_reply_to_comments_on_self_and_friend_moments(self):
+        now_sec = int(time.time())
+        self.listener._state["moments"] = [{"id": 1, "text": "今天天气超好"}]
+        self.listener._state["interacted_moments"] = {
+            "26000000000000002": {
+                "author": "wxid_friend_b",
+                "liked": True,
+                "commented": True,
+                "comment": "这火锅看着太香了吧",
+                "ts": now_sec - 600,
+            }
+        }
+        feed_rows = [
+            {
+                "sns_id": "26000000000000001",
+                "author": "wxid_bot_self",
+                "nickname": "大肥鱼",
+                "is_self": True,
+                "private": False,
+                "timestamp": now_sec - 1200,
+                "content": "耳机里随机到一首超好听的歌",
+                "comments": [
+                    {
+                        "username": "wxid_friend_a",
+                        "nickname": "阿泽",
+                        "content": "求歌名！我最近也在找歌听",
+                        "timestamp": now_sec - 300,
+                        "comment_id": "9001",
+                    }
+                ],
+            },
+            {
+                "sns_id": "26000000000000002",
+                "author": "wxid_friend_b",
+                "nickname": "小美",
+                "is_self": False,
+                "private": False,
+                "timestamp": now_sec - 900,
+                "content": "今晚吃牛油火锅！",
+                "comments": [
+                    {
+                        "username": "wxid_bot_self",
+                        "nickname": "大肥鱼",
+                        "content": "这火锅看着太香了吧",
+                        "timestamp": now_sec - 600,
+                        "comment_id": "9002",
+                    },
+                    {
+                        "username": "wxid_friend_b",
+                        "nickname": "小美",
+                        "content": "哈哈下次带你一起吃呀肥鱼",
+                        "timestamp": now_sec - 200,
+                        "comment_id": "9003",
+                    },
+                ],
+            },
+        ]
+        self._patch(df, "fetch_wcf_moments", AsyncMock(return_value=(True, feed_rows, "")))
+        mock_interact = self._patch(
+            df, "interact_wcf_moment", AsyncMock(return_value=(True, "completed", "ok"))
+        )
+        self.model_reply = "必须安排上 我连筷子都准备好了"
+
+        actions = await self.listener._check_and_interact_active_friends_moments(max_actions=3)
+        self.assertEqual(actions, 2)
+        self.assertEqual(len(mock_interact.await_args_list), 2)
+        first_call = mock_interact.await_args_list[0].args
+        second_call = mock_interact.await_args_list[1].args
+        self.assertEqual(first_call[0], "26000000000000001")
+        self.assertEqual(first_call[1], "comment")
+        self.assertTrue(first_call[2].startswith("回复 阿泽："))
+        self.assertEqual(second_call[0], "26000000000000002")
+        self.assertEqual(second_call[1], "comment")
+        self.assertTrue(second_call[2].startswith("回复 小美："))
+
+        # Second scan must not duplicate replies
+        mock_interact.reset_mock()
+        actions_again = await self.listener._check_and_interact_active_friends_moments(max_actions=3)
+        self.assertEqual(actions_again, 0)
+        mock_interact.assert_not_awaited()
+
+    async def test_wechat_mp_article_parse_and_doc_cache(self):
+        sample_html = """
+        <html>
+          <head>
+            <meta property="og:title" content="DeepSeek V4.1 深度测评：多模态与长文本全面突破" />
+            <meta property="og:description" content="本文实测最新 Flash 模型延迟与准确度。" />
+          </head>
+          <body>
+            <a id="js_name">AI前沿观察</a>
+            <div id="js_content">
+              <p>第一段：今天实测了 DeepSeek-V4.1-Flash 的多模态识图能力。</p>
+              <p style="display: none">这段是隐藏的反爬干扰文字，绝不能提取出来</p>
+              <script>console.log("noise");</script>
+              <p>第二段：结合 V7 桥接后，最高可接收 256KB 的超长文本消息。</p>
+            </div>
+          </body>
+        </html>
+        """
+        parsed = df.parse_wechat_mp_html(sample_html, "https://mp.weixin.qq.com/s?__biz=MzA1&mid=100&idx=1&sn=abcd")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["title"], "DeepSeek V4.1 深度测评：多模态与长文本全面突破")
+        self.assertEqual(parsed["author"], "AI前沿观察")
+        self.assertIn("第一段：今天实测了", parsed["content"])
+        self.assertIn("第二段：结合 V7 桥接后", parsed["content"])
+        self.assertNotIn("隐藏的反爬干扰文字", parsed["content"])
+        self.assertNotIn("console.log", parsed["content"])
+
+        async def _fake_get_public(client, url, **kwargs):
+            return httpx.Response(200, text=sample_html, request=httpx.Request("GET", url))
+
+        self._patch(df, "_get_public_url", AsyncMock(side_effect=_fake_get_public))
+        xml_card = (
+            "<msg><appmsg><type>5</type>"
+            "<title>DeepSeek V4.1 深度测评</title>"
+            "<des>简短摘要</des>"
+            "<url>https://mp.weixin.qq.com/s?__biz=MzA1&amp;mid=100&amp;idx=1&amp;sn=abcd</url>"
+            "</appmsg></msg>"
+        )
+        await self.ask(xml_card, group=False, room="u_mp", sender="u_mp")
+        doc_Entries = [v for k, v in self.listener._user_docs.items() if k[2] == "u_mp"]
+        self.assertEqual(len(doc_Entries), 1)
+        self.assertIn("第二段：结合 V7 桥接后", doc_Entries[0]["text"])
+        all_hists = [h for k, h in self.listener._histories.items() if "u_mp" in k]
+        self.assertTrue(all_hists)
+        self.assertTrue(any("[分享链接]" in c and "第二段" not in c for _, r, c in all_hists[0] if r == "user"))
+
+    async def test_v7_long_text_compaction_and_token_protection(self):
+        from collections import deque
+
+        long_msg = "【开头关键信息】" + ("这是一段超长的技术日志与代码分析内容。" * 320) + "【结尾核心结论】"
+        self.assertGreater(len(long_msg), 5500)
+
+        prompt_txt, hist_txt, doc_txt = df.compact_long_user_text(long_msg)
+        self.assertIsNotNone(doc_txt)
+        self.assertIn("【开头关键信息】", prompt_txt)
+        self.assertIn("【结尾核心结论】", prompt_txt)
+        self.assertIn("完整内容已存入当前会话文档缓存", prompt_txt)
+        self.assertLess(len(hist_txt), 320)
+        self.assertIn("已存入文档缓存", hist_txt)
+
+        await self.ask(long_msg, group=False, room="u_long", sender="u_long")
+        doc_Entries = [v for k, v in self.listener._user_docs.items() if k[2] == "u_long"]
+        self.assertEqual(len(doc_Entries), 1)
+        self.assertEqual(len(doc_Entries[0]["text"]), len(long_msg))
+        all_hists = [h for k, h in self.listener._histories.items() if "u_long" in k]
+        self.assertTrue(all_hists)
+        user_hist_entries = [c for _, r, c in all_hists[0] if r == "user"]
+        self.assertEqual(len(user_hist_entries), 1)
+        self.assertLess(len(user_hist_entries[0]), 320)
+
+        # Group context buffer should summarize long V7 text instead of dropping it
+        grp_buf: dict[str, deque] = {}
+        line = df.append_group_context_line(grp_buf, "g1@chatroom", "u1", long_msg, sender_name="阿泽")
+        self.assertIn("...(长文共", line)
+        self.assertEqual(len(grp_buf["g1@chatroom"]), 1)
+
+    def test_binary_and_oversized_file_filtering(self):
+        # 1. Known binary archive extension (.zip) must be rejected immediately
+        zip_b64 = base64.b64encode(b"PK\x03\x04\x14\x00\x00\x00\x08\x00binary_payload").decode("ascii")
+        fname, ftext = df.parse_wechat_file_xml(
+            f'<msg><appmsg file_b64="{zip_b64}"><type>6</type><title>archive.zip</title></appmsg></msg>'
+        )
+        self.assertEqual(fname, "archive.zip")
+        self.assertEqual(ftext, "")
+
+        # 2. Unknown extension with binary null bytes must NOT fall through to latin1 garbage
+        bin_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\xff\xfe\xfd").decode("ascii")
+        fname2, ftext2 = df.parse_wechat_file_xml(
+            f'<msg><appmsg file_b64="{bin_b64}"><type>6</type><title>unknown.dat</title></appmsg></msg>'
+        )
+        self.assertEqual(fname2, "unknown.dat")
+        self.assertEqual(ftext2, "")
+
+        # 3. Oversized file (> 35 MiB declared size) must be skipped safely
+        txt_b64 = base64.b64encode("正常文本内容".encode("utf-8")).decode("ascii")
+        fname3, ftext3 = df.parse_wechat_file_xml(
+            f'<msg><appmsg file_b64="{txt_b64}" file_size="{40 * 1024 * 1024}"><type>6</type><title>huge.log</title></appmsg></msg>'
+        )
+        self.assertEqual(fname3, "huge.log")
+        self.assertEqual(ftext3, "")
+
+        # 4. Valid UTF-8 text/log file within limit extracts cleanly
+        fname4, ftext4 = df.parse_wechat_file_xml(
+            f'<msg><appmsg file_b64="{txt_b64}" file_size="18"><type>6</type><title>notes.txt</title></appmsg></msg>'
+        )
+        self.assertEqual(fname4, "notes.txt")
+        self.assertEqual(ftext4, "正常文本内容")
+
+    def test_non_friend_group_member_nickname_auto_promotion(self):
+        uid = "wxid_nonfriend_9988"
+        gid = "888888@chatroom"
+        self.assertTrue(df.is_placeholder_display_name("这位群友", uid))
+        self.assertTrue(df.is_placeholder_display_name("这位群友(9988)", uid))
+        self.assertTrue(df.is_placeholder_display_name("9988", uid))
+        self.assertTrue(df.is_placeholder_display_name(uid, uid))
+        self.assertFalse(df.is_placeholder_display_name("林深见鹿", uid))
+
+        g_state = self.listener._get_group_state(gid)
+        g_state["member_impressions"] = {
+            uid: {"name": "这位群友", "tags": ["潜水党"], "chat_count": 3, "updatedAt": 1000}
+        }
+        promoted = self.listener._sync_group_member_real_name(gid, uid, "林深见鹿")
+        self.assertTrue(promoted)
+        self.assertEqual(g_state["member_impressions"][uid]["name"], "林深见鹿")
+
+        # Placeholder must never overwrite an existing real nickname
+        not_promoted = self.listener._sync_group_member_real_name(gid, uid, "这位群友")
+        self.assertFalse(not_promoted)
+        self.assertEqual(g_state["member_impressions"][uid]["name"], "林深见鹿")
+
 
 if __name__ == "__main__":
     unittest.main()
