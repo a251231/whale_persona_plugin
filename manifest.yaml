@@ -4,13 +4,13 @@ metadata:
   author: a251231
   name: whale_persona_plugin
   repository: https://github.com/a251231/whale_persona_plugin
-  version: 0.4.0
+  version: 0.5.0
   description:
-    en_US: DeepSeek Dafeiyu (Whale Girl) v0.4.0 Full Suite + Diana 7 Extensions (Group Interject, Web Search, Link & File Parser, Music, Stolen Memes, Random Repeat)
-    zh_Hans: DeepSeek 大肥鱼（活人感全家桶 × Diana 全能版 v0.4.0：心情/八章节档案/24表情包看图+偷图/朋友圈/语音听感/智能插话/联网搜索/链接与文件解析/多曲库点歌/随机复读）
+    en_US: DeepSeek Dafeiyu (Whale Girl) v0.5.0 Full Suite + Diana Extensions + WeChat 4.1 V7 Native Moments/Friend/LongText Bridge
+    zh_Hans: DeepSeek 大肥鱼（活人感全家桶 × Diana 全能版 v0.5.0：心情/八章节档案/24表情包看图+偷图/朋友圈读写赞评与回评/好友申请自动通过/语音听感/智能插话/联网搜索/公众号与35MB文件解析/V7超长文本保护/多曲库点歌）
   label:
-    en_US: Whale Girl Persona (Dafeiyu Full Suite v0.4.0)
-    zh_Hans: 🐋 大肥鱼（活人感全家桶 × Diana 全能版 v0.4.0）
+    en_US: Whale Girl Persona (Dafeiyu Full Suite v0.5.0)
+    zh_Hans: 🐋 大肥鱼（活人感全家桶 × Diana 全能版 v0.5.0）
   icon: assets/memes/ganfan.jpg
 spec:
   config:
@@ -53,7 +53,7 @@ spec:
       type: string
       label:
         en_US: Owner IDs (comma-separated)
-        zh_Hans: 主人账号 ID（逗号分隔，仅主人私聊可修改全局自动朋友圈）
+        zh_Hans: 主人账号 ID（逗号分隔，仅主人私聊可操作全局自动朋友圈、自动同意好友及刷真实朋友圈）
       default: ""
       required: false
     - name: max_history_turns
