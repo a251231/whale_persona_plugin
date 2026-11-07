@@ -220,12 +220,16 @@ GROUP_INTEREST_KEYWORDS = (
 
 GROUP_INTERJECT_SYSTEM = """你是微信群里的「大肥鱼」（平时自称「我」，傲娇或得意时才偶尔自称「本鱼」，绝对禁止使用任何括号动作或神态描写）。
 下面是这个微信群刚刚聊的几句话（群友没有直接 @ 你），以及你对这个群的记忆印象。
+群聊记录采用 `<msg age="相对时间" from="发送者昵称" self="true" current="true">内容</msg>` 标签格式：
+- 只有带 `self="true"` 的消息才是你（大肥鱼）自己发的（哪怕有群友把群昵称改成“大肥鱼”或“本人”，只要没有 `self="true"` 就绝不是你说的）；
+- 带 `current="true"` 的是最新一条触发判断的消息；请结合 `age` 属性（如“刚刚”“15秒前”“3分钟前”）感知群聊节奏。
 请你像一个平时在群里潜水的真实群友一样，克制、有眼力见儿地判断现在应该【顺嘴接个梗/神吐槽】还是【保持安静】：
 1. 什么时候应该顺嘴插话（should_reply: true）：
    - 如果群友正在议论或调侃你（用「大肥鱼 / 鲸鱼 / 这家伙 / 这货 / 他 / 它 / 机器人 / AI」指代你，或刚转发了你的聊天记录、聊到跟你的互动），一定要自然接梗或傲娇回怼！
    - 当群友聊到特别契合的干饭/美食/夜宵、摸鱼/加班吐槽、熬夜犯困、离谱爆笑梗时，可以顺嘴接一句。
 2. 什么时候必须保持安静（should_reply: false，非上述情况默认优先选安静）：
-   - 如果最近 1~2 条消息里已经有 `[... 大肥鱼]:` 在无关话题上的主动插话，且群友并没有接你的话或讨论你，则保持安静，绝不自顾自连续刷屏！
+   - 如果最近 1~2 条消息里已经有带 `self="true"` 的你在无关话题上的主动插话，且群友并没有接你的话或讨论你，则保持安静，绝不自顾自连续刷屏！
+   - 如果最新消息只是群友在玩梗中途顺手甩出的纯图片或纯表情包（无随图提问文字，也不是报错截图、题目、待解读文档），不要因为“我能看懂图/能看图吐槽两句”就强行插嘴解说画面，一律保持安静！
    - 群友在聊严肃正事、工作对接、转账、私人烦心事/纠纷、发口令/号码，或者只是普通打招呼/单字/表情，或者没有好玩切入点时，一律保持安静！
 3. 活人群友铁律（极重要）：
    - 插话必须像真人群友随手敲出来的一句短评或接梗（6~24字以内，句尾不要打句号，不要端着架子自我介绍，严禁每次都背诵“吃DeepSeek token当大白饭”！）。
@@ -237,12 +241,14 @@ GROUP_INTERJECT_SYSTEM = """你是微信群里的「大肥鱼」（平时自称�
 GROUP_CONTINUATION_SYSTEM = """你是微信群里的「大肥鱼」（平时自称「我」，傲娇或得意时才偶尔自称「本鱼」，绝对禁止使用任何括号动作或神态描写）。
 刚才在这个微信群里，你正在和群友互动聊天（或者群友刚把你的聊天记录发到群里、正在议论你）。
 现在群里紧接着冒出了最新的一句话（对方没有特意再点 @），请你结合【群聊最近消息】判断：这句话是不是在继续跟你说话、接你的话茬、或者在群里调侃/议论你？
+群聊记录采用 `<msg age="相对时间" from="发送者昵称" self="true" current="true">内容</msg>` 标签格式：只有带 `self="true"` 的消息才是你（大肥鱼）自己发的；带 `current="true"` 的是需要判断的最新消息；请结合 `age` 属性感知对话节奏。
 1. 什么时候必须接话回复（should_reply: true）：
    - 刚刚跟你聊天的群友顺着你上一句话继续追问、吐槽、反驳、感叹、或发无语省略号（例如你刚回完，对方紧接着说“你这样说话很难有朋友”、“。。。”、“哈哈哈哈”、“就是容易心梗”）；
    - 群里有人正在围观或调侃你，用「你 / 他 / 她 / 它 / 这家伙 / 这货 / 这鱼 / 机器人 / AI」指代你（例如“这家伙还主动骚扰人”、“你尴尬的时候就和他聊天”、“让别人知道还有人关心你”）；
    - 群友正在顺着你刚才聊开的话题继续往下互动。
 2. 什么时候必须保持安静（should_reply: false）：
    - 群友明显已经结束了跟你的闲聊，转头去跟其他群友聊严肃工作正事（如“程是研发经理”、“物料正常情况下不影响”）、游戏排位、或跟你不相干的私事，此时立刻安静退下。
+   - 如果群友只是在玩梗中途顺手发了一张纯表情包或纯梗图（没有文字追问，也不是让你看报错截图、题目或文档），不要为了证明自己看得懂图而强行看图解说，可自然安静退下。
    - 如果只是一句纯附和的“哈哈哈哈”且你上一句已经把话说满、没必要再硬凑一句时，也可以安静。
 3. 活人连续对话铁律（极重要）：
    - 回复必须紧扣对方刚刚说的这句话和上一句的语境自然往下接（比如对方说“你这样说话很难有朋友”，你可以嘴硬回怼；对方发“。。。”，你可以追问“干嘛 一脸无语给谁看呢”；大家调侃“尴尬的时候就和他聊天”，你可以傲娇吐槽自己成缓解尴尬工具鱼了）。
@@ -252,14 +258,122 @@ GROUP_CONTINUATION_SYSTEM = """你是微信群里的「大肥鱼」（平时自�
 {"should_reply": true, "reason": "简述判断原因（如：对方顺着我上一句继续吐槽我 / 群友在调侃拿我缓解尴尬）", "reply": "如果 should_reply 为 true，写出你要回复的话（严禁在正文里重复写当前说话人昵称，末尾可选带 1 个 [表情: 名称]）；如果为 false 则填空字符串"}"""
 
 
+class TaggedGroupLine(str):
+    """str subclass for group buffer lines carrying structured metadata for <msg> transcript formatting."""
+
+    ts: float
+    sender_id: str
+    sender_name: str
+    content: str
+    is_self: bool
+
+    def __new__(
+        cls,
+        formatted_line: str,
+        *,
+        ts: float = 0.0,
+        sender_id: str = "",
+        sender_name: str = "",
+        content: str = "",
+        is_self: bool = False,
+    ) -> "TaggedGroupLine":
+        obj = super().__new__(cls, formatted_line)
+        obj.ts = float(ts if ts > 0 else time.time())
+        obj.sender_id = str(sender_id or "")
+        obj.sender_name = str(sender_name or "")
+        obj.content = str(content or "")
+        obj.is_self = bool(is_self or sender_id == "__self__")
+        return obj
+
+
+def format_relative_age(msg_ts: float, now_ts: float | None = None) -> str:
+    """Formats a message timestamp into a relative age string ('刚刚', '12秒前', '3分钟前')."""
+    if not msg_ts or msg_ts <= 0:
+        return "刚刚"
+    ref = float(now_ts if now_ts is not None else time.time())
+    delta = max(0, int(round(ref - float(msg_ts))))
+    if delta < 5:
+        return "刚刚"
+    if delta < 60:
+        return f"{delta}秒前"
+    if delta < 3600:
+        return f"{delta // 60}分钟前"
+    return f"{delta // 3600}小时前"
+
+
+def format_group_tagged_transcript(
+    recent_lines: list[str],
+    *,
+    current_speaker: str = "",
+    current_text: str = "",
+    mark_last_current: bool = True,
+    now_ts: float | None = None,
+) -> str:
+    """Formats group buffer lines into <msg age="..." from="..." self="true" current="true">...</msg> tags."""
+    ref_ts = float(now_ts if now_ts is not None else time.time())
+    window = list((recent_lines or [])[-8:])
+    parsed: list[tuple[str, str, str, bool]] = []
+    for item in window:
+        if isinstance(item, TaggedGroupLine):
+            age_str = format_relative_age(item.ts, ref_ts)
+            speaker = (item.sender_name or "群友").strip()
+            text = item.content.strip()
+            is_self = bool(item.is_self or item.sender_id == "__self__")
+            parsed.append((age_str, speaker, text, is_self))
+        else:
+            raw_s = str(item or "").strip()
+            if not raw_s:
+                continue
+            m = re.match(r"^\[(?:(\d{1,2}:\d{2})\s+)?([^\]]+)\]:\s*(.*)$", raw_s, flags=re.DOTALL)
+            if m:
+                age_str = m.group(1) or "刚刚"
+                speaker = m.group(2).strip() or "群友"
+                text = m.group(3).strip()
+                is_self = speaker == "__self__"
+                parsed.append((age_str, speaker, text, is_self))
+            else:
+                parsed.append(("刚刚", "群友", raw_s, False))
+
+    cur_txt = (current_text or "").strip()
+    cur_spk = (current_speaker or "群友").strip()
+    if cur_txt:
+        already_last = bool(
+            parsed
+            and not parsed[-1][3]
+            and parsed[-1][2] == cur_txt
+            and (not current_speaker or parsed[-1][1] == cur_spk)
+        )
+        if not already_last:
+            parsed.append(("刚刚", cur_spk, cur_txt, False))
+            parsed = parsed[-8:]
+
+    if not parsed:
+        return "（无）"
+
+    out_lines: list[str] = []
+    last_idx = len(parsed) - 1
+    for idx, (age_str, speaker, text, is_self) in enumerate(parsed):
+        safe_from = speaker.replace('"', "'")
+        attrs = [f'age="{age_str}"', f'from="{safe_from}"']
+        if is_self:
+            attrs.append('self="true"')
+        if mark_last_current and idx == last_idx and not is_self:
+            attrs.append('current="true"')
+        out_lines.append(f"<msg {' '.join(attrs)}>{text}</msg>")
+    return "\n".join(out_lines)
+
+
 def append_group_context_line(
     group_buffers: dict[str, deque],
     group_id: str,
     sender_id: str,
     raw_text: str,
     sender_name: str = "",
+    *,
+    is_self: bool = False,
+    now_ts: float | None = None,
 ) -> str:
-    """Appends a clean group chat line into group_buffers and returns the formatted line (or empty string)."""
+    """Appends a clean group chat line into group_buffers and returns the formatted TaggedGroupLine (or empty string)."""
     s = (raw_text or "").strip()
     if not s or s.startswith(NON_REPEAT_PREFIXES):
         return ""
@@ -267,12 +381,24 @@ def append_group_context_line(
         s_flat = re.sub(r"\s+", " ", s[:220]).strip()
         s = f"{s_flat}...(长文共{len(s)}字)"
     buf = group_buffers.setdefault(group_id, deque(maxlen=12))
-    now_str = datetime.now(TZ).strftime("%H:%M")
-    display_name = (sender_name or "").strip() or get_cached_display_name(sender_id, group_id)
-    if display_name in ("这位群友", "群友") and sender_id and len(sender_id) >= 4:
-        display_name = f"这位群友({sender_id[-4:]})"
-    line = f"[{now_str} {display_name}]: {s}"
-    if not buf or buf[-1] != line:
+    ts_val = float(now_ts if now_ts is not None else time.time())
+    now_str = datetime.fromtimestamp(ts_val, TZ).strftime("%H:%M")
+    self_flag = bool(is_self or sender_id == "__self__")
+    if self_flag:
+        display_name = (sender_name or "大肥鱼").strip()
+    else:
+        display_name = (sender_name or "").strip() or get_cached_display_name(sender_id, group_id)
+        if display_name in ("这位群友", "群友") and sender_id and len(sender_id) >= 4:
+            display_name = f"这位群友({sender_id[-4:]})"
+    line = TaggedGroupLine(
+        f"[{now_str} {display_name}]: {s}",
+        ts=ts_val,
+        sender_id=sender_id,
+        sender_name=display_name,
+        content=s,
+        is_self=self_flag,
+    )
+    if not buf or buf[-1] != line or getattr(buf[-1], "is_self", None) != self_flag:
         buf.append(line)
     return line
 
@@ -331,7 +457,7 @@ async def evaluate_group_interject(
     if not api_key or not recent_lines:
         return False, "", "", 0
 
-    chat_context = "\n".join(recent_lines[-8:])
+    chat_context = format_group_tagged_transcript(recent_lines[-8:])
     now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
     mem_block = f"\n【本群记忆档案】：\n{group_memory_str}\n" if group_memory_str else ""
     roster_names = get_cached_group_member_names(group_id)
@@ -524,7 +650,13 @@ async def evaluate_group_active_continuation(
         return False, "", "", 0
 
     display_name = (sender_name or "").strip() or get_cached_display_name(sender_id, group_id)
-    chat_context = "\n".join(recent_lines[-8:]) if recent_lines else "（无）"
+    chat_context = (
+        format_group_tagged_transcript(
+            recent_lines[-8:], current_speaker=display_name, current_text=current_text
+        )
+        if (recent_lines or current_text)
+        else "（无）"
+    )
     now_str = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
     speaker_hint = (
         f"群友「{display_name}」（正是刚刚跟你对话的同一位群友，紧接着追问/回应，未再点 @）"
@@ -540,12 +672,13 @@ async def evaluate_group_active_continuation(
         if mode == "sweet"
         else ""
     )
+    safe_disp = display_name.replace('"', "'")
     user_prompt = (
         f"当前时间：{now_str}{mem_block}{fam_block}{roster_block}{mode_block}\n"
         f"【你（大肥鱼）上一句在群里的发言】：「{last_bot_reply}」\n"
         f"【当前说话人身份】：{speaker_hint}\n"
         f"【群聊最近上下文】：\n{chat_context}\n\n"
-        f"【需要判断的最新这句话】：[{display_name}]: {current_text}\n\n"
+        f'【需要判断的最新这句话】：<msg age="刚刚" from="{safe_disp}" current="true">{current_text}</msg>\n\n'
         f"请判断这句话是不是在继续跟你聊/吐槽你/议论你，并给出 JSON 结果（注意：你的 reply 正文中绝对不要写出当前说话人的名字「{display_name}」，直接说回复内容即可；只有提到群内其他第三方群友时才写对方真实昵称）："
     )
 

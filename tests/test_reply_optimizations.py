@@ -1152,6 +1152,103 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         self.assertFalse(not_promoted)
         self.assertEqual(g_state["member_impressions"][uid]["name"], "林深见鹿")
 
+    def test_group_tagged_transcript_self_current_age_and_spoof_protection(self):
+        from collections import deque
+
+        bufs: dict[str, deque] = {}
+        gid = "room-tag-test"
+        base_ts = 1762500000.0
+
+        # 1. Genuine bot message (is_self=True) -> gets self="true"
+        df.append_group_context_line(
+            bufs, gid, "__self__", "今晚吃烤鱼", sender_name="大肥鱼", is_self=True, now_ts=base_ts - 120
+        )
+        # 2. Group member spoofing nickname "大肥鱼" or "本人" (is_self=False) -> MUST NOT get self="true"
+        df.append_group_context_line(
+            bufs, gid, "wxid_spoof_1", "我也叫大肥鱼哈哈", sender_name="大肥鱼", is_self=False, now_ts=base_ts - 18
+        )
+        df.append_group_context_line(
+            bufs, gid, "wxid_spoof_2", "今天谁请客", sender_name="本人", is_self=False, now_ts=base_ts - 2
+        )
+
+        transcript = df.format_group_tagged_transcript(list(bufs[gid]), now_ts=base_ts)
+        lines = transcript.splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertIn('age="2分钟前"', lines[0])
+        self.assertIn('from="大肥鱼"', lines[0])
+        self.assertIn('self="true"', lines[0])
+        self.assertNotIn('current="true"', lines[0])
+
+        self.assertIn('age="18秒前"', lines[1])
+        self.assertIn('from="大肥鱼"', lines[1])
+        self.assertNotIn('self="true"', lines[1])
+        self.assertNotIn('current="true"', lines[1])
+
+        self.assertIn('age="刚刚"', lines[2])
+        self.assertIn('from="本人"', lines[2])
+        self.assertNotIn('self="true"', lines[2])
+        self.assertIn('current="true"', lines[2])
+
+        # 3. Pure image / sticker anti-unprompted-commentary rules in group judge system prompts
+        self.assertIn("纯图片或纯表情包", df.GROUP_INTERJECT_SYSTEM)
+        self.assertIn('self="true"', df.GROUP_INTERJECT_SYSTEM)
+        self.assertIn("纯表情包或纯梗图", df.GROUP_CONTINUATION_SYSTEM)
+        self.assertIn('self="true"', df.GROUP_CONTINUATION_SYSTEM)
+
+    async def test_group_system_prompt_prefix_cache_stability_across_speakers(self):
+        self.listener._state["users"]["wxid_alice"] = {
+            "hasPrivateChat": True,
+            "nickname": "阿狸",
+        }
+        name_map = {"wxid_alice": "阿狸", "wxid_bob": "大熊"}
+        self._patch(
+            df,
+            "resolve_user_display_name",
+            AsyncMock(side_effect=lambda uid, *args, **kwargs: name_map.get(uid, "群友")),
+        )
+
+        await self.ask("大肥鱼 今晚吃啥", group=True, room="room-A", sender="wxid_alice")
+        payload_alice = self.payload()
+        sys_alice = payload_alice["messages"][0]["content"]
+        user_alice = payload_alice["messages"][-1]["content"]
+
+        await self.ask("大肥鱼 我也想问", group=True, room="room-A", sender="wxid_bob")
+        payload_bob = self.payload()
+        sys_bob = payload_bob["messages"][0]["content"]
+        user_bob = payload_bob["messages"][-1]["content"]
+
+        # System prompt (messages[0]) must remain 100% identical across different speakers in the same group
+        self.assertEqual(sys_alice, sys_bob)
+        # Per-speaker rules and familiarity must be in the tail of the user message (messages[-1])
+        self.assertIn("阿狸", user_alice)
+        self.assertIn("曾与你私聊过", user_alice)
+        self.assertIn("大熊", user_bob)
+        self.assertIn("未与你私聊过", user_bob)
+
+    def test_cross_group_card_recognition_by_wxid_and_owner_recognition(self):
+        self.listener._state["users"]["wxid_friend_x"] = {
+            "hasPrivateChat": True,
+            "nickname": "星河",
+            "facts": ["PRIVATE-SECRET-DO-NOT-LEAK"],
+        }
+        fam_txt = self.listener._recall_readonly_private_familiarity(
+            "wxid_friend_x", sender_name="研发部-老张", group_id="room-A"
+        )
+        self.assertIn("星河", fam_txt)
+        self.assertIn("研发部-老张", fam_txt)
+        self.assertIn("同一位熟人", fam_txt)
+        self.assertNotIn("PRIVATE-SECRET-DO-NOT-LEAK", fam_txt)
+
+        prior_cfg = self.listener._get_config_str
+        self.listener._get_config_str = lambda key, default: (
+            "wxid_boss" if key == "owner_ids" else prior_cfg(key, default)
+        )
+        boss_txt = self.listener._recall_readonly_private_familiarity(
+            "wxid_boss", sender_name="低调群友", group_id="room-A"
+        )
+        self.assertIn("主人", boss_txt)
+        self.assertIn("低调群友", boss_txt)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -920,10 +920,19 @@ class WhaleListener(EventListener):
             lines.append(f"- [本群近期话题] {prefix}{e_txt}")
         return "\n".join(lines) if lines else "- （本群刚开启群聊档案，在大家水群聊天中自然熟悉本群氛围即可）"
 
+    def _is_configured_owner(self, sender_id: str) -> bool:
+        if not sender_id:
+            return False
+        owner_ids_raw = self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip()
+        if not owner_ids_raw:
+            return False
+        owners = set(re.split(r"[,，;；\s]+", owner_ids_raw)) - {""}
+        return sender_id in owners
+
     def _recall_readonly_private_familiarity(
         self, sender_id: str, sender_name: str = "", group_id: str = ""
     ) -> str:
-        """群内只识别是否私聊过；不读取个人事实、档案或心情。"""
+        """群内只按微信号识别是否私聊过/是否主人及跨群名片差异；不读取个人事实、档案或心情。"""
         name_label = (sender_name or "").strip() or df.get_cached_display_name(sender_id, group_id)
         grp_imp_line = ""
         if group_id:
@@ -937,20 +946,35 @@ class WhaleListener(EventListener):
                 elif cnt >= 2:
                     grp_imp_line = f"你在本群跟TA已经聊过 {cnt} 次，算是群里的熟面孔。"
 
+        is_owner = self._is_configured_owner(sender_id)
         users = self._state.get("users") or {}
         u = users.get(sender_id)
-        if not isinstance(u, dict) or not u.get("hasPrivateChat", False):
+        has_priv = isinstance(u, dict) and bool(u.get("hasPrivateChat", False))
+        if not has_priv and not is_owner:
             extra_imp = f" {grp_imp_line}" if grp_imp_line else "（未与你私聊过，按本群公共氛围自然接话即可）"
             return (
                 f"- **当前说话群友识别（按微信号精准识别）**：群友「{name_label}」{extra_imp}\n"
                 f"  *（注意：正文中切勿再次重复写出当前说话人的名字「{name_label}」，直接说回复内容即可）*"
             )
 
+        priv_nick = str((u or {}).get("nickname") or "").strip() if isinstance(u, dict) else ""
+        alias_note = ""
+        if (
+            priv_nick
+            and priv_nick != name_label
+            and not df.is_placeholder_display_name(priv_nick, sender_id)
+        ):
+            alias_note = (
+                f"（已按微信号 {sender_id} 精准认出TA就是私聊里的「{priv_nick}」，"
+                f"在本群使用了不同的群名片「{name_label}」，是同一位熟人；群内互动时请按本群公开名片自然互动，不要拆穿或泄露私聊隐私）"
+            )
+        owner_note = "（已按微信号认出是你的主人）" if is_owner else ""
+        fam_core = "曾与你私聊过" if has_priv else "是你的熟人"
         grp_note = f"\n  本群互动印象：{grp_imp_line}" if grp_imp_line else ""
         return (
-            f"- **当前说话群友识别**：群友「{name_label}」曾与你私聊过，可自然表现出认识TA。"
+            f"- **当前说话群友识别（按微信号精准识别）**：群友「{name_label}」{fam_core}{owner_note}{alias_note}，可自然表现出认识TA。"
             f"{grp_note}\n"
-            "  *（只按本群公开上下文接话，不推测或提及私聊内容。）*"
+            f"  *（注意：正文中切勿再次重复写出当前说话人的名字「{name_label}」；只按本群公开上下文接话，不推测或提及私聊内容。）*"
         )
 
     def _format_group_archive_card(self, group_id: str, g: dict[str, Any]) -> str:
@@ -3583,8 +3607,15 @@ class WhaleListener(EventListener):
                             hist.append((now_ts, "user", f"[{sender_name}] {effective_text}"))
                             hist.append((now_ts, "assistant", joined_log))
                             self._histories[session_key] = hist[-24:]
-                            buf = self._group_msg_buffers.setdefault(session_key, deque(maxlen=12))
-                            buf.append(f"[{datetime.now(TZ).strftime('%H:%M')} 大肥鱼]: {joined_log}")
+                            df.append_group_context_line(
+                                self._group_msg_buffers,
+                                session_key,
+                                "__self__",
+                                joined_log,
+                                sender_name="大肥鱼",
+                                is_self=True,
+                                now_ts=now_ts,
+                            )
                             self._record_group_bot_activity(session_key, sender_id, joined_log)
                             self._start_session_task(session_key,
                                 self._async_post_group_turn_judge(
@@ -3711,8 +3742,15 @@ class WhaleListener(EventListener):
                                 hist.append((now_ts, "user", f"[{sender_name}] {effective_text}"))
                                 hist.append((now_ts, "assistant", joined_log))
                                 self._histories[session_key] = hist[-24:]
-                                buf = self._group_msg_buffers.setdefault(session_key, deque(maxlen=12))
-                                buf.append(f"[{datetime.now(TZ).strftime('%H:%M')} 大肥鱼]: {joined_log}")
+                                df.append_group_context_line(
+                                    self._group_msg_buffers,
+                                    session_key,
+                                    "__self__",
+                                    joined_log,
+                                    sender_name="大肥鱼",
+                                    is_self=True,
+                                    now_ts=now_ts,
+                                )
                                 self._group_interject_meta[session_key] = {"last_judge_ts": now_ts, "unjudged_count": 0}
                                 self._record_bot_sent(joined_log, session_key)
                                 first_img = send_interj_meme if len(bubbles) == 1 else None
@@ -4398,6 +4436,7 @@ class WhaleListener(EventListener):
         base_persona = LIVE_PERSONA_BASE if settings["mode"] == "live" else SWEET_PERSONA_BASE
         self_moments_line = self._build_self_moments_section()
 
+        group_turn_tail_parts: list[str] = []
         if is_group:
             # Group Chat: Use Group Archive (groups[launcher_id]) + Read-Only Private Familiarity + Recent Group Chat Flow
             g_state = self._get_group_state(launcher_id)
@@ -4418,27 +4457,31 @@ class WhaleListener(EventListener):
             name_rule_line = (
                 f"- **群聊称呼铁律（极重要）**：当前正在跟你说话的群友叫「{sender_name}」。"
                 f"在你的回复正文中【绝对禁止再次写出当前说话人的名字「{sender_name}」】（否则名字会重复出现），直接说你要回的话即可！"
-                "只有当你在话里需要提到群内【其他第三方群友】时，才直接写那位群友的真实群昵称/微信昵称（严禁使用微信号 wxid_xxx 或后四位如 aq22、oh22、nl22）！\n"
+                "只有当你在话里需要提到群内【其他第三方群友】时，才直接写那位群友的真实群昵称/微信昵称（严禁使用微信号 wxid_xxx 或后四位如 aq22、oh22、nl22）！"
             )
             recent_grp_lines = list(self._group_msg_buffers.get(session_key, []))[-8:]
             grp_ctx_block = (
-                "\n".join(recent_grp_lines)
+                df.format_group_tagged_transcript(recent_grp_lines, mark_last_current=False)
                 if recent_grp_lines
                 else "（暂无前序群聊记录）"
+            )
+            group_turn_tail_parts.extend(
+                [
+                    name_rule_line,
+                    familiar_sec.strip(),
+                    f"- **群里刚刚聊的上下文（帮助你理解大家在讨论什么）**：\n{grp_ctx_block}",
+                ]
             )
             dynamic_system_prompt = (
                 f"{base_persona}\n\n"
                 f"## 四、当前群聊实时感知（你在微信群「{launcher_id[:10]}」中跟群友互动）\n"
                 f"{roster_line}"
-                f"{name_rule_line}"
                 f"- **本群专属群聊档案（群梗与近期话题）**：\n{g_mem_sec}\n"
-                f"{familiar_sec}\n"
                 f"{self_moments_line}"
                 f"{schedule_line}"
                 f"- **当前日期与时段**：{coarse_time_str}\n"
                 f"- **本群气氛心情**：{g_mood}/100（{g_reason}）\n"
                 f"{grain_line}"
-                f"- **群里刚刚聊的上下文（帮助你理解大家在讨论什么）**：\n{grp_ctx_block}"
                 f"{doc_sec}"
             )
         else:
@@ -4497,7 +4540,7 @@ class WhaleListener(EventListener):
                 "请用自然口语化的 1 句短话（10~45字）回答，不要包含符号、链接、代码块或括号！）"
             )
 
-        tail_parts: list[str] = []
+        tail_parts: list[str] = list(group_turn_tail_parts)
         if time_gap_notice:
             tail_parts.append(time_gap_notice)
         if unfetched_notice:
@@ -4734,8 +4777,15 @@ class WhaleListener(EventListener):
         )
 
         if is_group:
-            buf = self._group_msg_buffers.setdefault(session_key, deque(maxlen=12))
-            buf.append(f"[{datetime.now(TZ).strftime('%H:%M')} 大肥鱼]: {reply_flat[:100]}")
+            df.append_group_context_line(
+                self._group_msg_buffers,
+                session_key,
+                "__self__",
+                reply_flat[:100],
+                sender_name="大肥鱼",
+                is_self=True,
+                now_ts=now,
+            )
             self._record_group_bot_activity(session_key, sender_id, reply_flat)
             self._start_session_task(session_key,
                 self._async_post_group_turn_judge(
