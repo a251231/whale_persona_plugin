@@ -1249,6 +1249,132 @@ class ReplyOptimizationsTests(harness.ListenerHarness):
         self.assertIn("主人", boss_txt)
         self.assertIn("低调群友", boss_txt)
 
+        # When another group member speaks, Dafeiyu should still know who her owner is by public nickname
+        self.listener._state["users"]["wxid_boss"] = {
+            "hasPrivateChat": True,
+            "nickname": "阿鲸舰长",
+            "facts": ["BOSS-PRIVATE-SECRET"],
+        }
+        other_txt = self.listener._recall_readonly_private_familiarity(
+            "wxid_other_member", sender_name="路人甲", group_id="room-A"
+        )
+        self.assertIn("群内主人识别", other_txt)
+        self.assertIn("阿鲸舰长", other_txt)
+        self.assertNotIn("wxid_boss", other_txt)
+        self.assertNotIn("BOSS-PRIVATE-SECRET", other_txt)
+
+    def test_memory_recall_2gram_no_single_char_noise_and_quote_stripping(self):
+        # 1. Single-character stop words or isolated 1-char overlaps in multi-char queries must score 0.0
+        self.assertEqual(
+            df.compute_memory_query_overlap("我今天在公司加班了", "对方昨天在家里睡了一整天"),
+            0.0,
+        )
+        self.assertEqual(
+            df.compute_memory_query_overlap("今天去打篮球了", "对方上周打破了一个玻璃杯"),
+            0.0,
+        )
+        # 2. Multi-char 2-gram or English token hits must score > 0.0
+        self.assertGreater(
+            df.compute_memory_query_overlap("今晚又想吃螺蛳粉了", "对方超爱吃加辣螺蛳粉"),
+            0.0,
+        )
+        # 3. Quote wrapper speaker/text must be stripped so it doesn't falsely trigger recall
+        quoted_query = "【对方引用了消息「火锅: 我昨晚去吃海底捞火鍋了」并回复】：\n今天天气真不错呀"
+        self.assertEqual(
+            df.compute_memory_query_overlap(quoted_query, "对方最喜欢吃海底捞番茄锅底"),
+            0.0,
+        )
+        # 4. _recall_memories keeps core name/address facts and ranks 2-gram event hits above noise
+        now_ms = time.time() * 1000.0
+        u_state = {
+            "facts": [
+                "对方喜欢周末去钓鱼",
+                "对方习惯熬夜写Rust",
+                "对方不喜欢喝冰美式",
+                "对方养了一只布偶猫",
+                "对方经常逛数码论坛",
+                "对方喜欢听后摇音乐",
+                "对方希望大肥鱼叫他阿哲",
+            ],
+            "events": [
+                {"date": "2026-11-01", "ts": now_ms - 8 * 86400000, "text": "对方今天去医院复查了慢性胃炎"},
+                {"date": "2026-11-08", "ts": now_ms - 3 * 86400000, "text": "对方在商场买了一件黑色冲锋衣"},
+                {"date": "2026-11-09", "ts": now_ms - 2 * 86400000, "text": "对方跟朋友去看了电影"},
+                {"date": "2026-11-10", "ts": now_ms - 1 * 86400000, "text": "对方修好了家里的路由器"},
+                {"date": "2026-11-11", "ts": now_ms, "text": "对方中午吃了牛肉拉面"},
+            ],
+            "archive": {},
+        }
+        recalled = self.listener._recall_memories(u_state, "我胃炎好像又有点犯了")
+        self.assertIn("叫他阿哲", recalled)
+        self.assertIn("复查了慢性胃炎", recalled)
+
+    async def test_group_interject_preempted_when_direct_wake_arrives_concurrently(self):
+        gid = "room-preempt"
+        self.listener._state["enabled_groups"] = [gid]
+        self.listener._state["group_interject_enabled"] = True
+        session_key = f"bot-A:group:{gid}"
+        self.listener._group_interject_meta[session_key] = {
+            "last_judge_ts": 0.0,
+            "unjudged_count": 10,
+        }
+
+        async def _slow_interject(**kwargs):
+            # Simulate a direct @ wake message arriving in the same group while interject LLM call is in flight
+            s_key = f"{kwargs['bot_uuid']}:group:{kwargs['group_id']}"
+            self.listener._group_direct_wake_seq[s_key] = (
+                self.listener._group_direct_wake_seq.get(s_key, 0) + 1
+            )
+            kwargs["state"].setdefault("interject_logs", []).append(
+                {
+                    "at": "11-11 10:00:00",
+                    "bot_uuid": kwargs["bot_uuid"],
+                    "group_id": kwargs["group_id"],
+                    "sender": "群友A",
+                    "text": "今晚吃啥好呢",
+                    "interjected": True,
+                    "reply": "吃烤鱼呗",
+                    "reason": "聊到美食",
+                }
+            )
+            return True, "吃烤鱼呗", "聊到美食", 42
+
+        self._patch(df, "evaluate_group_interject", AsyncMock(side_effect=_slow_interject))
+        mock_no_at = self._patch(self.listener, "_reply_group_no_at", AsyncMock())
+
+        ctx = await self.ask("今晚吃啥好呢", group=True, room=gid, sender="wxid_user_a")
+        # Because a direct wake arrived during evaluation, the interject reply must be aborted!
+        self.assertIsNone(ctx.event.reply_message_chain)
+        mock_no_at.assert_not_awaited()
+        last_log = self.listener._state["interject_logs"][-1]
+        self.assertFalse(last_log["interjected"])
+        self.assertIn("放弃重复插话", last_log["reason"])
+
+    def test_extract_cookie_field_value_handles_bare_prefixed_and_full_cookie(self):
+        self.assertEqual(
+            df.extract_cookie_field_value("0099aabbccdd", "MUSIC_U"),
+            "0099aabbccdd",
+        )
+        self.assertEqual(
+            df.extract_cookie_field_value("MUSIC_U=0099aabbccdd", "MUSIC_U"),
+            "0099aabbccdd",
+        )
+        self.assertEqual(
+            df.extract_cookie_field_value(
+                "Cookie: os=pc; appver=2.9.7; MUSIC_U=0099aabbccdd; __csrf=12345",
+                "MUSIC_U",
+            ),
+            "0099aabbccdd",
+        )
+        self.assertEqual(
+            df.extract_cookie_field_value("os=pc; __csrf=12345", "MUSIC_U"),
+            "",
+        )
+        self.assertEqual(
+            df.extract_cookie_field_value("buvid3=xyz; SESSDATA=sess_val_888; bili_jct=111", "SESSDATA"),
+            "sess_val_888",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
