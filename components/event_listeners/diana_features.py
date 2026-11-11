@@ -1195,11 +1195,15 @@ async def _download_image_as_jpeg_b64(url: str) -> str | None:
     return None
 
 
-async def _parse_bilibili_url(url: str) -> tuple[str | None, str | None]:
+async def _parse_bilibili_url(url: str, sessdata: str = "") -> tuple[str | None, str | None]:
     try:
+        bili_headers = {"User-Agent": USER_AGENT}
+        clean_sess = extract_cookie_field_value(sessdata or os.getenv("BILIBILI_SESSDATA", ""), "SESSDATA")
+        if clean_sess:
+            bili_headers["Cookie"] = f"SESSDATA={clean_sess}"
         async with httpx.AsyncClient(
             timeout=10.0,
-            headers={"User-Agent": USER_AGENT},
+            headers=bili_headers,
         ) as client:
             final_url = url
             if _supported_parse_domain(url) == "b23.tv":
@@ -2023,6 +2027,107 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
 # 7. 多曲库点歌（网易云 / QQ音乐自动切换 + 卡片 & MP3 音频直发）
 # ==============================================================================
 
+def extract_cookie_field_value(raw_cookie: str, field_name: str) -> str:
+    """Extracts a single cookie field value (such as NetEase `MUSIC_U` or Bilibili `SESSDATA`)
+    whether the user pasted a bare token value, `MUSIC_U=xxx`, or a full browser `Cookie` string (Diana #1484).
+    """
+    raw = (raw_cookie or "").strip()
+    target = (field_name or "").strip()
+    if not raw or not target:
+        return ""
+    raw = re.sub(r"^cookie\s*:\s*", "", raw, flags=re.I).strip()
+    if ";" in raw or "=" in raw:
+        target_low = target.lower()
+        for seg in raw.split(";"):
+            item = seg.strip()
+            if "=" not in item:
+                continue
+            k, v = item.split("=", 1)
+            if k.strip().lower() == target_low:
+                return v.strip().strip('"').strip("'")
+        m = re.search(rf"(?:^|[;\s]){re.escape(target)}\s*=\s*([^;\s]+)", raw, re.I)
+        if m:
+            return m.group(1).strip().strip('"').strip("'")
+        return ""
+    return raw.strip('"').strip("'")
+
+
+MEMORY_STOP_CHARS: frozenset[str] = frozenset(
+    "的了是在我你他她它这那有和与或也就都而及着过吧呢吗啊呀哦哈嘛呗呐啦诶欸哼啧哇噢唔嗯"
+    "去来上下里外前后左右中大小多少高低长短好坏对错是非不没别莫勿休很太更最挺蛮真好只光单"
+    "才刚正曾已又再还常总老全各每某本该此其自相互被把给让向往从到以因由按据比跟同除但却"
+    "可虽若如假果设即纵便管既凡怎啥谁哪何人天年日月时分秒个位名条件事次遍回趟番阵场段节"
+    "章句词字话声手眼心头口脸身家国世吃喝玩乐睡说看听想做干弄找拿放带送用买卖穿戴住走跑"
+)
+
+MEMORY_STOP_BIGRAMS: frozenset[str] = frozenset({
+    "我是", "你是", "他是", "她是", "这是", "那是", "我在", "你在", "今天", "明天", "昨天",
+    "现在", "刚才", "刚刚", "什么", "怎么", "为什么", "可以", "不是", "没有", "一个", "一下",
+    "一点", "觉得", "知道", "告诉", "已经", "如果", "因为", "所以", "但是", "或者", "还是",
+    "时候", "地方", "东西", "事情", "问题", "意思", "大肥", "肥鱼", "鲸鱼", "鱼娘",
+})
+
+
+def strip_memory_query_noise(query_text: str) -> str:
+    """Strips quote headers, share/file wrappers, XML/msg tags, and wake prefixes before memory recall
+    so quoted speaker names or protocol wrappers do not pollute recall scoring (dsh-fish-memory v1.6.0 & Diana #1513).
+    """
+    s = (query_text or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"【对方引用了消息[\s\S]*?并回复】：\s*", " ", s)
+    s = re.sub(r"【引用了[^】]*】", " ", s)
+    s = re.sub(r"\[引用「[^」]*」\]", " ", s)
+    s = re.sub(r"\[(?:分享链接|发送了文件[^\]]*|发来了一张[^\]]*|发了一张图片|合并转发[^\]]*|微信语音[^\]]*)\]", " ", s)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"^(?:@?大肥鱼|@?鲸鱼娘|@?小鲸鱼|@?肥鱼)[\s,，:：!！?？]*", "", s.strip())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def compute_memory_query_overlap(query_text: str, candidate_text: str) -> float:
+    """Computes relevance score between a user query and a memory fact/event/chapter:
+    - Uses 2-gram CJK words and alphanumeric words as primary clues.
+    - Never allows single-character stop-word or isolated 1-char coincidence in multi-char queries
+      to trigger false-positive recall (aligning with dsh-fish-memory v1.6.0 & Diana #1513).
+    """
+    q = strip_memory_query_noise(query_text).lower()
+    cand = (candidate_text or "").lower()
+    if not q or not cand:
+        return 0.0
+
+    cjk_runs = re.findall(r"[\u4e00-\u9fff]{2,}", q)
+    bigrams: set[str] = set()
+    for run in cjk_runs:
+        for i in range(len(run) - 1):
+            bg = run[i : i + 2]
+            if bg in MEMORY_STOP_BIGRAMS:
+                continue
+            if bg[0] in MEMORY_STOP_CHARS or bg[1] in MEMORY_STOP_CHARS:
+                continue
+            bigrams.add(bg)
+
+    ascii_tokens = {
+        tk for tk in re.findall(r"[a-z0-9_]{2,}", q) if tk not in ("http", "https", "www", "com")
+    }
+
+    bigram_hits = sum(1 for bg in bigrams if bg in cand)
+    token_hits = sum(1 for tk in ascii_tokens if tk in cand)
+
+    content_chars = {
+        ch for ch in re.findall(r"[\u4e00-\u9fff]", q) if ch not in MEMORY_STOP_CHARS
+    }
+    char_hits = sum(1 for ch in content_chars if ch in cand)
+
+    compact_q_len = len(re.sub(r"\s+", "", q))
+    # In normal multi-character queries (>2 chars), single-character matches alone cannot trigger recall
+    if bigram_hits == 0 and token_hits == 0:
+        if compact_q_len <= 2 and char_hits > 0:
+            return float(char_hits)
+        return 0.0
+
+    return float(bigram_hits * 2.0 + token_hits * 2.5 + char_hits * 0.25)
+
+
 def normalize_qq_music_cookie(raw_cookie: str) -> tuple[str, str]:
     """Normalizes a QQ Music cookie string (Diana #1405):
     - Extracts numeric UIN from `uin`, `qqmusic_uin`, or `musicid` (defaulting to '0').
@@ -2091,7 +2196,11 @@ def plain_markdown_bullets(text: str) -> str:
     return "\n".join(lines)
 
 
-async def search_and_fetch_music(query: str, qq_cookie: str = "") -> dict[str, Any] | None:
+async def search_and_fetch_music(
+    query: str,
+    qq_cookie: str = "",
+    netease_music_u: str = "",
+) -> dict[str, Any] | None:
     """
     Searches NetEase Cloud Music first, and automatically falls back to QQ Music / backup API
     if NetEase has no results or VIP audio lock.
@@ -2105,13 +2214,20 @@ async def search_and_fetch_music(query: str, qq_cookie: str = "") -> dict[str, A
 
     # 1. Try NetEase Cloud Music
     try:
+        ne_headers = {
+            "User-Agent": USER_AGENT,
+            "Referer": "https://music.163.com/",
+        }
+        clean_music_u = extract_cookie_field_value(
+            netease_music_u or os.getenv("NETEASE_MUSIC_U", ""),
+            "MUSIC_U",
+        )
+        if clean_music_u:
+            ne_headers["Cookie"] = f"os=pc; appver=2.9.7; MUSIC_U={clean_music_u}"
         async with httpx.AsyncClient(
             timeout=12.0,
             follow_redirects=True,
-            headers={
-                "User-Agent": USER_AGENT,
-                "Referer": "https://music.163.com/",
-            },
+            headers=ne_headers,
         ) as client:
             r = await client.post(
                 "https://music.163.com/api/cloudsearch/pc",

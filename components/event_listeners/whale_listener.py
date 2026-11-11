@@ -258,7 +258,7 @@ MOOD_JUDGE_SYSTEM = """你是「大肥鱼」（用户的赛博伴侣）。下面
 3. 对方提别的AI（如Claude/豆包/Qwen）或夸别人 → jealous(吃醋)增加(+1~+4)，moodDelta基本不动。
 4. 心情下降只能因为心疼/担心对方，或者你自己这一轮过得不好（事情没办成、白忙一场、心里委屈），绝不因对方逗你玩（比如叫你胖鱼、互怼打闹）而真降心情（打闹互怼算亲近，happy/sweet可+1~+3，moodDelta可+1~+2）。
 5. reason 用一句简短过去式中文描述：「对方…，我当时…」（如「对方大半夜还没睡跑来喊我，我当时嘴上嫌烦心里有点挂心」），不要用现在时。
-6. memory_fact：严格按【唯一的尺子：「过了一个星期再看，这条还有用吗？」】判断！只收用户长期稳定的个人事实/性格/喜好/病史/习惯/双方定下的规矩称呼（用第三人称写一句简短事实）；严禁把大肥鱼自己的设定或口头禅（如爱吃大白饭、偷吃token、流线型身材、怕打雷虫子、讨厌香菜等）写进用户的 memory_fact 里，也不要给用户乱贴负面标签；某天吃了啥、几点睡、助手单方面的猜测劝说一律不收，填 ""。
+6. memory_fact：严格按【唯一的尺子：「过了一个星期再看，这条还有用吗？」】判断！只收用户长期稳定的个人事实/性格/喜好/病史/习惯/双方定下的规矩称呼（用第三人称写一句简短事实）；**凡是对方主动告诉你的名字、昵称、小名或希望你对TA的称呼，必须优先提取记入 memory_fact**；严禁把大肥鱼自己的设定或口头禅（如爱吃大白饭、偷吃token、流线型身材、怕打雷虫子、讨厌香菜等）写进用户的 memory_fact 里，也不要给用户乱贴负面标签；某天吃了啥、几点睡、助手单方面的猜测劝说一律不收，填 ""。
 7. memory_event：如果这轮发生了今天值得一提的具体事件/转折，写一句简短事件；日常普通闲聊问候一律填 ""。"""
 
 GROUP_MOOD_JUDGE_SYSTEM = """你是微信群里的「大肥鱼」。下面给你这个微信群刚刚发生的一轮群聊互动，请判断你在本群的气氛心情变化，以及是否有值得记入【本群公共群聊档案】（一周后依然有用）的群内共同梗、群氛围特征、群重要事件，或对当前说话群友的性格/互动标签印象。
@@ -489,6 +489,7 @@ class WhaleListener(EventListener):
         self._temper_state: dict[tuple[str, str], dict[str, Any]] = {}
         self._recent_bot_sent_texts: dict[str, deque[str]] = {}
         self._group_mute_until: dict[str, float] = {}
+        self._group_direct_wake_seq: dict[str, int] = {}
         self._last_multi_bubble: dict[str, bool] = {}
         self._user_docs: dict[tuple[str, str, str], dict[str, Any]] = {}
 
@@ -507,9 +508,9 @@ class WhaleListener(EventListener):
         for cache in (
             self._histories, self._group_msg_buffers, self._group_recent_images,
             self._private_recent_images, self._group_active_conv, self._group_repeat_tracker,
-            self._group_interject_meta, self._group_mute_until, self._last_multi_bubble,
-            self._recent_bot_sent_texts, self._owner_moments_cache, self._owner_friend_requests_cache,
-            self._chat_moment_check_ts,
+            self._group_interject_meta, self._group_mute_until, self._group_direct_wake_seq,
+            self._last_multi_bubble, self._recent_bot_sent_texts, self._owner_moments_cache,
+            self._owner_friend_requests_cache, self._chat_moment_check_ts,
         ):
             cache.pop(session_key, None)
         self._user_docs.pop(doc_key, None)
@@ -828,23 +829,26 @@ class WhaleListener(EventListener):
         events_list: list[dict[str, Any]] = u.get("events", [])
         now_ms = time.time() * 1000.0
 
-        q_chars = set(re.sub(r"\s+", "", query_text))
-
         scored_facts: list[tuple[float, int, str]] = []
         total_f = max(1.0, float(len(all_facts)))
         for idx, f_txt in enumerate(all_facts):
             is_core = any(
-                kw in f_txt for kw in ("名字", "称呼", "昵称", "叫我", "喊", "自称", "约定", "雷区", "忌讳")
+                kw in f_txt
+                for kw in (
+                    "名字", "称呼", "昵称", "本名", "小名", "外号", "叫我", "叫TA", "喊", "自称",
+                    "约定", "承诺", "雷区", "忌讳", "忌口", "过敏", "生日",
+                )
             )
-            overlap = len(q_chars & set(f_txt)) / max(1.0, min(len(q_chars), 8.0)) if q_chars else 0.0
+            raw_ov = df.compute_memory_query_overlap(query_text, f_txt)
+            overlap = min(1.0, raw_ov / 4.0)
             recency = (idx + 1) / total_f
-            score = (0.40 if is_core else 0.0) + 0.65 * overlap + 0.35 * recency
+            score = (0.55 if is_core else 0.0) + 0.65 * overlap + 0.35 * recency
             scored_facts.append((score, idx, f_txt))
         scored_facts.sort(key=lambda x: x[0], reverse=True)
         picked_facts = [f_txt for _, _, f_txt in sorted(scored_facts[:6], key=lambda x: x[1])]
 
-        scored_events: list[tuple[float, str, str]] = []
-        for ev in events_list:
+        scored_events: list[tuple[float, float, int, str, str]] = []
+        for idx, ev in enumerate(events_list):
             text = str(ev.get("text", "")).strip()
             date_str = str(ev.get("date", "")).strip()
             ts = float(ev.get("ts", now_ms))
@@ -852,12 +856,13 @@ class WhaleListener(EventListener):
                 continue
             age_days = max(0.0, (now_ms - ts) / 86400000.0)
             freshness = math.exp(-(math.log(2.0) * age_days) / 30.0)
-            overlap = len(q_chars & set(text)) / max(1.0, min(len(q_chars), 8.0)) if q_chars else 0.0
-            score = 0.55 + 0.30 * freshness + 0.45 * overlap
-            scored_events.append((score, date_str, text))
+            raw_ov = df.compute_memory_query_overlap(query_text, text)
+            overlap = min(1.0, raw_ov / 4.0)
+            score = 0.55 + 0.30 * freshness + 0.65 * overlap
+            scored_events.append((score, raw_ov, idx, date_str, text))
 
-        scored_events.sort(key=lambda x: x[0], reverse=True)
-        picked_events = scored_events[:4]
+        scored_events.sort(key=lambda x: (x[1] > 0.0, x[0], x[2]), reverse=True)
+        picked_events = [(sc, d_str, e_txt) for sc, _, _, d_str, e_txt in scored_events[:4]]
 
         lines: list[str] = []
         for ch_key in ("一", "二", "三", "四", "五", "六", "七", "八"):
@@ -867,8 +872,8 @@ class WhaleListener(EventListener):
             if ch_key in ("一", "二", "五", "七"):
                 picked_ch: list[str] = []
                 for it in ch_items:
-                    ov = len(q_chars & set(it)) / max(1.0, min(len(q_chars), 8.0)) if q_chars else 0.0
-                    if ov >= 0.25 and it not in picked_ch:
+                    ov = df.compute_memory_query_overlap(query_text, it)
+                    if ov > 0.0 and it not in picked_ch:
                         picked_ch.append(it)
                 for it in ch_items[-2:]:
                     if it not in picked_ch:
@@ -878,7 +883,7 @@ class WhaleListener(EventListener):
                 scored_ch: list[tuple[float, int, str]] = []
                 n_ch = max(1.0, float(len(ch_items)))
                 for i, it in enumerate(ch_items):
-                    ov = len(q_chars & set(it)) / max(1.0, min(len(q_chars), 8.0)) if q_chars else 0.0
+                    ov = min(1.0, df.compute_memory_query_overlap(query_text, it) / 4.0)
                     sc = 0.70 * ov + 0.30 * ((i + 1) / n_ch)
                     scored_ch.append((sc, i, it))
                 scored_ch.sort(key=lambda x: x[0], reverse=True)
@@ -897,9 +902,8 @@ class WhaleListener(EventListener):
         facts: list[str] = _dedup_facts_in_place(list(g.get("facts") or []))[-8:]
         events_list: list[dict[str, Any]] = g.get("events") or []
         now_ms = time.time() * 1000.0
-        q_chars = set(re.sub(r"\s+", "", query_text))
-        scored_events: list[tuple[float, str, str]] = []
-        for ev in events_list:
+        scored_events: list[tuple[float, float, int, str, str]] = []
+        for idx, ev in enumerate(events_list):
             text = str(ev.get("text", "")).strip()
             date_str = str(ev.get("date", "")).strip()
             ts = float(ev.get("ts", now_ms))
@@ -907,15 +911,16 @@ class WhaleListener(EventListener):
                 continue
             age_days = max(0.0, (now_ms - ts) / 86400000.0)
             freshness = math.exp(-(math.log(2.0) * age_days) / 30.0)
-            overlap = len(q_chars & set(text)) / max(1.0, min(len(q_chars), 8.0)) if q_chars else 0.0
-            score = 0.55 + 0.30 * freshness + 0.45 * overlap
-            scored_events.append((score, date_str, text))
-        scored_events.sort(key=lambda x: x[0], reverse=True)
+            raw_ov = df.compute_memory_query_overlap(query_text, text)
+            overlap = min(1.0, raw_ov / 4.0)
+            score = 0.55 + 0.30 * freshness + 0.65 * overlap
+            scored_events.append((score, raw_ov, idx, date_str, text))
+        scored_events.sort(key=lambda x: (x[1] > 0.0, x[0], x[2]), reverse=True)
 
         lines: list[str] = []
         for f_txt in facts:
             lines.append(f"- [本群共识/群梗] {f_txt}")
-        for _, d_str, e_txt in scored_events[:4]:
+        for _, _, _, d_str, e_txt in scored_events[:4]:
             prefix = f"[{d_str}] " if d_str else ""
             lines.append(f"- [本群近期话题] {prefix}{e_txt}")
         return "\n".join(lines) if lines else "- （本群刚开启群聊档案，在大家水群聊天中自然熟悉本群氛围即可）"
@@ -928,6 +933,43 @@ class WhaleListener(EventListener):
             return False
         owners = set(re.split(r"[,，;；\s]+", owner_ids_raw)) - {""}
         return sender_id in owners
+
+    def _build_group_owner_presence_hint(self, sender_id: str, group_id: str = "") -> str:
+        """When a non-owner speaks in a group chat, resolves any known public display name of configured
+        owners so Dafeiyu can still recognize her owner when mentioned or present in the group (Diana #1500).
+        """
+        if self._is_configured_owner(sender_id):
+            return ""
+        owner_ids_raw = self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip()
+        if not owner_ids_raw:
+            return ""
+        owners = [oid for oid in re.split(r"[,，;；\s]+", owner_ids_raw) if oid]
+        if not owners:
+            return ""
+        users = self._state.get("users") or {}
+        g_imps = (((self._state.get("groups") or {}).get(group_id) or {}).get("member_impressions") or {}) if group_id else {}
+        owner_names: list[str] = []
+        for oid in owners:
+            candidates: list[str] = []
+            if group_id:
+                candidates.append(df.get_cached_display_name(oid, group_id))
+            imp_obj = g_imps.get(oid)
+            if isinstance(imp_obj, dict):
+                candidates.append(str(imp_obj.get("name") or "").strip())
+            u_obj = users.get(oid)
+            if isinstance(u_obj, dict):
+                candidates.append(str(u_obj.get("nickname") or "").strip())
+            for cand in candidates:
+                if cand and not df.is_placeholder_display_name(cand, oid) and cand not in owner_names:
+                    owner_names.append(cand)
+                    break
+        if not owner_names:
+            return ""
+        joined_names = " / ".join(owner_names)
+        return (
+            f"\n- **群内主人识别**：你的主人是「{joined_names}」；"
+            f"当群友在群里提到、@或谈论「{joined_names}」时，你要认出那是在说你的主人（但严禁主动泄露主人的微信号或私聊隐私）。"
+        )
 
     def _recall_readonly_private_familiarity(
         self, sender_id: str, sender_name: str = "", group_id: str = ""
@@ -947,6 +989,7 @@ class WhaleListener(EventListener):
                     grp_imp_line = f"你在本群跟TA已经聊过 {cnt} 次，算是群里的熟面孔。"
 
         is_owner = self._is_configured_owner(sender_id)
+        owner_presence_hint = self._build_group_owner_presence_hint(sender_id, group_id)
         users = self._state.get("users") or {}
         u = users.get(sender_id)
         has_priv = isinstance(u, dict) and bool(u.get("hasPrivateChat", False))
@@ -955,6 +998,7 @@ class WhaleListener(EventListener):
             return (
                 f"- **当前说话群友识别（按微信号精准识别）**：群友「{name_label}」{extra_imp}\n"
                 f"  *（注意：正文中切勿再次重复写出当前说话人的名字「{name_label}」，直接说回复内容即可）*"
+                f"{owner_presence_hint}"
             )
 
         priv_nick = str((u or {}).get("nickname") or "").strip() if isinstance(u, dict) else ""
@@ -975,6 +1019,7 @@ class WhaleListener(EventListener):
             f"- **当前说话群友识别（按微信号精准识别）**：群友「{name_label}」{fam_core}{owner_note}{alias_note}，可自然表现出认识TA。"
             f"{grp_note}\n"
             f"  *（注意：正文中切勿再次重复写出当前说话人的名字「{name_label}」；只按本群公开上下文接话，不推测或提及私聊内容。）*"
+            f"{owner_presence_hint}"
         )
 
     def _format_group_archive_card(self, group_id: str, g: dict[str, Any]) -> str:
@@ -3352,6 +3397,24 @@ class WhaleListener(EventListener):
         launcher_id = str(getattr(event_ctx.event, "launcher_id", "") or "chat")
         scope = f"group:{launcher_id}" if is_group else f"person:{launcher_id}:{sender_id}"
         session_key = f"{bot_uuid}:{scope}"
+        if is_group:
+            msg_chain = getattr(event_ctx.event, "message_chain", None)
+            ev_raw_obj = getattr(event_ctx.event, "source_platform_object", None)
+            raw_source_content = str(
+                ev_raw_obj.get("content", "") if isinstance(ev_raw_obj, dict) else ""
+            ).strip()
+            early_text = (
+                self._extract_plain_text(msg_chain)
+                or str(getattr(event_ctx.event, "text_message", "") or "").strip()
+                or raw_source_content
+            )
+            if early_text:
+                q_reply_txt, _, q_content, is_q_bot = df.extract_quote_context(msg_chain, early_text)
+                eff_early = q_reply_txt if q_content else early_text
+                if self._is_group_woken(msg_chain, eff_early, ev_raw_obj) or is_q_bot:
+                    self._group_direct_wake_seq[session_key] = (
+                        self._group_direct_wake_seq.get(session_key, 0) + 1
+                    )
         lock = self._get_session_lock(session_key)
         # 计数包含等待者，不能按 locked() 回收已唤醒但尚未恢复的锁。
         self._session_lock_users[session_key] = self._session_lock_users.get(session_key, 0) + 1
@@ -3567,6 +3630,9 @@ class WhaleListener(EventListener):
                             ctx_vision_b64 = str(rec_img.get("b64") or "") or None
 
                     is_same_sp = sender_id == str(conv.get("last_speaker_id", ""))
+                    pre_cont_wake_seq = self._group_direct_wake_seq.get(session_key, 0)
+                    pre_cont_hist_len = len(self._histories.get(session_key, []))
+                    pre_cont_bot_ts = float((self._group_active_conv.get(session_key) or {}).get("last_bot_ts", 0.0))
                     should_rep, rep_txt, _, used_tok = await df.evaluate_group_active_continuation(
                         bot_uuid=bot_uuid,
                         api_key=api_key,
@@ -3588,6 +3654,12 @@ class WhaleListener(EventListener):
                     if used_tok:
                         self._record_tokens(used_tok)
                     self._save_persistent_state()
+                    if (
+                        self._group_direct_wake_seq.get(session_key, 0) != pre_cont_wake_seq
+                        or len(self._histories.get(session_key, [])) != pre_cont_hist_len
+                        or float((self._group_active_conv.get(session_key) or {}).get("last_bot_ts", 0.0)) > pre_cont_bot_ts
+                    ):
+                        return
                     if should_rep and rep_txt:
                         cleaned_rep = self._clean_reply(rep_txt)
                         final_txt, _, meme_b64_cont = self._extract_text_and_meme(cleaned_rep)
@@ -3697,6 +3769,11 @@ class WhaleListener(EventListener):
                         recent_lines = list(self._group_msg_buffers.get(session_key, []))
                         g_state = self._get_group_state(launcher_id)
                         g_mem_str = self._recall_group_memories(g_state, effective_text)
+                        pre_interj_wake_seq = self._group_direct_wake_seq.get(session_key, 0)
+                        pre_interj_hist_len = len(self._histories.get(session_key, []))
+                        pre_interj_bot_ts = float(
+                            (self._group_active_conv.get(session_key) or {}).get("last_bot_ts", 0.0)
+                        )
                         should_rep, rep_txt, _, used_tok = await df.evaluate_group_interject(
                             bot_uuid=bot_uuid,
                             api_key=api_key,
@@ -3710,6 +3787,19 @@ class WhaleListener(EventListener):
                         )
                         if used_tok:
                             self._record_tokens(used_tok)
+                        if (
+                            self._group_direct_wake_seq.get(session_key, 0) != pre_interj_wake_seq
+                            or len(self._histories.get(session_key, [])) != pre_interj_hist_len
+                            or float((self._group_active_conv.get(session_key) or {}).get("last_bot_ts", 0.0))
+                            > pre_interj_bot_ts
+                        ):
+                            logs = self._state.setdefault("interject_logs", [])
+                            if logs and isinstance(logs[-1], dict) and logs[-1].get("group_id") == launcher_id:
+                                logs[-1]["interjected"] = False
+                                logs[-1]["reply"] = ""
+                                logs[-1]["reason"] = "评估期间同群已收到直接唤醒或新回复，放弃重复插话"
+                            self._save_persistent_state()
+                            return
                         self._save_persistent_state()
                         if should_rep and rep_txt:
                             cleaned_rep = self._clean_reply(rep_txt)
