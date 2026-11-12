@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "manifest.yaml"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+    inputs:
+      publish_to_market:
+        description: "Sync to LangBot Space Marketplace (requires LANGBOT_SPACE_TOKEN secret)"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build .lbpkg & Publish GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies and LangBot Plugin CLI
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt langbot-plugin pyyaml
+
+      - name: Read metadata from manifest.yaml
+        id: meta
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import yaml
+
+          manifest = yaml.safe_load(Path("manifest.yaml").read_text(encoding="utf-8"))
+          meta = manifest["metadata"]
+          author = str(meta["author"]).strip()
+          name = str(meta["name"]).strip()
+          version = str(meta["version"]).strip()
+          tag = f"v{version}"
+          pkg_name = f"{author}-{name}-{version}.lbpkg"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"author={author}\n")
+              fh.write(f"name={name}\n")
+              fh.write(f"version={version}\n")
+              fh.write(f"tag={tag}\n")
+              fh.write(f"pkg_name={pkg_name}\n")
+          print(f"Resolved package: {pkg_name} (tag: {tag})")
+          PY
+
+      - name: Check whether GitHub Release ${{ steps.meta.outputs.tag }} already exists
+        id: check_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "GitHub Release ${TAG} already exists; skipping duplicate creation."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run syntax check & unit test suite
+        if: steps.check_release.outputs.exists == 'false'
+        run: |
+          python -m compileall -q main.py components tests
+          python -m unittest discover -s tests -v
+
+      - name: Build .lbpkg package & SHA256SUMS.txt
+        if: steps.check_release.outputs.exists == 'false'
+        env:
+          PKG_NAME: ${{ steps.meta.outputs.pkg_name }}
+        run: |
+          lbp build
+          test -s "dist/${PKG_NAME}"
+          (
+            cd dist
+            sha256sum "${PKG_NAME}" > SHA256SUMS.txt
+          )
+          cat dist/SHA256SUMS.txt
+          ls -lh "dist/${PKG_NAME}" dist/SHA256SUMS.txt
+
+      - name: Upload .lbpkg build artifact
+        if: steps.check_release.outputs.exists == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.pkg_name }}
+          path: |
+            dist/${{ steps.meta.outputs.pkg_name }}
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Create GitHub Release ${{ steps.meta.outputs.tag }}
+        if: steps.check_release.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          PKG_NAME: ${{ steps.meta.outputs.pkg_name }}
+        run: |
+          CHECKSUM_LINE="$(cat dist/SHA256SUMS.txt)"
+          GENERATED_NOTES="$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="${TAG}" \
+            -f target_commitish="${GITHUB_SHA}" \
+            --jq .body 2>/dev/null || true)"
+
+          cat > dist/RELEASE_NOTES.md <<EOF
+          ## 📦 安装方式（三选一）
+
+          1. **LangBot 插件市场一键安装（推荐）**：打开 LangBot 管理面板 → **插件** → **插件市场**，搜索 \`大肥鱼\` 或 \`whale_persona_plugin\` 安装。
+          2. **离线包 \`.lbpkg\` 安装**：下载下方 Assets 中的 **\`${PKG_NAME}\`**，在 LangBot 管理面板 → **插件** → **从本地文件安装** 上传即可。
+          3. **GitHub 仓库导入**：在 LangBot 插件安装页填入仓库地址 \`https://github.com/${GITHUB_REPOSITORY}\`。
+
+          ### 🔐 制品校验 (SHA-256)
+          \`\`\`text
+          ${CHECKSUM_LINE}
+          \`\`\`
+
+          ---
+
+          ${GENERATED_NOTES}
+          EOF
+
+          # Remove leading indentation from heredoc if any
+          python - <<'PY'
+          import textwrap
+          from pathlib import Path
+          p = Path("dist/RELEASE_NOTES.md")
+          lines = p.read_text(encoding="utf-8").splitlines()
+          cleaned = [line[10:] if line.startswith("          ") else line for line in lines]
+          p.write_text("\n".join(cleaned).strip() + "\n", encoding="utf-8")
+          PY
+
+          gh release create "${TAG}" \
+            "dist/${PKG_NAME}" \
+            "dist/SHA256SUMS.txt" \
+            --target "${GITHUB_SHA}" \
+            --title "🐋 Whale Persona Plugin ${TAG}" \
+            --notes-file dist/RELEASE_NOTES.md
+
+      - name: Sync to LangBot Space Marketplace (optional)
+        if: >-
+          (steps.check_release.outputs.exists == 'false' && github.event_name != 'workflow_dispatch') ||
+          (github.event_name == 'workflow_dispatch' && inputs.publish_to_market == true)
+        env:
+          LANGBOT_SPACE_TOKEN: ${{ secrets.LANGBOT_SPACE_TOKEN }}
+        run: |
+          if [ -z "${LANGBOT_SPACE_TOKEN:-}" ]; then
+            echo "LANGBOT_SPACE_TOKEN secret is not configured; skipping LangBot Space Marketplace publish."
+            exit 0
+          fi
+          lbp login --token "${LANGBOT_SPACE_TOKEN}"
+          lbp publish
