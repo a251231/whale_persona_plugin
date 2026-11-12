@@ -53,10 +53,12 @@
 
 ```mermaid
 flowchart LR
-    A["微信 4.1 客户端 + Helper V7 DLL"] <-->|"HTTP / WS (8080)"| B["WeChatFerry V4 Gateway"]
-    B <-->|"LangBot 事件链"| C["WhaleListener (主监听器)"]
+    A["微信 4.1/4.2 客户端\n+ Prometheus-first/helper V7 DLL"] <-->|"Native C++ Bridge"| B["WeChatFerry V4 Gateway\n(server_v4.py HTTP / WS)"]
+    B <-->|"/ws (64MiB) + /api/send*"| H["LangBot 平台适配器\n(wechatferry)"]
+    H <-->|"LangBot 标准事件链"| C["WhaleListener (主监听器)"]
     C --> D["interaction_settings.py\n(会话档位/口令/权限注册表)"]
     C --> E["diana_features.py\n(链接/公众号/35MB文件/点歌/WCF接口)"]
+    B <-->|"朋友圈/语音/卡片/加好友"| E
     C <--> F["DeepSeek API (deepseek-flash)\n原生看图 / 双人格对话 / 记忆提炼"]
     C <--> G["SiliconFlow API\nSenseVoice 听感 / CosyVoice2 / VL 兜底"]
 ```
@@ -98,7 +100,17 @@ whale_persona_plugin/
 | `owner_ids` | 否 | `""` | 主人发送者账号 ID（如微信 `wxid_...`，多个用英文逗号分隔；仅主人私聊可操作全局自动朋友圈、自动同意好友及刷真实朋友圈） |
 | `max_history_turns` | 否 | `12` | 单会话保留的短期对话轮数上限 |
 
-### 2. 首次启用指南
+### 2. LangBot 平台适配器与微信网关说明
+
+本插件基于「**LangBot 标准事件链 + WeChatFerry V4 网关可选增强**」双层架构设计：
+
+- **完整微信 4.1 / 4.2 原生模式（推荐）**：
+  - **平台适配器**：在 LangBot 中选用 **`wechatferry`（WeChatFerry PC微信 3.9 / 4.x Helper）** 适配器（已内置于 [a251231/LangBot](https://github.com/a251231/LangBot) 的 `master` / `feat/wechatferry-adapter` 分支，支持跨机 `<img_b64>` 内联图片、`64 MiB` 大帧文档流及群内非好友真实昵称 `sender_name` 透传）。
+  - **底层桥接网关**：Windows 微信 `4.1` / `4.2`（`4.1.15.13` / `4.1.15.56` / `4.2.0.11` / `4.2.0.12`）配合 [Prometheus-first/helper](https://github.com/Prometheus-first/helper)（Fork：[a251231/helper](https://github.com/a251231/helper)）C++ 原生桥接与 `wechatferry-gateway`（`server_v4.py`），在插件运行容器配置环境变量 `WCF_GATEWAY_URL=http://<网关IP>:18080` 即可解锁原生 SILK 语音气泡、点歌卡片、真实朋友圈读写赞评与好友自动通过。
+- **其他平台适配器通用兼容模式**：
+  - 若使用官方原版 LangBot 搭配 **WeChatPad / Gewechat / OneBot v11 (`aiocqhttp`) / 企业微信 / QQ / Telegram / 飞书** 等标准平台适配器，**双人格对话、八章节长期记忆与群聊档、心情系统、原生多模态看图、24 张表情包收发与偷图、联网搜索、公众号/全平台链接与 35MB 文档解析**等核心功能均可直接正常使用；仅依赖 `WCF_GATEWAY_URL` 的微信 4.x 专属接口会自动静默降级并回退到 LangBot 标准回复通道。
+
+### 3. 首次启用指南
 
 - **私聊**：安装配置后默认开启回应（`活人` 模式 + `均衡` 档位），直接发消息即可对话。
 - **群聊（白名单机制）**：
@@ -288,6 +300,7 @@ git diff --check
 2. **上游核心思路与架构来源**
    - **活人感人设与分层记忆体系**：致敬并深度参考原版 `@dafeifish` 及 DeepSeek Harness (DSH) 社区的鲸鱼娘系列插件设计（去括号旁白、单/双气泡节奏、八章节长期档案「唯一的尺子」合并准则、七维情绪半衰期与实时粮仓）。
    - **实用群聊与多模态扩展**：群聊连续接话窗口、联网搜索、多平台链接/文件解析、多曲库点歌及偷图复用模块移植并改进自 [SuInk/Diana](https://github.com/SuInk/Diana)。
+   - **微信 4.1 / 4.2 原生内存桥接能力**：PC 微信 4.x 原生语音、图片/35MB 文件接收、公众号同步、朋友圈读写赞评与好友申请接口基于 [Prometheus-first/helper](https://github.com/Prometheus-first/helper) 构建并通过 [a251231/LangBot](https://github.com/a251231/LangBot) 的 `wechatferry` 适配器接入。
 
 3. **图片与表情包素材声明**
    - `assets/memes/` 目录下内置的 24 张大肥鱼表情包素材源自 DSH 社区 [yyh-001/dsh-meme](https://github.com/yyh-001/dsh-meme) 及大肥鱼同人社区公开分享作品，版权归原作者/画师所有，仅随本开源插件用于非商业学习交流与个人娱乐。
@@ -309,6 +322,7 @@ git diff --check
   - [yyh-001/dsh-meme](https://github.com/yyh-001/dsh-meme)（24 张大肥鱼表情包组件）
   - [Yuuyuko-uu/dsh-speak-up](https://github.com/Yuuyuko-uu/dsh-speak-up)（主动搭话机制）
 - **[SuInk/Diana](https://github.com/SuInk/Diana)**：提供了优秀的群聊接话、链接/文档解析、点歌与表情包复用的工程范本。
+- **[Prometheus-first/helper](https://github.com/Prometheus-first/helper)**：提供了稳定强大的 Windows 微信 4.1 / 4.2 C++ 原生内存桥接基础。
 - **[DeepSeek](https://www.deepseek.com/) & [SiliconFlow](https://siliconflow.cn/) & [FunAudioLLM/SenseVoice](https://github.com/FunAudioLLM/SenseVoice)**：提供高性价比的 `deepseek-flash` 原生多模态大模型、`SenseVoiceSmall` 语音情感听感识别与 `CosyVoice2` 语音合成能力。
 
 ### 许可证（License）
