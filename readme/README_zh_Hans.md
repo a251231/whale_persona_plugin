@@ -2,16 +2,16 @@
 
 <img src="../assets/memes/ganfan.jpg" width="120" style="border-radius: 50%;" alt="大肥鱼 Dafeiyu" />
 
-# 🐋 LangBot 大肥鱼插件 (`whale_persona_plugin` v0.5.0)
+# 🐋 LangBot 大肥鱼插件 (`whale_persona_plugin` v0.5.1)
 **DeepSeek 鲸鱼娘「活人感全家桶」 × Diana 全能扩展 × 微信 4.1 V7 原生增强**
 
-[![Version](https://img.shields.io/badge/version-v0.5.0-blue.svg)](../manifest.yaml)
+[![Version](https://img.shields.io/badge/version-v0.5.1-blue.svg)](../manifest.yaml)
 [![Release](https://img.shields.io/github/v/release/a251231/whale_persona_plugin?label=release&color=00B4D8)](https://github.com/a251231/whale_persona_plugin/releases)
 [![CI](https://github.com/a251231/whale_persona_plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/a251231/whale_persona_plugin/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](../requirements.txt)
 [![LangBot](https://img.shields.io/badge/LangBot-Plugin%20v1-00B4D8.svg)](https://github.com/RockChinQ/LangBot)
 [![Model](https://img.shields.io/badge/DeepSeek-deepseek--flash-4D6BFE.svg)](https://api.deepseek.com)
-[![Tests](https://img.shields.io/badge/tests-139%20passed-brightgreen.svg)](../tests/)
+[![Tests](https://img.shields.io/badge/tests-146%20passed-brightgreen.svg)](../tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](#-十许可证与致谢)
 
 [核心模块](#-一核心模块总览dsh-六大件--diana-扩展--微信-41-v7-原生增强) •
@@ -37,16 +37,16 @@
 | 模块 | 来源 / 对应原版 | 功能亮点 |
 | :--- | :--- | :--- |
 | **1. 大肥鱼·微信活人版内核** | [wxzjss/dsh-whale-girl](https://github.com/wxzjss/dsh-whale-girl) + `@dafeifish` | **严禁使用 `（...）` / `*...*` 舞台剧动作旁白**；支持**单气泡为主（75%+）、偶发双气泡 (`\|\|`) 拟真打字停顿**、**能量匹配法则**、**防高频词与句首开头复读**、**炸毛赌气与哄好状态机**；去人设复读机化（日常 85% 自称「我」），粮仓数据按需触发。 |
-| **2. 鱼的心情 (`dsh-feiyu-mood`)** | [Yuuyuko-uu/dsh-feiyu-mood](https://github.com/Yuuyuko-uu/dsh-feiyu-mood) | 维护 `0~100` 心情值 + 七维情绪（`开心`/`踏实`/`甜蜜`/`心疼`/`担心`/`难过`/`吃醋`）+ **三阶关系亲密度**（初识网友 / 常聊熟人 / 铁瓷死党），随时间按半衰期自然平复。 |
-| **3. 鱼的记忆：私聊八章节档案 + 群聊独立建档 (`dsh-fish-memory`)** | [Yuuyuko-uu/dsh-fish-memory](https://github.com/Yuuyuko-uu/dsh-fish-memory) (`lib/生成档案.js`) + `WeChat 4.1 V7 Bridge` | **私聊**按用户独立建八章节长期档案并支持相似度去重与中文双字词（2-gram）精准召回；**开启白名单的群聊**按群独立建「群聊档」（记录群氛围、群共同梗、群事件与**群友印象标签 `member_impressions`**，绝不污染单人私聊档），接入微信内存 LRU 群成员昵称缓存自动扶正非好友真实昵称，并在群内**只读识别私聊熟人**。 |
+| **2. 鱼的心情 (`dsh-feiyu-mood`)** | [Yuuyuko-uu/dsh-feiyu-mood](https://github.com/Yuuyuko-uu/dsh-feiyu-mood) | 维护 `0~100` 心情值 + **八维情绪**（`开心`/`踏实`/`甜蜜`/`心疼`/`担心`/`难过`/`吃醋` 90 分钟半衰 + **只对事不对人的 `生气` 45 分钟快散**）+ **三阶关系亲密度**（初识网友 / 常聊熟人 / 铁瓷死党），随时间自然平复。 |
+| **3. 鱼的记忆：私聊八章节档案 + 群聊独立建档 (`dsh-fish-memory`)** | [Yuuyuko-uu/dsh-fish-memory](https://github.com/Yuuyuko-uu/dsh-fish-memory) (`lib/生成档案.js`) + `WeChat 4.1 V7 Bridge` | **私聊**按用户独立建八章节长期档案，支持相似度去重、中文双字词（2-gram）精准召回与 `stable_profile` 高重要度画像保底；**开启白名单的群聊**按群独立建「群聊档」（记录群氛围、群共同梗、群事件与**群友印象标签 `member_impressions`**，绝不污染单人私聊档），接入微信内存 LRU 群成员昵称缓存自动扶正非好友真实昵称，并在群内**只读识别私聊熟人**。 |
 | **4. 实时粮仓 (`dsh-whale-widget`)** | [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget) | 实时调用 `GET /user/balance` 查询 DeepSeek 账户真实余额，统计上一口偷吃与今日累计消耗的 Token 饭量；日常闲聊按需唤醒，不机械背诵数字。 |
-| **5. 24张官方表情包 + 原生识图 + 偷图复用** | [yyh-001/dsh-meme](https://github.com/yyh-001/dsh-meme) + [SuInk/Diana](https://github.com/SuInk/Diana) | 内置 24 张大肥鱼官方表情包（带冷却门控与 15% 真随机门禁，发表情包必回）；基于 `deepseek-flash` 原生多模态看图（支持 GIF 动图三帧拼接看图，非多模态接口自动回退 `Qwen3-VL` 并按 SHA-256 缓存），**自动将见过的有趣表情包偷图入库打标复用**（GIF 原样发送为微信原生动画表情）。 |
-| **6. 微信双向真声语音 (`SenseVoiceSmall` + `SILK v3 TTS`)** | `FunAudioLLM/SenseVoiceSmall` + `Edge-TTS / CosyVoice2` | **听语音**：收到微信语音自动转写文字，并识别笑声、叹气、哭腔、哈欠、开心/难过等语气特征；**发语音**：支持口令、自然语言（“发条语音骂我”）及心情好时自动以微信 4.1 原生语音气泡（Type 34）回复。 |
-| **7. 群聊智能主动搭话 + 多人参聊活跃窗口 + 临时闭麦** | [SuInk/Diana](https://github.com/SuInk/Diana) + [Yuuyuko-uu/dsh-speak-up](https://github.com/Yuuyuko-uu/dsh-speak-up) | 在白名单群内实时跟踪完整群聊上下文，支持多人同时与大肥鱼连续对话（`active_speakers` 集合）、并发直呼抢占防重（`direct_wake` 抢占插话）、群回复直发不带冗余 `@` 前缀、自然语言触发 **30 分钟临时闭麦潜水**（被 `@`/点名立解）；每次插话判断的**「回/不回、为什么」**均记录在决策日志中（发 `大肥鱼 搭话记录` 可查）。 |
+| **5. 24张官方表情包 + 原生识图 + 偷图复用** | [yyh-001/dsh-meme](https://github.com/yyh-001/dsh-meme) + [SuInk/Diana](https://github.com/SuInk/Diana) | 内置 24 张大肥鱼官方表情包（带冷却门控与 15% 真随机门禁，发表情包必回）；基于 `deepseek-flash` 原生多模态看图（支持 GIF 动图三帧拼接看图，非多模态接口自动回退 `Qwen3-VL` 并按 SHA-256 缓存），**自动将见过的有趣表情包偷图入库打标复用**（GIF 原样发送为微信原生动画表情，聊天历史中表情包自动压缩为一句话短标注省 Token）。 |
+| **6. 微信双向真声语音 (`SenseVoiceSmall` + `DeepSeek Speech` + `SILK v3 TTS`)** | `FunAudioLLM/SenseVoiceSmall` + `DeepSeek /v1/tools` + `CosyVoice2 / Edge-TTS` | **听语音**：收到微信语音自动转写文字并识别笑声/叹气/哭腔等语气特征（未配硅基密钥时自动回退 DeepSeek `/v1/tools/asr`）；**发语音**：支持口令、自然语言及心情好时以微信原生语音气泡（Type 34）回复（支持 `CosyVoice2`、DeepSeek 官方 `stella` 音色 `/v1/tools/tts` 与 `Edge-TTS` 多重热备）。 |
+| **7. 群聊智能主动搭话 + 多人参聊活跃窗口 + 临时闭麦** | [SuInk/Diana](https://github.com/SuInk/Diana) + [Yuuyuko-uu/dsh-speak-up](https://github.com/Yuuyuko-uu/dsh-speak-up) | 在白名单群内实时跟踪完整群聊上下文，支持多人同时与大肥鱼连续对话（`active_speakers` 集合）、并发直呼抢占防重（`direct_wake` 抢占插话）、`<speak-up>` 闭合块主动搭话隔离、群回复直发不带冗余 `@` 前缀、自然语言触发 **30 分钟临时闭麦潜水**（被 `@`/点名立解）；每次插话判断的**「回/不回、为什么」**均记录在决策日志中（发 `大肥鱼 搭话记录` 可查）。 |
 | **8. 微信 4.1 朋友圈读写、锐评、点赞回评与好友自动通过** | `@dafeifish` + `WeChat 4.1 V7 Bridge` | 支持每日定时或手动（`大肥鱼 发朋友圈 [主题]`）生成图文动态并同步发布至真实微信朋友圈；主人私聊发送 `大肥鱼 刷朋友圈` 可实时读取电脑微信已加载的朋友圈（含点赞数、评论数与热评摘要）并毒舌锐评；支持 `大肥鱼 点赞朋友圈 <序号>`、`大肥鱼 评论朋友圈 <序号> [内容]`、**自身朋友圈新评论与好友追评自动回评**、**后台自动为近 7 天活跃私聊好友点赞/神评**、**私聊中顺手刷对方最新朋友圈并自然聊起**，以及**实时自动同意微信好友申请并主动发消息打招呼**。 |
-| **9. 联网搜索 + 网页正文读取** | [SuInk/Diana](https://github.com/SuInk/Diana) | 挂载 `web_search` 与 `read_webpage` 原生工具，时效性问题支持**多关键词并行搜索**并读取相关网页正文后再回答。 |
-| **10. 全平台链接与合并转发记录解析** | [SuInk/Diana](https://github.com/SuInk/Diana) | 自动解析 **微信公众号推文 (`mp.weixin.qq.com`) / B 站 / YouTube / X (Twitter) / 小红书 / 抖音 / 微信分享卡片** 及 **微信合并转发聊天记录 (`<type>19</type>`)**；公众号推文自动提取正文并写入 30 分钟追问缓存；**X / Twitter 用户主页**直接展示头像、昵称、简介及粉丝/推文统计。 |
-| **11. 文件解析与 V7 超长文本保护** | [SuInk/Diana](https://github.com/SuInk/Diana) + `WeChat 4.1 V7 Bridge` | 支持直接发送 **PDF、Word (`.docx`)、Excel (`.xlsx`)、PPT (`.pptx`)、EPUB、TXT/代码文件**（上限 `35 MiB`，自动过滤二进制压缩包与安装包），以及 **V7 超长文本消息（`1,500` 字~`256 KB`）自动归档至会话文档缓存并压缩多轮历史摘要**，支持 30 分钟内多轮追问且防止历史 Token 爆炸。 |
+| **9. 联网搜索 + 网页正文读取** | [SuInk/Diana](https://github.com/SuInk/Diana) | 挂载 `web_search` 与 `read_webpage` 原生工具，时效性问题支持**多关键词并行搜索**并读取相关网页正文后再回答（反爬或空结果时自动回退 DeepSeek `/v1/tools/search` 与 `/v1/tools/fetch`）。 |
+| **10. 全平台链接、直播间与合并转发记录解析** | [SuInk/Diana](https://github.com/SuInk/Diana) | 自动解析 **微信公众号推文 (`mp.weixin.qq.com`) / B 站视频与直播间 (`live.bilibili.com`) / 抖音视频与直播间 (`webcast.amemv.com`) / YouTube / X (Twitter) / 小红书 / 微信分享卡片** 及 **微信合并转发聊天记录 (`<type>19</type>`)**；封面下载超时自动保底保留已解析出的标题与作者。 |
+| **11. 文件解析、扫描件 OCR 与 V7 超长文本保护** | [SuInk/Diana](https://github.com/SuInk/Diana) + `WeChat 4.1 V7 Bridge` | 支持直接发送 **PDF（含扫描件自动回退 DeepSeek `/v1/tools/ocr` 识别）、Word (`.docx`)、Excel (`.xlsx`)、PPT (`.pptx`)、EPUB、TXT/代码文件**（上限 `35 MiB`，自动过滤二进制压缩包与安装包），以及 **V7 超长文本消息（`1,500` 字~`256 KB`）自动归档至会话文档缓存并压缩多轮历史摘要**，支持 30 分钟内多轮追问且防止历史 Token 爆炸。 |
 | **12. 多曲库点歌与随机复读** | [SuInk/Diana](https://github.com/SuInk/Diana) | **网易云音乐、QQ 音乐**多曲库切换，发送卡片并直接投递 `.mp3` 音频文件；白名单群内不同群友连续发送相同纯文字时随机跟读（0 Token 消耗）。 |
 
 ### 架构概览与目录结构
@@ -73,7 +73,7 @@ whale_persona_plugin/
 │   ├── whale_listener.py                    # 核心事件监听、双人格 Prompt、双轨记忆、工具与后台任务
 │   ├── diana_features.py                    # 链接/公众号/文件解析、多曲库点歌、WCF 网关交互与公网安全校验
 │   └── interaction_settings.py              # 会话设置注册表、三档交互档位与兼容口令解析
-└── tests/                                   # 标准库 unittest 回归测试套件 (139 项用例)
+└── tests/                                   # 标准库 unittest 回归测试套件 (146 项用例)
 ```
 
 ---
@@ -159,7 +159,7 @@ whale_persona_plugin/
 | | `大肥鱼 语音 <内容>` | 让大肥鱼用指定内容合成微信原生语音气泡发送 |
 | | `大肥鱼 表情 <名称>` | 点播指定名称的大肥鱼官方表情包（如 `干饭`、`嫌弃`、`比心`） |
 | | `大肥鱼 搜索 <问题>` | 强制触发多关键词并行联网搜索后回答 |
-| **状态查询** | `大肥鱼 心情` | 查看当前心情分（0~100）、七维情绪、亲密度阶段与今日作息 |
+| **状态查询** | `大肥鱼 心情` | 查看当前心情分（0~100）、八维情绪、亲密度阶段与今日作息 |
 | | `大肥鱼 粮仓` | 实时查询 DeepSeek API 余额与今日 Token 饭量统计 |
 | | `大肥鱼 表情库` | 查看内置 24 张表情包与偷图入库的动态表情统计 |
 | | `大肥鱼 朋友圈` | 查看大肥鱼内部鱼塘动态墙（空墙不会自动生成或外发） |
@@ -278,7 +278,7 @@ git diff --check
 | :--- | :--- |
 | **群里 `@大肥鱼` 没反应** | 1. 群聊默认需加入白名单，先在群内发 `大肥鱼 设置 开启`；<br>2. 检查是否触发了 30 分钟临时闭麦，直接点名 `大肥鱼` 可立即唤醒；<br>3. 若配置了 `target_bot_uuid`，确认与当前机器人 UUID 一致。 |
 | **无法开启自动朋友圈 / 刷朋友圈提示无权限** | 全局开关与真实朋友圈读取仅限主人私聊操作。请先在 LangBot 插件配置 `owner_ids` 中填入你的微信 `wxid_...`（多个用英文逗号分隔），再在私聊中发送指令。 |
-| **收到语音不转文字 / 不发语音气泡** | 检查是否已配置 `siliconflow_api_key`（用于免费 `SenseVoiceSmall` 语音转写），并确认当前会话 `大肥鱼 设置 高级` 中的「语音」开关为 `开`。 |
+| **收到语音不转文字 / 不发语音气泡** | 确认当前会话 `大肥鱼 设置 高级` 中的「语音」开关为 `开`；推荐配置 `siliconflow_api_key`（免费 `SenseVoiceSmall` 语气识别），未配置时若使用官方 `api.deepseek.com` 也会自动回退 DeepSeek `/v1/tools/asr` 与 `/v1/tools/tts`。 |
 | **发压缩包 `.zip` 或超大文件不解析** | 为保护内存与上下文，插件仅解析 `<= 35 MiB` 的文档/代码文件（PDF/Word/Excel/PPT/EPUB/TXT），自动忽略 `.zip`/`.exe`/`.mp4` 等二进制格式。 |
 
 ### 提交 Issue 与求助指引

@@ -14,7 +14,11 @@ import logging
 import os
 import random
 import re
+import shutil
 import socket
+import struct
+import subprocess
+import tempfile
 import time
 import urllib.parse
 import zipfile
@@ -41,6 +45,10 @@ WCF_GATEWAY_URL = os.getenv("WCF_GATEWAY_URL", "http://172.22.0.1:18080")
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+DOUYIN_MOBILE_USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
 )
 
 # ==============================================================================
@@ -923,9 +931,53 @@ def pick_stolen_or_official_meme(
     return official_b64
 
 
+def truncate_sticker_history_gist(description: str, max_chars: int = 120) -> str:
+    """Compacts a sticker description into a single-line gist truncated to `max_chars` characters
+    for conversation history, avoiding multi-line visual descriptions in history turns (Diana #1544).
+    """
+    compact = re.sub(r"\s+", " ", (description or "").strip())
+    if not compact:
+        return ""
+    limit = max(1, int(max_chars or 120))
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit].rstrip() + "…"
+
+
 # ==============================================================================
-# 4. 联网搜索 + 网页深度阅读（Diana Parallel Web Search & Reader）
+# 4. 联网搜索 + 网页深度阅读（Diana Parallel Web Search & Reader + DeepSeek Tools）
 # ==============================================================================
+
+
+def is_deepseek_api_host(base_url: str) -> bool:
+    """Returns True when `base_url` is empty (defaults to DeepSeek official) or points to `deepseek.com` / `*.deepseek.com` (Diana #1555)."""
+    raw = (base_url or "").strip()
+    if not raw:
+        return True
+    if "://" not in raw:
+        raw = "https://" + raw
+    try:
+        host = (urllib.parse.urlparse(raw).hostname or "").strip().lower().rstrip(".")
+    except ValueError:
+        return False
+    return bool(host and (host == "deepseek.com" or host.endswith(".deepseek.com")))
+
+
+def deepseek_tool_endpoint(base_url: str, tool: str) -> str:
+    """Builds the DeepSeek `/v1/tools/<tool>` endpoint URL from `base_url` (Diana #1555 / #1557)."""
+    t = (tool or "").strip().strip("/")
+    base = (base_url or "").strip() or "https://api.deepseek.com"
+    if "://" not in base:
+        base = "https://" + base
+    base = base.rstrip("/")
+    parsed = urllib.parse.urlsplit(base)
+    path = parsed.path.rstrip("/")
+    if path.endswith(f"/tools/{t}"):
+        return base
+    if path.endswith("/v1"):
+        return f"{base}/tools/{t}"
+    return f"{base}/v1/tools/{t}"
+
 
 DEEPSEEK_SEARCH_TOOLS = [
     {
@@ -1046,12 +1098,91 @@ async def _search_single_query(query: str, search_api_key: str = "") -> str:
     return f"【搜索：{q}】\n" + "\n".join(results_out[:5])
 
 
-async def search_web_parallel(queries: list[str], search_api_key: str = "") -> str:
+async def search_via_deepseek(
+    query: str,
+    deepseek_api_key: str,
+    deepseek_base_url: str = "https://api.deepseek.com",
+    count: int = 5,
+) -> str:
+    """Queries DeepSeek `/v1/tools/search` and formats results preferring `summary` over `snippet` (Diana #1557)."""
+    q = (query or "").strip()[:128]
+    key = (deepseek_api_key or "").strip()
+    if not q or not key:
+        return ""
+    clamped_count = max(1, min(int(count or 5), 50))
+    endpoint = deepseek_tool_endpoint(deepseek_base_url, "search")
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                json={"query": q, "count": clamped_count},
+            )
+            if r.status_code != 200:
+                return ""
+            payload = r.json()
+            results = (payload.get("results") if isinstance(payload, dict) else None) or []
+            if not isinstance(results, list) or not results:
+                return ""
+            lines = [f"【搜索：{q}】"]
+            for idx, item in enumerate(results[:clamped_count], 1):
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or "").strip() or "无标题"
+                url_str = str(item.get("url") or "").strip()
+                summary = str(item.get("summary") or "").strip() or str(item.get("snippet") or "").strip()
+                date_str = str(item.get("date") or "").strip()
+                head = (
+                    f"{idx}. {title}"
+                    + (f" ({url_str})" if url_str else "")
+                    + (f" [{date_str[:10]}]" if date_str else "")
+                )
+                if summary:
+                    lines.append(f"{head}\n   摘要：{summary[:600]}")
+                else:
+                    lines.append(head)
+            return "\n".join(lines) if len(lines) > 1 else ""
+    except Exception as e:
+        logger.debug("DeepSeek search fallback skipped: %s", e)
+        return ""
+
+
+async def search_web_parallel(
+    queries: list[str],
+    search_api_key: str = "",
+    *,
+    deepseek_api_key: str = "",
+    deepseek_base_url: str = "",
+) -> str:
     clean_qs = [str(q).strip() for q in (queries or []) if str(q).strip()][:3]
     if not clean_qs:
         return "无搜索词"
     tasks = [_search_single_query(q, search_api_key) for q in clean_qs]
-    parts = await asyncio.gather(*tasks, return_exceptions=True)
+    parts = list(await asyncio.gather(*tasks, return_exceptions=True))
+
+    if (deepseek_api_key or "").strip() and is_deepseek_api_host(deepseek_base_url):
+        missed_indices = [
+            idx
+            for idx, p in enumerate(parts)
+            if (not isinstance(p, str)) or (not p.strip()) or ("未检索到直接匹配的网页摘要" in p)
+        ]
+        if missed_indices:
+            ds_tasks = [
+                search_via_deepseek(
+                    clean_qs[idx],
+                    deepseek_api_key=deepseek_api_key,
+                    deepseek_base_url=deepseek_base_url or "https://api.deepseek.com",
+                )
+                for idx in missed_indices
+            ]
+            ds_results = await asyncio.gather(*ds_tasks, return_exceptions=True)
+            for idx, ds_res in zip(missed_indices, ds_results):
+                if isinstance(ds_res, str) and ds_res.strip():
+                    parts[idx] = ds_res
+
     out = [str(p) for p in parts if isinstance(p, str) and p.strip()]
     return "\n\n".join(out) if out else "未获取到搜索结果"
 
@@ -1098,10 +1229,74 @@ async def _get_public_url(client: httpx.AsyncClient, url: str, **kwargs: Any) ->
     raise httpx.TooManyRedirects("公网请求重定向次数超限", request=request)
 
 
-async def read_webpage_content(url: str) -> str:
+_DEEPSEEK_FETCH_CACHE: dict[str, tuple[float, str]] = {}
+DEEPSEEK_FETCH_CACHE_TTL_SEC = 900.0
+
+
+async def fetch_webpage_via_deepseek(
+    url: str,
+    deepseek_api_key: str,
+    deepseek_base_url: str = "https://api.deepseek.com",
+) -> str:
+    """Fetches clean webpage Markdown via DeepSeek `/v1/tools/fetch` with SSRF check and 15-min cache (Diana #1557)."""
+    u = (url or "").strip()
+    key = (deepseek_api_key or "").strip()
+    if not u or not key:
+        return ""
+    if not await asyncio.to_thread(_is_safe_public_url, u):
+        return ""
+
+    endpoint = deepseek_tool_endpoint(deepseek_base_url, "fetch")
+    cache_key = f"{endpoint}|{u}"
+    now_ts = time.time()
+    cached = _DEEPSEEK_FETCH_CACHE.get(cache_key)
+    if cached and (now_ts - cached[0]) < DEEPSEEK_FETCH_CACHE_TTL_SEC and cached[1]:
+        return cached[1]
+
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            r = await client.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                json={"url": u},
+            )
+            if r.status_code < 200 or r.status_code >= 300 or len(r.content) > 2 * 1024 * 1024:
+                return ""
+            data = r.json()
+            if not isinstance(data, dict):
+                return ""
+            content = str(data.get("content") or "").strip()
+            if not content:
+                return ""
+            title = re.sub(r"\s+", " ", str(data.get("title") or "").strip())
+            formatted = f"标题: {title}\n\n{content[:3500]}" if title else content[:3500]
+            if len(_DEEPSEEK_FETCH_CACHE) >= 64:
+                oldest_key = min(_DEEPSEEK_FETCH_CACHE, key=lambda k: _DEEPSEEK_FETCH_CACHE[k][0])
+                _DEEPSEEK_FETCH_CACHE.pop(oldest_key, None)
+            _DEEPSEEK_FETCH_CACHE[cache_key] = (now_ts, formatted)
+            return formatted
+    except Exception as e:
+        logger.debug("DeepSeek webpage fetch fallback skipped: %s", e)
+        return ""
+
+
+async def read_webpage_content(
+    url: str,
+    *,
+    deepseek_api_key: str = "",
+    deepseek_base_url: str = "",
+) -> str:
     u = (url or "").strip()
     if not await asyncio.to_thread(_is_safe_public_url, u):
         return "无效或受限的 URL（仅允许访问公网 HTTP/HTTPS 页面）"
+
+    use_ds_fallback = bool((deepseek_api_key or "").strip() and is_deepseek_api_host(deepseek_base_url))
+    fallback_err_msg = ""
+    extracted_short = ""
+
     try:
         async with httpx.AsyncClient(
             timeout=12.0,
@@ -1117,25 +1312,46 @@ async def read_webpage_content(url: str) -> str:
 
             r = await _get_public_url(client, u)
             if r.status_code != 200:
-                return f"网页访问返回状态码 {r.status_code}"
-            if BeautifulSoup is not None:
-                soup = BeautifulSoup(r.text, "html.parser")
-                for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
-                    tag.decompose()
-                text = soup.get_text("\n", strip=True)
-                lines = [ln.strip() for ln in text.splitlines() if len(ln.strip()) > 2]
-                return "\n".join(lines)[:3500]
-            return r.text[:2500]
+                fallback_err_msg = f"网页访问返回状态码 {r.status_code}"
+            else:
+                if BeautifulSoup is not None:
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
+                        tag.decompose()
+                    text = soup.get_text("\n", strip=True)
+                    lines = [ln.strip() for ln in text.splitlines() if len(ln.strip()) > 2]
+                    extracted = "\n".join(lines)[:3500]
+                else:
+                    extracted = r.text[:2500]
+                if len(extracted.strip()) >= 60 or not use_ds_fallback:
+                    return extracted
+                extracted_short = extracted
+    except ValueError as ve:
+        return f"读取网页失败: {ve}"
     except Exception as e:
-        return f"读取网页失败: {e}"
+        fallback_err_msg = f"读取网页失败: {e}"
+
+    if use_ds_fallback:
+        ds_content = await fetch_webpage_via_deepseek(
+            u,
+            deepseek_api_key=deepseek_api_key,
+            deepseek_base_url=deepseek_base_url or "https://api.deepseek.com",
+        )
+        if ds_content:
+            return ds_content
+
+    if fallback_err_msg:
+        return fallback_err_msg
+    return extracted_short
 
 
 # ==============================================================================
-# 5. 全平台链接解析（B站 / YouTube / X(Twitter)主页与推文 / 小红书 / 抖音 / 微信卡片）
+# 5. 全平台链接解析（B站视频与直播 / YouTube / X(Twitter) / 小红书 / 抖音视频与直播 / 微信卡片）
 # ==============================================================================
 
 URL_REGEX = re.compile(r"https?://[^\s<>\"'）)】\]]+")
 SUPPORTED_PARSE_DOMAINS = (
+    "live.bilibili.com",
     "bilibili.com",
     "b23.tv",
     "x.com",
@@ -1144,9 +1360,24 @@ SUPPORTED_PARSE_DOMAINS = (
     "youtu.be",
     "xiaohongshu.com",
     "xhslink.com",
+    "webcast.amemv.com",
+    "webcast.douyin.com",
+    "live.douyin.com",
     "douyin.com",
     "mp.weixin.qq.com",
 )
+
+BILIBILI_LIVE_PATH_RE = re.compile(r"^/(?:h5/|blanc/)?([0-9]+)/?$")
+DOUYIN_LIVE_WEB_PATH_RE = re.compile(r"^/([0-9]+)/?$")
+DOUYIN_LIVE_REFLOW_PATH_RE = re.compile(r"/webcast/reflow/([0-9]+)")
+DOUYIN_SITE_LIVE_PATH_RE = re.compile(r"^/(?:follow|root)/live/([0-9]+)/?$")
+COVER_DOWNLOAD_TIMEOUT_SEC: float = 8.0
+
+
+def _host_matches_domain(host: str, domain: str) -> bool:
+    h = (host or "").strip().lower().rstrip(".")
+    d = (domain or "").strip().lower().rstrip(".")
+    return bool(h and d and (h == d or h.endswith("." + d)))
 
 
 def _supported_parse_domain(url: str) -> str:
@@ -1159,6 +1390,51 @@ def _supported_parse_domain(url: str) -> str:
         return next((d for d in SUPPORTED_PARSE_DOMAINS if host == d or host.endswith("." + d)), "")
     except ValueError:
         return ""
+
+
+def bilibili_live_room_id(url: str) -> str:
+    """Extracts the numeric room ID from a `live.bilibili.com` room URL (Diana #1563)."""
+    try:
+        parsed = urllib.parse.urlparse((url or "").strip())
+    except ValueError:
+        return ""
+    if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
+        return ""
+    if not _host_matches_domain(parsed.hostname or "", "live.bilibili.com"):
+        return ""
+    m = BILIBILI_LIVE_PATH_RE.match(parsed.path or "")
+    return m.group(1) if m else ""
+
+
+def douyin_live_target(url: str) -> tuple[str, str]:
+    """Recognizes Douyin live room URLs, returning `(room_id, web_rid)` (Diana #1563)."""
+    try:
+        parsed = urllib.parse.urlparse((url or "").strip())
+    except ValueError:
+        return "", ""
+    if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
+        return "", ""
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    path = parsed.path or ""
+
+    if _host_matches_domain(host, "webcast.amemv.com") or _host_matches_domain(host, "webcast.douyin.com"):
+        m = DOUYIN_LIVE_REFLOW_PATH_RE.search(path)
+        if m:
+            return m.group(1), ""
+        qs = urllib.parse.parse_qs(parsed.query)
+        rid_vals = qs.get("roomId") or qs.get("room_id") or []
+        rid = (rid_vals[0] if rid_vals else "").strip()
+        if re.fullmatch(r"[0-9]+", rid):
+            return rid, ""
+    elif _host_matches_domain(host, "live.douyin.com"):
+        m = DOUYIN_LIVE_WEB_PATH_RE.match(path)
+        if m:
+            return "", m.group(1)
+    elif _host_matches_domain(host, "douyin.com"):
+        m = DOUYIN_SITE_LIVE_PATH_RE.match(path)
+        if m:
+            return "", m.group(1)
+    return "", ""
 
 
 def has_supported_media_link_or_card(raw_text: str) -> bool:
@@ -1195,8 +1471,229 @@ async def _download_image_as_jpeg_b64(url: str) -> str | None:
     return None
 
 
+async def _download_cover_preserving_metadata(url: str) -> str | None:
+    """Downloads cover/media preview image with a bounded timeout, catching any timeout/error
+    so already-parsed link metadata is never discarded (Diana #1583).
+    """
+    if not url:
+        return None
+    try:
+        return await asyncio.wait_for(
+            _download_image_as_jpeg_b64(url),
+            timeout=COVER_DOWNLOAD_TIMEOUT_SEC,
+        )
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.debug("Cover download skipped/timed out, preserving parsed metadata: %s", e)
+        return None
+
+
+async def parse_bilibili_live_url(url: str) -> tuple[str | None, str | None]:
+    """Parses a `live.bilibili.com` room link into title, anchor, status, area, popularity, and cover (Diana #1563)."""
+    room_id = bilibili_live_room_id(url)
+    if not room_id:
+        return None, None
+    try:
+        referer = f"https://live.bilibili.com/{room_id}"
+        bili_headers = {"User-Agent": USER_AGENT, "Referer": referer}
+        clean_sess = extract_cookie_field_value(os.getenv("BILIBILI_SESSDATA", ""), "SESSDATA")
+        if clean_sess:
+            bili_headers["Cookie"] = f"SESSDATA={clean_sess}"
+        async with httpx.AsyncClient(timeout=10.0, headers=bili_headers) as client:
+            q_room = urllib.parse.quote(room_id)
+            info_url = f"https://api.live.bilibili.com/room/v1/Room/get_info?room_id={q_room}"
+            r_room = await _get_public_url(client, info_url, headers={"Referer": referer})
+            if r_room.status_code != 200:
+                return None, None
+            room_json = r_room.json()
+            if not isinstance(room_json, dict) or room_json.get("code") != 0 or not isinstance(room_json.get("data"), dict):
+                return None, None
+            data = room_json["data"]
+            if not data:
+                return None, None
+
+            uname = str(data.get("uname") or "").strip()
+            try:
+                anchor_url = f"https://api.live.bilibili.com/live_user/v1/UserInfo/get_anchor_in_room?roomid={q_room}"
+                r_anc = await _get_public_url(client, anchor_url, headers={"Referer": referer})
+                if r_anc.status_code == 200:
+                    anc_json = r_anc.json()
+                    if isinstance(anc_json, dict) and anc_json.get("code") == 0:
+                        anc_uname = str((((anc_json.get("data") or {}).get("info") or {}).get("uname") or "")).strip()
+                        if anc_uname:
+                            uname = anc_uname
+            except (asyncio.TimeoutError, Exception) as anc_err:
+                logger.debug("Bilibili live anchor lookup skipped: %s", anc_err)
+
+        title = str(data.get("title") or "").strip() or "直播间"
+        try:
+            live_status = int(data.get("live_status") or 0)
+        except Exception:
+            live_status = 0
+        if live_status == 1:
+            status_text = "直播中"
+        elif live_status == 2:
+            status_text = "未开播（轮播中）"
+        else:
+            status_text = "未开播"
+
+        parent_area = str(data.get("parent_area_name") or "").strip()
+        area_name = str(data.get("area_name") or "").strip()
+        if parent_area and area_name and parent_area != area_name:
+            area_str = f"{parent_area} · {area_name}"
+        else:
+            area_str = area_name or parent_area
+
+        try:
+            online = int(data.get("online") or 0)
+        except Exception:
+            online = 0
+
+        lines = [f"[B站直播] {title}"]
+        if uname:
+            lines.append(f"主播：{uname}")
+        lines.append(f"状态：{status_text}")
+        if area_str:
+            lines.append(f"分区：{area_str}")
+        if live_status == 1 and online > 0:
+            lines.append(f"人气：{online}")
+        summary_text = "\n".join(lines)
+
+        cover_url = str(data.get("user_cover") or data.get("keyframe") or "").strip()
+        if cover_url.startswith("//"):
+            cover_url = "https:" + cover_url
+        cover_b64 = await _download_cover_preserving_metadata(cover_url)
+        return summary_text, cover_b64
+    except Exception as e:
+        logger.debug("Bilibili live parse error: %s", e)
+        return None, None
+
+
+async def parse_douyin_live_url(url: str) -> tuple[str | None, str | None]:
+    """Parses Douyin live room links (`webcast.amemv.com` reflow or `live.douyin.com` web_rid) (Diana #1563)."""
+    try:
+        room_id, web_rid = douyin_live_target(url)
+        async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": USER_AGENT}) as client:
+            if not room_id and not web_rid and _supported_parse_domain(url) == "douyin.com":
+                r_redir = await _get_public_url(client, url)
+                room_id, web_rid = douyin_live_target(str(r_redir.url))
+            if not room_id and not web_rid:
+                return None, None
+
+            room: dict[str, Any] | None = None
+            fallback_anchor = ""
+
+            if room_id:
+                q_room = urllib.parse.quote(room_id)
+                reflow_url = (
+                    f"https://webcast.amemv.com/webcast/room/reflow/info/"
+                    f"?type_id=0&live_id=1&room_id={q_room}&app_id=1128"
+                )
+                r = await _get_public_url(
+                    client,
+                    reflow_url,
+                    headers={
+                        "User-Agent": DOUYIN_MOBILE_USER_AGENT,
+                        "Referer": "https://www.douyin.com/",
+                    },
+                )
+                if r.status_code != 200:
+                    return None, None
+                payload = r.json()
+                if not isinstance(payload, dict) or int(payload.get("status_code") or 0) != 0:
+                    return None, None
+                cand_room = (payload.get("data") or {}).get("room")
+                if isinstance(cand_room, dict) and cand_room:
+                    room = cand_room
+            else:
+                raw_ck = (os.getenv("DOUYIN_CK", "") or os.getenv("DIANA_DOUYIN_CK", "")).strip()
+                cookie_hdr = ""
+                ttwid = ""
+                if raw_ck:
+                    if "=" in raw_ck or ";" in raw_ck:
+                        ttwid = extract_cookie_field_value(raw_ck, "ttwid")
+                        cookie_hdr = re.sub(r"^cookie\s*:\s*", "", raw_ck, flags=re.I).strip()
+                    else:
+                        ttwid = raw_ck.strip('"').strip("'")
+                        cookie_hdr = f"ttwid={ttwid}"
+
+                if not ttwid:
+                    r_home = await _get_public_url(
+                        client,
+                        "https://live.douyin.com/",
+                        headers={"Referer": "https://live.douyin.com/"},
+                    )
+                    ttwid = (r_home.cookies.get("ttwid") or "").strip()
+                    if not ttwid:
+                        for sc_val in r_home.headers.get_list("set-cookie"):
+                            m_tt = re.search(r"(?:^|[;\s,])ttwid=([^;\s,]+)", sc_val)
+                            if m_tt:
+                                ttwid = m_tt.group(1).strip()
+                                break
+                    if ttwid:
+                        cookie_hdr = f"{cookie_hdr}; ttwid={ttwid}".lstrip("; ").strip()
+
+                enter_headers: dict[str, str] = {"Referer": "https://live.douyin.com/"}
+                if cookie_hdr:
+                    enter_headers["Cookie"] = cookie_hdr
+                q_wrid = urllib.parse.quote(web_rid)
+                enter_url = (
+                    f"https://live.douyin.com/webcast/room/web/enter/"
+                    f"?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&web_rid={q_wrid}"
+                )
+                r = await _get_public_url(client, enter_url, headers=enter_headers)
+                if r.status_code != 200:
+                    return None, None
+                payload = r.json()
+                if not isinstance(payload, dict) or int(payload.get("status_code") or 0) != 0:
+                    return None, None
+                data_sec = payload.get("data") or {}
+                if isinstance(data_sec, dict):
+                    fallback_anchor = str((data_sec.get("user") or {}).get("nickname") or "").strip()
+                    rooms_list = data_sec.get("data")
+                    if isinstance(rooms_list, list) and rooms_list and isinstance(rooms_list[0], dict):
+                        room = rooms_list[0]
+                    elif isinstance(data_sec.get("room"), dict) and data_sec.get("room"):
+                        room = data_sec["room"]
+
+            if not room:
+                return None, None
+
+        title = str(room.get("title") or "").strip() or "直播间"
+        anchor = str((room.get("owner") or {}).get("nickname") or fallback_anchor or "").strip()
+        try:
+            is_live = int(room.get("status") or 0) == 2
+        except Exception:
+            is_live = False
+        status_text = "直播中" if is_live else "未开播"
+        try:
+            online = int(room.get("user_count") or 0)
+        except Exception:
+            online = 0
+
+        lines = [f"[抖音直播] {title}"]
+        if anchor:
+            lines.append(f"主播：{anchor}")
+        lines.append(f"状态：{status_text}")
+        if is_live and online > 0:
+            lines.append(f"人气：{online}")
+        summary_text = "\n".join(lines)
+
+        url_list = (room.get("cover") or {}).get("url_list") or []
+        cover_url = next((str(u).strip() for u in url_list if isinstance(u, str) and str(u).strip()), "")
+        if cover_url.startswith("//"):
+            cover_url = "https:" + cover_url
+        cover_b64 = await _download_cover_preserving_metadata(cover_url)
+        return summary_text, cover_b64
+    except Exception as e:
+        logger.debug("Douyin live parse error: %s", e)
+        return None, None
+
+
 async def _parse_bilibili_url(url: str, sessdata: str = "") -> tuple[str | None, str | None]:
     try:
+        if bilibili_live_room_id(url):
+            return await parse_bilibili_live_url(url)
+
         bili_headers = {"User-Agent": USER_AGENT}
         clean_sess = extract_cookie_field_value(sessdata or os.getenv("BILIBILI_SESSDATA", ""), "SESSDATA")
         if clean_sess:
@@ -1209,6 +1706,9 @@ async def _parse_bilibili_url(url: str, sessdata: str = "") -> tuple[str | None,
             if _supported_parse_domain(url) == "b23.tv":
                 r_redir = await _get_public_url(client, url)
                 final_url = str(r_redir.url)
+
+            if bilibili_live_room_id(final_url):
+                return await parse_bilibili_live_url(final_url)
 
             m_bv = re.search(r"(BV[0-9A-Za-z]{10})", final_url)
             m_av = re.search(r"av(\d+)", final_url, re.I)
@@ -1235,14 +1735,14 @@ async def _parse_bilibili_url(url: str, sessdata: str = "") -> tuple[str | None,
             pic = d.get("pic", "")
             bvid = d.get("bvid", "")
 
-            cover_b64 = await _download_image_as_jpeg_b64(pic)
-            card = (
-                f"📺 【B站视频解析】{title}\n"
-                f"👤 UP主：{owner}  |  ▶️ 播放：{views}  |  👍 点赞：{likes}  |  💬 弹幕：{danmaku}\n"
-                f"📝 简介：{desc or '无简介'}\n"
-                f"🔗 https://www.bilibili.com/video/{bvid}"
-            )
-            return card, cover_b64
+        card = (
+            f"📺 【B站视频解析】{title}\n"
+            f"👤 UP主：{owner}  |  ▶️ 播放：{views}  |  👍 点赞：{likes}  |  💬 弹幕：{danmaku}\n"
+            f"📝 简介：{desc or '无简介'}\n"
+            f"🔗 https://www.bilibili.com/video/{bvid}"
+        )
+        cover_b64 = await _download_cover_preserving_metadata(pic)
+        return card, cover_b64
     except Exception as e:
         logger.debug("Bilibili parse error: %s", e)
         return None, None
@@ -1291,7 +1791,6 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
                 if not media_url:
                     media_url = author.get("avatar_url") or ""
 
-                img_b64 = await _download_image_as_jpeg_b64(media_url)
                 card = (
                     f"🐦 【X / Twitter 推文】{name} (@{screen_name})\n"
                     f"━━━━━━━━━━━━━━\n"
@@ -1300,6 +1799,7 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
                     f"❤️ 喜欢：{likes}  |  🔁 转推：{retweets}  |  👁️ 浏览：{views}\n"
                     f"🔗 https://x.com/{screen_name}/status/{tweet_id}"
                 )
+                img_b64 = await _download_cover_preserving_metadata(media_url)
                 return card, img_b64
 
             # Case B: X / Twitter User Profile Page
@@ -1318,7 +1818,6 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
             joined = u_info.get("joined") or ""
             avatar_url = u_info.get("avatar_url") or ""
 
-            avatar_b64 = await _download_image_as_jpeg_b64(avatar_url)
             card = (
                 f"👤 【X / Twitter 用户主页】{name} (@{screen_name})\n"
                 f"📝 简介：{desc}\n"
@@ -1326,6 +1825,7 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
                 + (f"  |  加入于：{joined}" if joined else "")
                 + f"\n🔗 https://x.com/{screen_name}"
             )
+            avatar_b64 = await _download_cover_preserving_metadata(avatar_url)
             return card, avatar_b64
     except Exception as e:
         logger.debug("Twitter parse error: %s", e)
@@ -1454,6 +1954,10 @@ def extract_xiaohongshu_note_from_state(
 
 async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None]:
     try:
+        dy_room_id, dy_web_rid = douyin_live_target(url)
+        if dy_room_id or dy_web_rid:
+            return await parse_douyin_live_url(url)
+
         domain = _supported_parse_domain(url)
         async with httpx.AsyncClient(
             timeout=10.0,
@@ -1467,23 +1971,28 @@ async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None
                     author = d.get("author_name")
                     thumb = d.get("thumbnail_url")
                     if title:
-                        img_b64 = await _download_image_as_jpeg_b64(thumb or "")
                         card = (
                             f"▶️ 【YouTube 视频解析】{title}\n"
                             f"👤 频道：{author or '未知'}\n"
                             f"🔗 {url}"
                         )
+                        img_b64 = await _download_cover_preserving_metadata(thumb or "")
                         return card, img_b64
 
             # Xiaohongshu / Douyin / General meta extraction
             r = await _get_public_url(client, url)
+            final_social_url = str(r.url)
+            redir_room_id, redir_web_rid = douyin_live_target(final_social_url)
+            if redir_room_id or redir_web_rid:
+                return await parse_douyin_live_url(final_social_url)
+
             if r.status_code != 200:
                 return None, None
 
             if domain in ("xiaohongshu.com", "xhslink.com"):
                 xhs_state = parse_xiaohongshu_state(r.text)
                 if xhs_state:
-                    m_nid = re.search(r"/(?:explore|discovery/item)/([0-9a-zA-Z]+)", str(r.url))
+                    m_nid = re.search(r"/(?:explore|discovery/item)/([0-9a-zA-Z]+)", final_social_url)
                     xhs_note = extract_xiaohongshu_note_from_state(
                         xhs_state, m_nid.group(1) if m_nid else ""
                     )
@@ -1505,14 +2014,14 @@ async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None
                         vid_urls = xiaohongshu_video_candidate_urls(xhs_note)
                         headline = n_title or (n_desc.splitlines()[0][:48] if n_desc else "")
                         if headline:
-                            img_b64 = await _download_image_as_jpeg_b64(first_img) if first_img else None
                             card = (
                                 f"🔗 【小红书解析】{headline}\n"
                                 + (f"👤 作者：{n_user}\n" if n_user else "")
                                 + (f"📝 摘要：{n_desc}\n" if n_desc else "")
                                 + (f"🎬 视频流：已识别 ({len(vid_urls)} 路)\n" if vid_urls else "")
-                                + f"🌐 {str(r.url)}"
+                                + f"🌐 {final_social_url}"
                             )
+                            img_b64 = await _download_cover_preserving_metadata(first_img) if first_img else None
                             return card, img_b64
 
             if BeautifulSoup is None:
@@ -1534,15 +2043,15 @@ async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None
 
             platform_tag = (
                 "小红书" if domain in ("xiaohongshu.com", "xhslink.com") else
-                "抖音" if domain == "douyin.com" else
+                "抖音" if domain in ("douyin.com", "live.douyin.com", "webcast.douyin.com", "webcast.amemv.com") else
                 "网页链接"
             )
-            img_b64 = await _download_image_as_jpeg_b64(img_url)
             card = (
                 f"🔗 【{platform_tag}解析】{title}\n"
                 + (f"📝 摘要：{desc}\n" if desc else "")
-                + f"🌐 {str(r.url)}"
+                + f"🌐 {final_social_url}"
             )
+            img_b64 = await _download_cover_preserving_metadata(img_url)
             return card, img_b64
     except Exception as e:
         logger.debug("Social URL parse error: %s", e)
@@ -1746,7 +2255,6 @@ async def _parse_wechat_mp_url(url: str) -> tuple[str | None, str | None]:
             if title == "微信公众号文章" and len(content) < 20:
                 return None, None
 
-            img_b64 = await _download_image_as_jpeg_b64(cover_url) if cover_url else None
             card_lines = [f"📰 【微信公众号推文】{title}"]
             if author:
                 card_lines.append(f"📌 公众号：{author}")
@@ -1755,7 +2263,9 @@ async def _parse_wechat_mp_url(url: str) -> tuple[str | None, str | None]:
             if content:
                 card_lines.append(f"📖 正文内容：\n{content[:2800]}")
             card_lines.append(f"🔗 {final_url}")
-            return "\n".join(card_lines), img_b64
+            summary_text = "\n".join(card_lines)
+        img_b64 = await _download_cover_preserving_metadata(cover_url) if cover_url else None
+        return summary_text, img_b64
     except Exception as e:
         logger.debug("WeChat MP URL parse error: %s", e)
         return None, None
@@ -1807,11 +2317,20 @@ async def extract_and_parse_link(raw_text: str) -> tuple[str | None, str | None]
 
     if domain == "mp.weixin.qq.com":
         return await _parse_wechat_mp_url(url)
-    if domain in ("bilibili.com", "b23.tv"):
+    if domain in ("live.bilibili.com", "bilibili.com", "b23.tv"):
         return await _parse_bilibili_url(url)
     if domain in ("x.com", "twitter.com"):
         return await _parse_twitter_url(url)
-    if domain in ("youtube.com", "youtu.be", "xiaohongshu.com", "xhslink.com", "douyin.com"):
+    if domain in (
+        "youtube.com",
+        "youtu.be",
+        "xiaohongshu.com",
+        "xhslink.com",
+        "webcast.amemv.com",
+        "webcast.douyin.com",
+        "live.douyin.com",
+        "douyin.com",
+    ):
         return await _parse_youtube_or_social_url(url)
 
     return None, None
@@ -2021,6 +2540,125 @@ def parse_wechat_file_xml(raw_text: str) -> tuple[str, str]:
         logger.warning("Failed to parse file %s: %s", filename, e)
 
     return filename, ""
+
+
+DEEPSEEK_OCR_BOX_BLOCK_RE = re.compile(r"<[|｜](?:det|box)[|｜]>[\s\S]*?<[|｜]/(?:det|box)[|｜]>")
+DEEPSEEK_OCR_TOKEN_RE = re.compile(r"<[|｜]/?[A-Za-z_]+[|｜]>")
+DEEPSEEK_OCR_COORDS_RE = re.compile(r"\[\[\s*\d+(?:\s*,\s*\d+){3}\s*\]\]")
+DEEPSEEK_OCR_BLANK_RE = re.compile(r"\n{3,}")
+MAX_DEEPSEEK_OCR_BYTES = 100 * 1024 * 1024
+
+
+def clean_deepseek_ocr_text(text: str) -> str:
+    """Strips DeepSeek OCR layout coordinate blocks and `<｜ref｜>` tokens while preserving text (Diana #1557)."""
+    if not text:
+        return ""
+    cleaned = text.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = DEEPSEEK_OCR_BOX_BLOCK_RE.sub("", cleaned)
+    cleaned = DEEPSEEK_OCR_TOKEN_RE.sub("", cleaned)
+    cleaned = DEEPSEEK_OCR_COORDS_RE.sub("", cleaned)
+    lines = [ln.rstrip(" \t") for ln in cleaned.split("\n")]
+    return DEEPSEEK_OCR_BLANK_RE.sub("\n\n", "\n".join(lines)).strip()
+
+
+async def ocr_via_deepseek(
+    data: bytes,
+    filename: str,
+    deepseek_api_key: str,
+    deepseek_base_url: str = "https://api.deepseek.com",
+) -> str:
+    """Uploads an image or scanned document to DeepSeek `/v1/tools/ocr` (`purpose=text_recognition`) (Diana #1557)."""
+    key = (deepseek_api_key or "").strip()
+    if not data or not key or len(data) > MAX_DEEPSEEK_OCR_BYTES:
+        return ""
+    safe_name = os.path.basename((filename or "").strip()) or "document.pdf"
+    endpoint = deepseek_tool_endpoint(deepseek_base_url, "ocr")
+    try:
+        async with httpx.AsyncClient(timeout=200.0) as client:
+            r = await client.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Accept": "application/json",
+                },
+                data={"purpose": "text_recognition"},
+                files={"file": (safe_name, data, "application/octet-stream")},
+            )
+            if r.status_code != 200 or not r.content:
+                return ""
+            raw_body = r.content.decode("utf-8", errors="replace").lstrip()
+            if not raw_body:
+                return ""
+            parsed = json.loads(raw_body)
+            if not isinstance(parsed, dict) or parsed.get("error"):
+                return ""
+            pages = parsed.get("pages") or []
+            if not isinstance(pages, list):
+                return ""
+            cleaned_pages: list[str] = []
+            for page in pages:
+                if not isinstance(page, dict):
+                    continue
+                page_txt = clean_deepseek_ocr_text(str(page.get("text") or ""))
+                if page_txt:
+                    cleaned_pages.append(page_txt)
+            return "\n\n".join(cleaned_pages)
+    except Exception as e:
+        logger.debug("DeepSeek OCR failed for %s: %s", safe_name, e)
+        return ""
+
+
+async def parse_wechat_file_xml_async(
+    raw_text: str,
+    *,
+    deepseek_api_key: str = "",
+    deepseek_base_url: str = "",
+) -> tuple[str, str]:
+    """Async file parser wrapper that falls back to DeepSeek `/v1/tools/ocr` on empty/scanned PDFs (Diana #1557)."""
+    filename, extracted = await asyncio.to_thread(parse_wechat_file_xml, raw_text)
+    if not (filename or "").lower().endswith(".pdf"):
+        return filename, extracted
+
+    body_only = re.sub(r"\[第\d+页\]", "", extracted or "")
+    body_non_ws = len(re.sub(r"\s+", "", body_only))
+    if body_non_ws >= 20:
+        return filename, extracted
+
+    if not ((deepseek_api_key or "").strip() and is_deepseek_api_host(deepseek_base_url)):
+        return filename, extracted
+
+    s = raw_text or ""
+    m_size = re.search(r'file_size="(\d+)"', s) or re.search(r"<totallen>(\d+)</totallen>", s)
+    if m_size:
+        try:
+            if int(m_size.group(1)) > MAX_PARSEABLE_FILE_BYTES:
+                return filename, extracted
+        except Exception:
+            pass
+
+    m_b64 = re.search(r'file_b64="([^"]+)"', s) or re.search(r"<file_b64>([^<]+)</file_b64>", s)
+    if not m_b64:
+        return filename, extracted
+    b64_payload = m_b64.group(1).strip()
+    if len(b64_payload) > int(MAX_PARSEABLE_FILE_BYTES * 1.4):
+        return filename, extracted
+
+    try:
+        raw_bytes = base64.b64decode(b64_payload)
+    except Exception:
+        return filename, extracted
+    if not raw_bytes or len(raw_bytes) > MAX_PARSEABLE_FILE_BYTES:
+        return filename, extracted
+
+    ocr_text = await ocr_via_deepseek(
+        raw_bytes,
+        filename,
+        deepseek_api_key=deepseek_api_key,
+        deepseek_base_url=deepseek_base_url or "https://api.deepseek.com",
+    )
+    if ocr_text.strip():
+        return filename, ocr_text.strip()[:12000]
+    return filename, extracted
 
 
 # ==============================================================================
@@ -3841,16 +4479,256 @@ def _clean_text_for_tts(text: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-async def synthesize_tts_mp3_b64(text: str, sf_api_key: str = "") -> str | None:
+MAX_DEEPSEEK_ASR_BYTES = 8 * 1024 * 1024
+
+
+def wrap_pcm24k_to_wav(pcm_bytes: bytes, sample_rate: int = 24000) -> bytes:
+    """Wraps 16-bit mono PCM audio bytes with a 44-byte RIFF WAVE header (Diana #1555)."""
+    raw = pcm_bytes or b""
+    sr = max(8000, int(sample_rate or 24000))
+    data_size = len(raw)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + data_size,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        1,
+        sr,
+        sr * 2,
+        2,
+        16,
+        b"data",
+        data_size,
+    )
+    return header + raw
+
+
+async def synthesize_tts_via_deepseek(
+    text: str,
+    deepseek_api_key: str,
+    deepseek_base_url: str = "https://api.deepseek.com",
+    voice_id: str = "stella",
+) -> bytes | None:
+    """Synthesizes speech via DeepSeek `/v1/tools/tts` (stella/tide, no `model` field), returning WAV bytes (Diana #1555)."""
+    key = (deepseek_api_key or "").strip()
+    cleaned_text = _clean_text_for_tts(text)
+    if not key or not cleaned_text:
+        return None
+    vid = (voice_id or "").strip() or "stella"
+    endpoint = deepseek_tool_endpoint(deepseek_base_url, "tts")
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            r = await client.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                    "Accept": "audio/*, application/octet-stream",
+                },
+                json={
+                    "text": cleaned_text,
+                    "voice_id": vid,
+                    "format": "wav",
+                },
+            )
+            if r.status_code != 200 or not r.content:
+                if "content exists risk" in (r.text if r.status_code != 200 else "").lower():
+                    logger.debug("DeepSeek TTS rejected by content policy")
+                return None
+            ct = (r.headers.get("content-type") or "").lower()
+            lead = r.content.lstrip()
+            if (
+                "application/json" in ct
+                or "text/html" in ct
+                or (lead.startswith(b"{") and b'"error"' in lead[:512])
+            ):
+                return None
+            if r.content.startswith(b"RIFF"):
+                return r.content
+            return wrap_pcm24k_to_wav(r.content, 24000)
+    except Exception as e:
+        logger.debug("DeepSeek TTS synthesis failed: %s", e)
+        return None
+
+
+def _resolve_ffmpeg_executable() -> str | None:
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg  # type: ignore
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def _convert_audio_bytes_to_wav16k(raw_audio: bytes) -> bytes | None:
+    """Converts arbitrary input audio bytes into 16kHz mono 16-bit PCM WAV (<= 120s) via ffmpeg."""
+    ffmpeg_bin = _resolve_ffmpeg_executable()
+    if not ffmpeg_bin or not raw_audio:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="whale_asr_") as tmpdir:
+            in_path = os.path.join(tmpdir, "input.audio")
+            out_path = os.path.join(tmpdir, "voice.wav")
+            with open(in_path, "wb") as f_in:
+                f_in.write(raw_audio)
+            proc = subprocess.run(
+                [
+                    ffmpeg_bin,
+                    "-nostdin",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-i",
+                    in_path,
+                    "-t",
+                    "120",
+                    "-ar",
+                    "16000",
+                    "-ac",
+                    "1",
+                    "-acodec",
+                    "pcm_s16le",
+                    "-f",
+                    "wav",
+                    out_path,
+                ],
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+            if proc.returncode != 0 or not os.path.exists(out_path):
+                return None
+            with open(out_path, "rb") as f_out:
+                wav_bytes = f_out.read()
+            return wav_bytes if wav_bytes else None
+    except Exception as e:
+        logger.debug("ffmpeg WAV conversion for DeepSeek ASR failed: %s", e)
+        return None
+
+
+async def transcribe_audio_via_deepseek(
+    audio_b64: str,
+    deepseek_api_key: str,
+    deepseek_base_url: str = "https://api.deepseek.com",
+) -> str | None:
+    """Transcribes audio (<= 8 MiB, <= 120s) via DeepSeek `/v1/tools/asr` (Diana #1555)."""
+    key = (deepseek_api_key or "").strip()
+    b64_clean = (audio_b64 or "").strip()
+    if not key or not b64_clean:
+        return None
+    if "," in b64_clean and b64_clean.startswith("data:"):
+        b64_clean = b64_clean.split(",", 1)[1].strip()
+    if len(b64_clean) > 12 * 1024 * 1024:
+        return None
+    try:
+        raw_audio = base64.b64decode(b64_clean)
+    except Exception:
+        return None
+    if not raw_audio or len(raw_audio) > MAX_DEEPSEEK_ASR_BYTES:
+        return None
+
+    if raw_audio.startswith(b"RIFF"):
+        upload_bytes = raw_audio
+        upload_name = "voice.wav"
+        upload_mime = "audio/wav"
+    elif raw_audio.startswith(b"OggS"):
+        upload_bytes = raw_audio
+        upload_name = "voice.ogg"
+        upload_mime = "audio/ogg"
+    else:
+        converted = await asyncio.to_thread(_convert_audio_bytes_to_wav16k, raw_audio)
+        if not converted or len(converted) > MAX_DEEPSEEK_ASR_BYTES:
+            return None
+        upload_bytes = converted
+        upload_name = "voice.wav"
+        upload_mime = "audio/wav"
+
+    endpoint = deepseek_tool_endpoint(deepseek_base_url, "asr")
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            r = await client.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Accept": "application/json",
+                },
+                files={"file": (upload_name, upload_bytes, upload_mime)},
+            )
+            if r.status_code != 200:
+                return None
+            parsed = r.json()
+            if not isinstance(parsed, dict):
+                return None
+            text = str(parsed.get("text") or "").strip()
+            return text or None
+    except Exception as e:
+        logger.debug("DeepSeek ASR transcription failed: %s", e)
+        return None
+
+
+async def synthesize_tts_mp3_b64(
+    text: str,
+    sf_api_key: str = "",
+    *,
+    deepseek_api_key: str = "",
+    deepseek_base_url: str = "",
+    voice_id: str = "stella",
+) -> str | None:
     """
-    Synthesizes Dafeiyu's spoken reply into MP3 base64 using edge-tts (zh-CN-XiaoyiNeural)
-    with fallback to SiliconFlow CosyVoice2.
+    Synthesizes Dafeiyu's spoken reply into audio base64:
+    1. SiliconFlow CosyVoice2 first when `sf_api_key` (or env) is configured;
+    2. DeepSeek `/v1/tools/tts` when `deepseek_api_key` is provided and `is_deepseek_api_host(deepseek_base_url)`;
+    3. Microsoft Edge Neural TTS (`zh-CN-XiaoyiNeural`) fallback.
     """
     spoken = _clean_text_for_tts(text)
     if not spoken or len(spoken) < 2 or len(spoken) > 140:
         return None
 
-    # 1. Primary: Microsoft Edge Neural TTS (zh-CN-XiaoyiNeural - lively young female voice)
+    # 1. Primary when configured: SiliconFlow CosyVoice2 TTS API
+    resolved_sf_key = _resolve_sf_api_key(sf_api_key)
+    if resolved_sf_key:
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                r = await client.post(
+                    "https://api.siliconflow.cn/v1/audio/speech",
+                    headers={"Authorization": f"Bearer {resolved_sf_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": "FunAudioLLM/CosyVoice2-0.5B",
+                        "input": spoken,
+                        "voice": "FunAudioLLM/CosyVoice2-0.5B:claire",
+                        "response_format": "mp3",
+                    },
+                )
+                ct = (r.headers.get("content-type") or "").lower()
+                if (
+                    r.status_code == 200
+                    and len(r.content) >= 4
+                    and "application/json" not in ct
+                    and not r.content.lstrip().startswith(b"{")
+                ):
+                    return base64.b64encode(r.content).decode("ascii")
+        except Exception as e:
+            logger.debug("SiliconFlow TTS failed, falling back: %s", e)
+
+    # 2. DeepSeek /v1/tools/tts when DeepSeek key + DeepSeek API host are configured
+    if (deepseek_api_key or "").strip() and is_deepseek_api_host(deepseek_base_url):
+        wav_bytes = await synthesize_tts_via_deepseek(
+            spoken,
+            deepseek_api_key=deepseek_api_key,
+            deepseek_base_url=deepseek_base_url or "https://api.deepseek.com",
+            voice_id=voice_id,
+        )
+        if wav_bytes:
+            return base64.b64encode(wav_bytes).decode("ascii")
+
+    # 3. Fallback: Microsoft Edge Neural TTS (zh-CN-XiaoyiNeural - lively young female voice)
     try:
         import edge_tts
 
@@ -3862,26 +4740,7 @@ async def synthesize_tts_mp3_b64(text: str, sf_api_key: str = "") -> str | None:
         if len(audio_bytes) > 512:
             return base64.b64encode(audio_bytes).decode("ascii")
     except Exception as e:
-        logger.debug("edge-tts synthesis failed: %s", e)
-
-    # 2. Fallback: SiliconFlow CosyVoice2 TTS API
-    if sf_api_key:
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                r = await client.post(
-                    "https://api.siliconflow.cn/v1/audio/speech",
-                    headers={"Authorization": f"Bearer {sf_api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": "FunAudioLLM/CosyVoice2-0.5B",
-                        "input": spoken,
-                        "voice": "FunAudioLLM/CosyVoice2-0.5B:claire",
-                        "response_format": "mp3",
-                    },
-                )
-                if r.status_code == 200 and len(r.content) > 512:
-                    return base64.b64encode(r.content).decode("ascii")
-        except Exception as e:
-            logger.debug("SiliconFlow TTS fallback failed: %s", e)
+        logger.debug("edge-tts synthesis fallback failed: %s", e)
 
     return None
 
@@ -3890,10 +4749,27 @@ async def synthesize_and_send_wcf_voice(
     receiver: str,
     text: str,
     sf_api_key: str = "",
+    *,
+    deepseek_api_key: str = "",
+    deepseek_base_url: str = "",
+    voice_id: str = "stella",
 ) -> bool:
     """Synthesizes TTS audio for `text` and sends it as a native WeChat 4.1 SILK v3 voice bubble."""
-    audio_b64 = await synthesize_tts_mp3_b64(text, sf_api_key=sf_api_key)
+    audio_b64 = await synthesize_tts_mp3_b64(
+        text,
+        sf_api_key=sf_api_key,
+        deepseek_api_key=deepseek_api_key,
+        deepseek_base_url=deepseek_base_url,
+        voice_id=voice_id,
+    )
     if not audio_b64:
         return False
-    return await send_wcf_voice(receiver, audio_b64, filename="dafeiyu_voice.mp3")
+    is_wav = False
+    try:
+        head_raw = base64.b64decode(audio_b64[:8] + "====")
+        is_wav = head_raw.startswith(b"RIFF")
+    except Exception:
+        is_wav = False
+    fname = "dafeiyu_voice.wav" if is_wav else "dafeiyu_voice.mp3"
+    return await send_wcf_voice(receiver, audio_b64, filename=fname)
 

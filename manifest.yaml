@@ -4,13 +4,13 @@ metadata:
   author: "251231"
   name: whale_persona_plugin
   repository: https://github.com/a251231/whale_persona_plugin
-  version: 0.5.0
+  version: 0.5.1
   description:
-    en_US: DeepSeek Dafeiyu (Whale Girl) v0.5.0 Full Suite + Diana Extensions + WeChat 4.1 V7 Native Moments/Friend/LongText Bridge
-    zh_Hans: DeepSeek 大肥鱼（活人感全家桶 × Diana 全能版 v0.5.0：心情/八章节档案/24表情包看图+偷图/朋友圈读写赞评与回评/好友申请自动通过/语音听感/智能插话/联网搜索/公众号与35MB文件解析/V7超长文本保护/多曲库点歌）
+    en_US: DeepSeek Dafeiyu (Whale Girl) v0.5.1 Full Suite + Diana Extensions + WeChat 4.x Helper V7 Native Moments/Friend/LongText Bridge
+    zh_Hans: DeepSeek 大肥鱼（活人感全家桶 × Diana 全能版 v0.5.1：八维心情/八章节档案/24表情包看图+偷图/朋友圈读写赞评与回评/好友申请自动通过/DeepSeek+硅基双向语音/B站抖音直播间与全平台链接解析/35MB文件+OCR/多曲库点歌）
   label:
-    en_US: Whale Girl Persona (Dafeiyu Full Suite v0.5.0)
-    zh_Hans: 🐋 大肥鱼（活人感全家桶 × Diana 全能版 v0.5.0）
+    en_US: Whale Girl Persona (Dafeiyu Full Suite v0.5.1)
+    zh_Hans: 🐋 大肥鱼（活人感全家桶 × Diana 全能版 v0.5.1）
   icon: assets/memes/ganfan.jpg
 spec:
   config:
