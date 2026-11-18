@@ -135,6 +135,8 @@ __all__ = [
     "pick_random_playable_song",
     "pick_stolen_or_official_meme",
     "read_webpage_content",
+    "resolve_any_supported_link",
+    "resolver_url_dedupe_key",
     "save_stolen_memes",
     "search_and_fetch_music",
     "search_via_deepseek",
@@ -785,7 +787,7 @@ async def read_webpage_content(
 # 5. 全平台链接解析（B站视频与直播 / YouTube / X(Twitter) / 小红书 / 抖音视频与直播 / 微信卡片）
 # ==============================================================================
 
-URL_REGEX = re.compile(r"https?://[^\s<>\"'）)】\]]+")
+URL_REGEX = re.compile(r"https?://[^\s<>\"'（(）)【\[\]】]+")
 SUPPORTED_PARSE_DOMAINS = (
     "live.bilibili.com",
     "bilibili.com",
@@ -878,10 +880,44 @@ def has_supported_media_link_or_card(raw_text: str) -> bool:
         return False
     if ("<appmsg" in s or s.startswith("<?xml")) and ("<type>5</type>" in s or "<type>6</type>" in s):
         return True
-    m = URL_REGEX.search(s)
-    if not m:
-        return False
-    return bool(_supported_parse_domain(m.group(0)))
+    for m in URL_REGEX.finditer(s):
+        url = m.group(0).rstrip(".,，。!！?？;；")
+        if _supported_parse_domain(url):
+            return True
+    return False
+
+
+def resolver_url_dedupe_key(url: str) -> str:
+    """Returns a deduplication key for link parsing (Diana #1585).
+
+    Bilibili video URLs carrying different ``?t=`` timestamps or tracking params share the key
+    ``bilibili:<bvid_or_av>:p<page>`` so one video note does not consume multiple link parse slots.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urllib.parse.urlparse(raw)
+    except ValueError:
+        return raw
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if _host_matches_domain(host, "bilibili.com"):
+        m_bv = re.search(r"(BV[0-9A-Za-z]{10})", parsed.path or "")
+        m_av = re.search(r"(av\d+)", parsed.path or "", re.I)
+        vid_id = m_bv.group(1) if m_bv else (m_av.group(1).lower() if m_av else "")
+        if vid_id:
+            qs = urllib.parse.parse_qs(parsed.query)
+            page = 1
+            for raw_p in (qs.get("p") or []):
+                try:
+                    p_int = int(str(raw_p).strip())
+                    if p_int >= 1:
+                        page = p_int
+                        break
+                except ValueError:
+                    continue
+            return f"bilibili:{vid_id}:p{page}"
+    return urllib.parse.urlunparse(parsed._replace(fragment=""))
 
 
 def _encode_image_to_jpeg_b64_sync(raw_bytes: bytes) -> str:
@@ -1179,6 +1215,17 @@ async def _parse_bilibili_url(url: str, sessdata: str = "") -> tuple[str | None,
             else:
                 return None, None
 
+            page_num = 1
+            try:
+                qs_bili = urllib.parse.parse_qs(urllib.parse.urlparse(final_url).query)
+                for raw_p in (qs_bili.get("p") or []):
+                    p_cand = int(str(raw_p).strip())
+                    if p_cand >= 1:
+                        page_num = p_cand
+                        break
+            except Exception:
+                page_num = 1
+
             r = await _get_public_url(
                 client,
                 "https://api.bilibili.com/x/web-interface/view",
@@ -1200,12 +1247,25 @@ async def _parse_bilibili_url(url: str, sessdata: str = "") -> tuple[str | None,
             desc = (d.get("desc") or "").strip()[:240]
             pic = d.get("pic", "")
             bvid = d.get("bvid", "")
+            part_title = ""
+            if page_num >= 2 and isinstance(d.get("pages"), list):
+                for pg in d.get("pages") or []:
+                    if isinstance(pg, dict):
+                        try:
+                            if int(pg.get("page") or 0) == page_num:
+                                part_title = str(pg.get("part") or "").strip()
+                                break
+                        except (TypeError, ValueError):
+                            continue
 
+        page_line = f"📑 分P：P{page_num}{(' · ' + part_title) if part_title else ''}\n" if page_num >= 2 else ""
+        page_suffix = f"?p={page_num}" if page_num >= 2 else ""
         card = (
             f"📺 【B站视频解析】{title}\n"
             f"👤 UP主：{owner}  |  ▶️ 播放：{views}  |  👍 点赞：{likes}  |  💬 弹幕：{danmaku}\n"
+            f"{page_line}"
             f"📝 简介：{desc or '无简介'}\n"
-            f"🔗 https://www.bilibili.com/video/{bvid}"
+            f"🔗 https://www.bilibili.com/video/{bvid}{page_suffix}"
         )
         cover_b64 = await _download_cover_preserving_metadata(pic)
         return card, cover_b64
@@ -1251,7 +1311,23 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
                 author = tw.get("author") or {}
                 name = author.get("name", user_handle)
                 screen_name = author.get("screen_name", user_handle)
-                text = tw.get("text", "")
+                text = str(tw.get("text", "") or "")
+                reposted_by = tw.get("reposted_by")
+                repost_prefix = ""
+                if isinstance(reposted_by, dict):
+                    rep_handle = str(reposted_by.get("screen_name") or "").strip().lstrip("@")
+                    if rep_handle:
+                        orig_handle = f"@{screen_name}" if screen_name else "原作者"
+                        repost_prefix = f"🔁 转推自 {orig_handle}（由 @{rep_handle} 转推）：\n"
+                quote_block = ""
+                quote_obj = tw.get("quote")
+                if isinstance(quote_obj, dict) and str(quote_obj.get("text") or "").strip():
+                    q_author = quote_obj.get("author") or {}
+                    q_handle = str(q_author.get("screen_name") or "").strip().lstrip("@")
+                    q_label = f"@{q_handle}" if q_handle else str(q_author.get("name") or "原作者").strip()
+                    q_text = str(quote_obj.get("text") or "").strip()[:180]
+                    quote_block = f"\n💬 引用 {q_label}：{q_text}"
+                body_text = f"{repost_prefix}{text}{quote_block}".strip()
                 likes = tw.get("likes", 0)
                 retweets = tw.get("retweets", 0)
                 views = tw.get("views", 0)
@@ -1260,13 +1336,17 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
                 media_all = (tw.get("media") or {}).get("all") or []
                 if media_all:
                     media_url = media_all[0].get("thumbnail_url") or media_all[0].get("url") or ""
+                if not media_url and isinstance(quote_obj, dict):
+                    q_media = (quote_obj.get("media") or {}).get("all") or []
+                    if q_media:
+                        media_url = q_media[0].get("thumbnail_url") or q_media[0].get("url") or ""
                 if not media_url:
                     media_url = author.get("avatar_url") or ""
 
                 card = (
                     f"🐦 【X / Twitter 推文】{name} (@{screen_name})\n"
                     f"━━━━━━━━━━━━━━\n"
-                    f"{text}\n"
+                    f"{body_text}\n"
                     f"━━━━━━━━━━━━━━\n"
                     f"❤️ 喜欢：{likes}  |  🔁 转推：{retweets}  |  👁️ 浏览：{views}\n"
                     f"🔗 https://x.com/{screen_name}/status/{tweet_id}"
@@ -1770,9 +1850,16 @@ async def _parse_wechat_mp_url(url: str) -> tuple[str | None, str | None]:
         return None, None
 
 
-async def extract_and_parse_link(raw_text: str, *, _depth: int = 0) -> tuple[str | None, str | None]:
+async def extract_and_parse_link(
+    raw_text: str,
+    *,
+    _depth: int = 0,
+    max_links: int = 3,
+) -> tuple[str | None, str | None]:
     """
     Detects and parses links from plain text OR WeChat <appmsg><type>5</type> XML cards.
+    Deduplicates multiple links (e.g., Bilibili `?t=` timestamp variants by BV/av + page)
+    and resolves up to ``max_links`` distinct supported URLs.
     Returns (parsed_card_text, cover_image_b64).
     """
     s = (raw_text or "").strip()
@@ -1807,32 +1894,59 @@ async def extract_and_parse_link(raw_text: str, *, _depth: int = 0) -> tuple[str
             return card.strip(), None
         return None, None
 
-    # 2. Check plain text URLs for supported platforms
-    m = URL_REGEX.search(s)
-    if not m:
+    # 2. Check plain text URLs for supported platforms (deduplicated, capped at max_links)
+    seen_keys: set[str] = set()
+    targets: list[tuple[str, str]] = []
+    limit = max(1, int(max_links))
+    for m in URL_REGEX.finditer(s):
+        url = m.group(0).rstrip(".,，。!！?？;；")
+        domain = _supported_parse_domain(url)
+        if not domain:
+            continue
+        dedupe_k = resolver_url_dedupe_key(url) or url
+        if dedupe_k in seen_keys:
+            continue
+        seen_keys.add(dedupe_k)
+        targets.append((url, domain))
+        if len(targets) >= limit:
+            break
+
+    if not targets:
         return None, None
-    url = m.group(0).rstrip(".,，。!！?？;；")
-    domain = _supported_parse_domain(url)
 
-    if domain == "mp.weixin.qq.com":
-        return await _parse_wechat_mp_url(url)
-    if domain in ("live.bilibili.com", "bilibili.com", "b23.tv"):
-        return await _parse_bilibili_url(url)
-    if domain in ("x.com", "twitter.com"):
-        return await _parse_twitter_url(url)
-    if domain in (
-        "youtube.com",
-        "youtu.be",
-        "xiaohongshu.com",
-        "xhslink.com",
-        "webcast.amemv.com",
-        "webcast.douyin.com",
-        "live.douyin.com",
-        "douyin.com",
-    ):
-        return await _parse_youtube_or_social_url(url)
+    cards: list[str] = []
+    first_img: str | None = None
+    for url, domain in targets:
+        card_txt: str | None = None
+        img_b64: str | None = None
+        if domain == "mp.weixin.qq.com":
+            card_txt, img_b64 = await _parse_wechat_mp_url(url)
+        elif domain in ("live.bilibili.com", "bilibili.com", "b23.tv"):
+            card_txt, img_b64 = await _parse_bilibili_url(url)
+        elif domain in ("x.com", "twitter.com"):
+            card_txt, img_b64 = await _parse_twitter_url(url)
+        elif domain in (
+            "youtube.com",
+            "youtu.be",
+            "xiaohongshu.com",
+            "xhslink.com",
+            "webcast.amemv.com",
+            "webcast.douyin.com",
+            "live.douyin.com",
+            "douyin.com",
+        ):
+            card_txt, img_b64 = await _parse_youtube_or_social_url(url)
+        if card_txt:
+            cards.append(card_txt)
+        if img_b64 and first_img is None:
+            first_img = img_b64
 
-    return None, None
+    if not cards:
+        return None, first_img
+    return "\n\n".join(cards), first_img
+
+
+resolve_any_supported_link = extract_and_parse_link
 
 # ==============================================================================
 # 6. 文件解析（PDF / Word / Excel / PPT / EPUB / 文本代码）与 V7 超长文本保护

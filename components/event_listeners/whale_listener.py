@@ -118,6 +118,9 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "_strip_negation_polarity",
         "_add_dedup_fact",
         "_dedup_facts_in_place",
+        "normalize_mood_judge_delta",
+        "compute_memory_query_metrics",
+        "compare_memory_recall_key",
         "MoodMemoryMixin",
     ),
     "state_repo": (
@@ -242,6 +245,7 @@ class WhaleListener(
         self._group_direct_wake_seq: dict[str, int] = {}
         self._last_multi_bubble: dict[str, bool] = {}
         self._user_docs: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self._recent_memory_injections: dict[str, dict[str, Any]] = {}
 
     def _reset_session(self, session_key: str, doc_key: tuple[str, str, str]) -> None:
         for task in self._session_tasks.pop(session_key, set()):
@@ -256,6 +260,9 @@ class WhaleListener(
         ):
             cache.pop(session_key, None)
         self._user_docs.pop(doc_key, None)
+        self._recent_memory_injections.pop(session_key, None)
+        if len(doc_key) >= 3 and doc_key[2]:
+            self._recent_memory_injections.pop(f"person:{doc_key[2]}", None)
         for key in [key for key in self._temper_state if key[0] == session_key]:
             self._temper_state.pop(key, None)
 
@@ -2340,7 +2347,22 @@ class WhaleListener(
                 core_profile_sec = self._build_core_stable_profile_section(u)
                 intimacy_sec = self._build_intimacy_section(u, mode=settings["mode"])
                 mood_sec = self._build_mood_section(u)
-                mem_sec = self._recall_memories(u, cleaned_text)
+                recall_query = cleaned_text
+                short_clean = df.strip_memory_query_noise(cleaned_text)
+                if 0 < len(short_clean) < 6 and history:
+                    prev_user_texts = [
+                        str(c or "").strip()
+                        for _, role, c in history
+                        if role == "user" and str(c or "").strip()
+                    ][-2:]
+                    if prev_user_texts:
+                        recall_query = " ".join(prev_user_texts + [cleaned_text])
+                mem_sec = self._recall_memories(
+                    u,
+                    recall_query,
+                    current_turn_text=cleaned_text,
+                    session_id=f"person:{sender_id}",
+                )
             moment_ctx_line = (
                 await self._check_friend_moment_for_chat(
                     sender_id, sender_name, session_key, cleaned_text, history_len=len(history)
