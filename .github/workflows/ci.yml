@@ -16,6 +16,7 @@ jobs:
   test-and-package:
     name: Unit Tests & .lbpkg Build (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -40,13 +41,15 @@ jobs:
       - name: Check Python syntax & bytecode compilation
         run: python -m compileall -q main.py components tests
 
+      - name: Check whitespace & diff hygiene
+        run: git diff --check
+
       - name: Run unit test suite
         run: python -m unittest discover -s tests -v
 
-      - name: Verify .lbpkg package build
+      - name: Build, repack & verify .lbpkg package
         run: |
           lbp build
-          ls -lh dist/*.lbpkg
           python - <<'PY'
           from pathlib import Path
           import zipfile
@@ -55,10 +58,47 @@ jobs:
           manifest = yaml.safe_load(Path("manifest.yaml").read_text(encoding="utf-8"))
           meta = manifest["metadata"]
           expected = Path("dist") / f"{meta['author']}-{meta['name']}-{meta['version']}.lbpkg"
+          assert expected.is_file(), f"Missing package: {expected}"
+
+          repacked = expected.with_suffix(".lbpkg.repack")
+          skip_prefixes = ("tests/", ".github/", "dist/", ".git/", "__pycache__/")
+          skip_files = {"AGENTS.md"}
+          with zipfile.ZipFile(expected, "r") as zin, zipfile.ZipFile(
+              repacked, "w", compression=zipfile.ZIP_DEFLATED
+          ) as zout:
+              for info in zin.infolist():
+                  norm = info.filename.replace("\\", "/").removeprefix("./")
+                  if not norm or norm.endswith("/"):
+                      continue
+                  if (
+                      norm.startswith(skip_prefixes)
+                      or norm in skip_files
+                      or "/__pycache__/" in f"/{norm}"
+                      or norm.endswith((".tmp", ".pyc", ".pyo"))
+                  ):
+                      continue
+                  data = zin.read(info.filename)
+                  info.filename = norm
+                  info.compress_type = zipfile.ZIP_DEFLATED
+                  zout.writestr(info, data)
+          repacked.replace(expected)
+
           assert expected.is_file() and expected.stat().st_size > 100_000, f"Invalid package: {expected}"
           with zipfile.ZipFile(expected, "r") as zf:
-              names = set(zf.namelist())
-              for req in ("manifest.yaml", "main.py", "requirements.txt", "README.md"):
-                  assert req in names, f"Missing {req} in {expected}"
+              names = {n.replace("\\", "/").removeprefix("./") for n in zf.namelist()}
+
+          for req in ("manifest.yaml", "main.py", "requirements.txt", "README.md", "readme/README_zh_Hans.md"):
+              assert req in names, f"Missing {req} in {expected}"
+          assert any(n.startswith("assets/") for n in names), f"Missing assets/ in {expected}"
+          for py_file in Path("components").rglob("*.py"):
+              if "__pycache__" in py_file.parts:
+                  continue
+              rel = py_file.as_posix()
+              assert rel in names, f"Missing {rel} in {expected}"
+          for forbidden in ("tests/", ".github/", "dist/"):
+              assert not any(n.startswith(forbidden) for n in names), f"Unexpected {forbidden} in {expected}"
+          assert "AGENTS.md" not in names, f"Unexpected AGENTS.md in {expected}"
+          assert not any(n.endswith(".tmp") for n in names), f"Unexpected *.tmp in {expected}"
           print(f"Verified package: {expected} ({expected.stat().st_size} bytes, {len(names)} entries)")
           PY
+          ls -lh dist/*.lbpkg

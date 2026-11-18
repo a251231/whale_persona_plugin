@@ -2,16 +2,16 @@
 
 <img src="../assets/memes/ganfan.jpg" width="120" style="border-radius: 50%;" alt="大肥鱼 Dafeiyu" />
 
-# 🐋 LangBot 大肥鱼插件 (`whale_persona_plugin` v0.5.1)
+# 🐋 LangBot 大肥鱼插件 (`whale_persona_plugin` v0.5.2)
 **DeepSeek 鲸鱼娘「活人感全家桶」 × Diana 全能扩展 × 微信 4.1 V7 原生增强**
 
-[![Version](https://img.shields.io/badge/version-v0.5.1-blue.svg)](../manifest.yaml)
+[![Version](https://img.shields.io/badge/version-v0.5.2-blue.svg)](../manifest.yaml)
 [![Release](https://img.shields.io/github/v/release/a251231/whale_persona_plugin?label=release&color=00B4D8)](https://github.com/a251231/whale_persona_plugin/releases)
 [![CI](https://github.com/a251231/whale_persona_plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/a251231/whale_persona_plugin/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](../requirements.txt)
 [![LangBot](https://img.shields.io/badge/LangBot-Plugin%20v1-00B4D8.svg)](https://github.com/RockChinQ/LangBot)
 [![Model](https://img.shields.io/badge/DeepSeek-deepseek--flash-4D6BFE.svg)](https://api.deepseek.com)
-[![Tests](https://img.shields.io/badge/tests-146%20passed-brightgreen.svg)](../tests/)
+[![Tests](https://img.shields.io/badge/tests-257%20passed-brightgreen.svg)](../tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](#-十许可证与致谢)
 
 [核心模块](#-一核心模块总览dsh-六大件--diana-扩展--微信-41-v7-原生增强) •
@@ -55,10 +55,12 @@
 flowchart LR
     A["微信 4.1/4.2 客户端\n+ Prometheus-first/helper V7 DLL"] <-->|"Native C++ Bridge"| B["WeChatFerry V4 Gateway\n(server_v4.py HTTP / WS)"]
     B <-->|"/ws (64MiB) + /api/send*"| H["LangBot 平台适配器\n(wechatferry)"]
-    H <-->|"LangBot 标准事件链"| C["WhaleListener (主监听器)"]
+    H <-->|"LangBot 标准事件链"| C["WhaleListener (主监听器 / 兼容门面)"]
     C --> D["interaction_settings.py\n(会话档位/口令/权限注册表)"]
-    C --> E["diana_features.py\n(链接/公众号/35MB文件/点歌/WCF接口)"]
-    B <-->|"朋友圈/语音/卡片/加好友"| E
+    C --> W["components/whale_core/\n(状态/网关/媒体/Prompt/记忆/指令/出站)"]
+    C --> E["diana_features.py\n(外部扩展兼容门面)"]
+    E --> W
+    B <-->|"朋友圈/语音/卡片/加好友"| W
     C <--> F["DeepSeek API (deepseek-flash)\n原生看图 / 双人格对话 / 记忆提炼"]
     C <--> G["SiliconFlow API\nSenseVoice 听感 / CosyVoice2 / VL 兜底"]
 ```
@@ -69,11 +71,21 @@ whale_persona_plugin/
 ├── main.py                                  # 插件入口 (WhalePersonaPlugin)
 ├── manifest.yaml                            # LangBot 插件元数据与配置项定义
 ├── assets/memes/                            # 内置 24 张大肥鱼官方表情包素材
-├── components/event_listeners/
-│   ├── whale_listener.py                    # 核心事件监听、双人格 Prompt、双轨记忆、工具与后台任务
-│   ├── diana_features.py                    # 链接/公众号/文件解析、多曲库点歌、WCF 网关交互与公网安全校验
-│   └── interaction_settings.py              # 会话设置注册表、三档交互档位与兼容口令解析
-└── tests/                                   # 标准库 unittest 回归测试套件 (146 项用例)
+├── components/
+│   ├── event_listeners/
+│   │   ├── whale_listener.py                # LangBot 主事件监听入口与向后兼容门面
+│   │   ├── diana_features.py                # 外部扩展兼容门面与历史公共符号导出
+│   │   └── interaction_settings.py          # 会话设置注册表、三档交互档位与兼容口令解析
+│   └── whale_core/
+│       ├── __init__.py                      # 核心子模块包导出
+│       ├── state_repo.py                    # 防抖原子持久化、_save_seq 择新恢复、状态锁与缓存治理
+│       ├── http_gateway.py                  # 共享 HTTP 连接池、WCF 熔断器、公网 SSRF 校验与网关接口
+│       ├── media_parsers.py                 # ZIP-safe 文档解析/OCR、PIL/GIF、全平台链接、点歌与语音 TTS/ASR
+│       ├── prompts.py                       # 三级 Prefix-Cache 分层 Prompt、动态上下文与反复读构建
+│       ├── mood_memory.py                   # 八维情绪衰减、三阶亲密度、极性去重记忆召回与每日作息
+│       ├── commands.py                      # 统一前缀指令分发、严格主人鉴权与记忆/朋友圈/好友命令
+│       └── outbound.py                      # 统一出站气泡调度（拆分、表情包与 WCF/LangBot 投递）
+└── tests/                                   # 标准库 unittest 回归测试套件 (257 项用例)
 ```
 
 ---
@@ -94,10 +106,11 @@ whale_persona_plugin/
 | :--- | :---: | :--- | :--- |
 | `deepseek_api_key` | 是 | `""` | DeepSeek API 密钥（主对话、原生多模态识图、记忆归档与粮仓余额查询） |
 | `siliconflow_api_key` | 否 | `""` | 硅基流动 API 密钥（用于免费 `FunAudioLLM/SenseVoiceSmall` 微信语音转写+语气识别、`CosyVoice2` 语音合成及非多模态网关下的 `Qwen3-VL` 视觉兜底） |
+| `search_api_key` | 否 | `""` | 联网搜索 API 密钥（可选 Bocha / Tavily Search API Key；留空亦可免费直连内置搜索） |
 | `deepseek_base_url` | 否 | `https://api.deepseek.com` | DeepSeek 接口地址 |
 | `deepseek_model` | 否 | `deepseek-flash` | 默认主模型（对应 `DeepSeek-V4.1-Flash-1017`，原生支持多模态 `image_url` 识图与 `tools` 调用） |
 | `target_bot_uuid` | 否 | `""` | 绑定生效的机器人 UUID（留空则对所有机器人生效） |
-| `owner_ids` | 否 | `""` | 主人发送者账号 ID（如微信 `wxid_...`，多个用英文逗号分隔；仅主人私聊可操作全局自动朋友圈、自动同意好友及刷真实朋友圈） |
+| `owner_ids` | 否 | `""` | 主人发送者账号 ID（如微信 `wxid_...`，多个用英文逗号分隔；出于安全考虑**留空默认拒绝全部主人权限指令**，未配置时在私聊发送任意主人指令会自动安全回显你当前的 `wxid` 指引填写；仅主人私聊可操作全局开关、真实朋友圈读写赞评及好友管理） |
 | `max_history_turns` | 否 | `12` | 单会话保留的短期对话轮数上限 |
 
 ### 2. LangBot 平台适配器与微信网关说明
@@ -124,12 +137,12 @@ whale_persona_plugin/
 
 ### 1. 四大核心入口
 
-只需记住四个基础口令（前缀支持 `大肥鱼` / `鲸鱼娘` / `小鲸鱼`）：
+只需记住四个基础口令（前缀已统一支持 `大肥鱼` / `鲸鱼娘` / `小鲸鱼` 及兼容 `鲸鱼人设`，下方所有分类口令均通用）：
 
 | 入口 | 用途 |
 | :--- | :--- |
 | `大肥鱼 帮助` | 查看简短用法引导 |
-| `大肥鱼 设置` | 查看当前会话状态、切换交互档位（发 `大肥鱼 设置 高级` 查看完整开关） |
+| `大肥鱼 设置` | 查看当前会话状态、切换交互档位（发 `大肥鱼 设置 高级` 查看完整会话与全局开关：`回应` / `主动搭话` / `主动插话` / `连续接话` / `复读` / `表情` / `语音` / `偷图` / `自动朋友圈` / `朋友圈互动` / `自动同意好友`） |
 | `大肥鱼 记忆` | 私聊查看个人八章节档案，群聊查看本群独立档案与群友印象 |
 | `大肥鱼 重置` | 清除当前短期对话及操作者自己的文件缓存，保留长期记忆 |
 
@@ -165,6 +178,7 @@ whale_persona_plugin/
 | | `大肥鱼 朋友圈` | 查看大肥鱼内部鱼塘动态墙（空墙不会自动生成或外发） |
 | | `大肥鱼 点赞` | 为大肥鱼内部鱼塘最新一条动态点赞 |
 | **记忆维护** | `大肥鱼 记住 <内容>` | 手动向当前个人档案（私聊）或本群档案（群聊）写入一条长期记忆 |
+| | `大肥鱼 忘掉 <关键词>` | 按关键词精准删除当前个人档案（`facts` / `events` / `stable_profile` / `memories` / `archive`）或本群记忆与个人印象标签中的匹配条目（兼容 `忘记` / `删除记忆` / `忘掉记忆`） |
 | | `大肥鱼 整理档案` | 立即触发八章节长期档案去重与重整 |
 | | `大肥鱼 失忆` | 清空当前私聊用户或本群的全部长期记忆与短期上下文 |
 
@@ -177,18 +191,19 @@ whale_persona_plugin/
 | `大肥鱼 设置 语音 开启` / `关闭` | 开启或关闭当前会话的语音回复能力 |
 | `大肥鱼 设置 表情 开启` / `关闭` | 开启或关闭当前会话的表情包发送 |
 | `大肥鱼 设置 偷图 开启` / `关闭` | 开启或关闭自动采集群友/私聊有趣表情包入库 |
-| `大肥鱼 设置 群搭话 开启` / `关闭` | 单独开关本群主动插话（单独调整插话/接话/复读后，档位显示为“自定义”） |
+| `大肥鱼 设置 群搭话 开启` / `关闭` | 单独开关本群主动插话（群内也支持快捷口令 `大肥鱼 开启搭话` / `关闭搭话` 或 `本群开启搭话`，自动映射为本群主动插话；单独调整插话/接话/复读后，档位显示为“自定义”，若手动调回某预设参数组合则自动反推回对应档位） |
 | `大肥鱼 设置 连续接话 开启` / `关闭` | 单独开关本群活跃窗口连续接话 |
 | `大肥鱼 设置 复读 开启` / `关闭` | 单独开关本群随机人类的本质复读 |
 | `大肥鱼 复读设置 2人 30% 60秒` | 自定义本群复读触发人数阈值、概率与冷却秒数 |
 | `大肥鱼 设置 主动搭话 开启` / `关闭` | 单独开关当前私聊的后台主动找人（Speak-up） |
 | `大肥鱼 搭话记录` | 群内查看本群插话决策日志；主人私聊可查看当前机器人各群汇总记录 |
 
-#### （3）主人专属管理口令（需配置 `owner_ids` 并在主人私聊中使用）
+#### （3）主人专属管理口令（需配置 `owner_ids` 并在主人私聊中使用；`owner_ids` 留空时默认拒绝并安全回显你的 `wxid`）
 
 | 口令格式 | 功能说明 |
 | :--- | :--- |
-| `大肥鱼 设置 自动朋友圈 开启` / `关闭` | 全局开关：控制每日定时自动发朋友圈及后台朋友圈自动点赞/评论/回评巡检（新安装默认关闭） |
+| `大肥鱼 设置 自动朋友圈 开启` / `关闭` | 全局开关（`auto_moments_enabled`）：控制每日定时自动发朋友圈（若开启，同时也会启用朋友圈互动；新安装默认关闭） |
+| `大肥鱼 设置 朋友圈互动 开启` / `关闭` | 全局开关（`moments_auto_interact_enabled`）：独立控制后台对近 7 天活跃好友朋友圈的自动点赞/评论/回评及私聊顺手看动态，无需开启自动发朋友圈（新安装默认关闭） |
 | `大肥鱼 发朋友圈 [主题]` | 立即生成一条大肥鱼图文动态并同步发布至真实微信朋友圈 |
 | `大肥鱼 刷朋友圈`（或 `大肥鱼 看朋友圈`） | 通过微信 4.1 网关（`GET /api/moments`）读取真实朋友圈列表（含已赞状态、点赞人、评论摘要）并生成锐评 |
 | `大肥鱼 点赞朋友圈 <序号>` | 对最近一次「刷朋友圈」列表中的第 `<序号>` 条真实朋友圈执行原生点赞 |
@@ -205,7 +220,7 @@ whale_persona_plugin/
 ### 1. 朋友圈发布、刷圈锐评、评论自动回评与好友互动
 - **公开文案隐私红线与去重**：朋友圈文案仅使用角色公开状态、近 7 日去重的时段对齐日程（`daily_schedule`）、8 大日常主题轮换、历史动态与配图去重以及手动指定主题，**绝不读取任何私聊事实、个人档案、私聊事件或心情原因**。大肥鱼自身发出的朋友圈会记录于 `self_moments_history`，在对话中被问起自己发过的朋友圈时能准确回忆。
 - **主人私聊刷圈与点播互动**：主人私聊发送 `大肥鱼 刷朋友圈` 时读取真实朋友圈并附上毒舌/甜宠锐评，支持随后按序号直接点赞或评论；群聊及非主人私聊严格隔离，不调用真实朋友圈读取接口，仅展示内部鱼塘动态墙。
-- **后台自动互动与评论自动回评**：开启自动朋友圈后，后台定时任务（`_moments_auto_interact_loop`）及主动刷圈会巡检：
+- **后台自动互动与评论自动回评**：开启「自动朋友圈」（`auto_moments_enabled`）或「朋友圈互动」（`moments_auto_interact_enabled`）后，后台定时任务（`_moments_auto_interact_loop`）及主动刷圈会巡检：
   1. **评论自动回评**：检测大肥鱼自身朋友圈下收到的好友新评论，以及大肥鱼评论过的好友动态下对方的追评，自动生成符合人设的「`回复 <好友昵称>：...`」回评并按评论 ID 幂等去重；
   2. **近 7 天活跃好友动态赞评**：检测近 7 天内有私聊互动的好友新动态（`<=24h`），自动点赞并以一定概率留下符合半公开分寸的短评；
   3. **私聊顺手看动态**：日常私聊收到消息时优先从内存缓存非阻塞检查对方最新朋友圈（仅在对方明确提及“看我朋友圈”或“评论了你朋友圈”时实时拉取），若未赞则顺手点赞/回评，并在私聊回复中自然顺嘴提一句（绝不在公开评论区泄露私聊隐私）。
@@ -253,7 +268,8 @@ whale_persona_plugin/
 
 - **文件与长文缓存隔离**：30 分钟文档/推文/超长文本追问缓存统一使用 `(bot_uuid, session_key, sender_id)` 隔离键；私聊、不同群和不同机器人之间绝不串读。`大肥鱼 重置` 清除当前机器人会话的短期对话、群聊缓冲、图片及连续接话状态，并**只清除操作者自己的文件缓存**，保留长期档案，同时取消当前会话尚未完成的记忆判断与后续气泡。
 - **搭话日志权限隔离**：`大肥鱼 搭话记录` 在群内仅显示当前机器人在本群的记录；主人私聊可查看当前机器人的各群记录，其他私聊无权查看。
-- **SSRF 与公网下载校验**：网页正文、短链接还原、各平台 API、音乐/视频封面以及聊天图片/表情包 URL 下载，在每次请求及重定向前均强制通过共享的公网地址安全校验（拒绝回环、内网、链路本地与保留地址），最多允许 6 跳重定向，重定向不得跳过检查。
+- **主人权限与朋友圈安全门禁**：`owner_ids` 留空时默认拒绝全部主人权限指令（私聊触发时仅安全回显发送者自身 `wxid` 指引配置），群聊或非主人严禁触发真实朋友圈外发；`auto_moments_enabled`（自动朋友圈）与 `moments_auto_interact_enabled`（朋友圈互动）新安装默认均关闭。
+- **SSRF、压缩包与合并转发安全校验**：网页正文、短链接还原、各平台 API、音乐/视频封面以及聊天图片/表情包 URL 下载，在每次请求及重定向前均强制通过共享的公网地址安全校验（拒绝回环、内网、链路本地、保留地址、IPv4-mapped IPv6、NAT64、userinfo 与非 `80/443` 端口），强制流式字节上限并拒绝默认向 `r.jina.ai` 外传 URL，最多允许 6 跳重定向，重定向不得跳过检查；Office/EPUB 解析前置压缩包安全校验（拦截 Zip Bomb）；合并转发聊天记录 `<type>19</type>` 不得写入全局机器人动态唤醒词缓存。
 
 ---
 
@@ -277,7 +293,7 @@ git diff --check
 | 常见现象 | 排查与解决方式 |
 | :--- | :--- |
 | **群里 `@大肥鱼` 没反应** | 1. 群聊默认需加入白名单，先在群内发 `大肥鱼 设置 开启`；<br>2. 检查是否触发了 30 分钟临时闭麦，直接点名 `大肥鱼` 可立即唤醒；<br>3. 若配置了 `target_bot_uuid`，确认与当前机器人 UUID 一致。 |
-| **无法开启自动朋友圈 / 刷朋友圈提示无权限** | 全局开关与真实朋友圈读取仅限主人私聊操作。请先在 LangBot 插件配置 `owner_ids` 中填入你的微信 `wxid_...`（多个用英文逗号分隔），再在私聊中发送指令。 |
+| **无法开启自动朋友圈 / 朋友圈互动 / 刷朋友圈提示无权限** | 全局开关与真实朋友圈读取仅限主人私聊操作（`owner_ids` 留空时默认拒绝）。在私聊发送任意主人指令即可看到系统自动回显的当前微信 `wxid`，将其填入 LangBot 插件配置 `owner_ids`（多个用英文逗号分隔）后再重试即可。 |
 | **收到语音不转文字 / 不发语音气泡** | 确认当前会话 `大肥鱼 设置 高级` 中的「语音」开关为 `开`；推荐配置 `siliconflow_api_key`（免费 `SenseVoiceSmall` 语气识别），未配置时若使用官方 `api.deepseek.com` 也会自动回退 DeepSeek `/v1/tools/asr` 与 `/v1/tools/tts`。 |
 | **发压缩包 `.zip` 或超大文件不解析** | 为保护内存与上下文，插件仅解析 `<= 35 MiB` 的文档/代码文件（PDF/Word/Excel/PPT/EPUB/TXT），自动忽略 `.zip`/`.exe`/`.mp4` 等二进制格式。 |
 
