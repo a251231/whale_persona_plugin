@@ -4,13 +4,13 @@ metadata:
   author: "251231"
   name: whale_persona_plugin
   repository: https://github.com/a251231/whale_persona_plugin
-  version: 0.5.1
+  version: 0.5.2
   description:
-    en_US: DeepSeek Dafeiyu (Whale Girl) v0.5.1 Full Suite + Diana Extensions + WeChat 4.x Helper V7 Native Moments/Friend/LongText Bridge
-    zh_Hans: DeepSeek 大肥鱼（活人感全家桶 × Diana 全能版 v0.5.1：八维心情/八章节档案/24表情包看图+偷图/朋友圈读写赞评与回评/好友申请自动通过/DeepSeek+硅基双向语音/B站抖音直播间与全平台链接解析/35MB文件+OCR/多曲库点歌）
+    en_US: DeepSeek Dafeiyu (Whale Girl) v0.5.2 Full Suite + Diana Extensions + WeChat 4.x Helper V7 Native Moments/Friend/LongText Bridge
+    zh_Hans: DeepSeek 大肥鱼（活人感全家桶 × Diana 全能版 v0.5.2：八维心情/八章节档案/24表情包看图+偷图/朋友圈读写赞评与回评/好友申请自动通过/DeepSeek+硅基双向语音/B站抖音直播间与全平台链接解析/35MB文件+OCR/多曲库点歌）
   label:
-    en_US: Whale Girl Persona (Dafeiyu Full Suite v0.5.1)
-    zh_Hans: 🐋 大肥鱼（活人感全家桶 × Diana 全能版 v0.5.1）
+    en_US: Whale Girl Persona (Dafeiyu Full Suite v0.5.2)
+    zh_Hans: 🐋 大肥鱼（活人感全家桶 × Diana 全能版 v0.5.2）
   icon: assets/memes/ganfan.jpg
 spec:
   config:
@@ -26,6 +26,13 @@ spec:
       label:
         en_US: SiliconFlow API Key (Free SenseVoiceSmall ASR)
         zh_Hans: 硅基流动 API 密钥 (免费 SenseVoice 微信语音转文字与语气识别)
+      default: ""
+      required: false
+    - name: search_api_key
+      type: string
+      label:
+        en_US: Search API Key (Optional Bocha / Tavily Search API key; leave empty to use built-in free search)
+        zh_Hans: 联网搜索 API 密钥 (可选 Bocha / Tavily Search API Key，留空亦可免费直连搜索)
       default: ""
       required: false
     - name: deepseek_base_url
@@ -52,9 +59,10 @@ spec:
     - name: owner_ids
       type: string
       label:
-        en_US: Owner IDs (comma-separated)
-        zh_Hans: 主人账号 ID（逗号分隔，仅主人私聊可操作全局自动朋友圈、自动同意好友及刷真实朋友圈）
+        en_US: Owner IDs (comma-separated; required to unlock owner-only Moments/Friend commands; send any owner command in private chat to view your current wxid)
+        zh_Hans: 主人账号 ID（逗号分隔；owner_ids 必填才能解锁发/刷/赞评朋友圈与好友申请等主人功能，出于安全考虑留空默认拒绝高危操作，私聊发送任意主人指令可查看当前 wxid）
       default: ""
+      # Keep schema required=false so fresh installs can start; runtime strictly requires non-empty owner_ids.
       required: false
     - name: max_history_turns
       type: integer

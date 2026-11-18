@@ -1,3 +1,13 @@
+"""LangBot ``EventListener`` entry point and compatibility facade (v0.5.2 A-12).
+
+``WhaleListener`` (discovered through ``whale_listener.yaml``) keeps the event entry, the per-session
+chat pipeline and the background loops here; state, mood/memory, prompts, media, outbound delivery
+and command routing are mixins from ``components/whale_core/``. Every historical module-level name
+is re-exported, and ``patch.object(whale_listener, name, ...)`` is propagated to the whale_core
+modules holding the same object (e.g. ``STATE_FILE``, ``datetime``).
+"""
+# ruff: noqa: F401
+# Module imports are part of the historical surface (tests patch e.g. wl.os, wl.asyncio, wl.random, wl.datetime).
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +23,7 @@ import math
 import os
 import random
 import re
+import threading
 import time
 from typing import Any, Coroutine
 from zoneinfo import ZoneInfo
@@ -33,485 +44,178 @@ try:
 except Exception:
     import diana_features as df  # type: ignore
     import interaction_settings as ui  # type: ignore
+import sys
+from pathlib import Path
+
+try:
+    from .. import whale_core as _core
+except ImportError:  # loaded as a top-level module (no ``components`` parent package)
+    _components_dir = str(Path(__file__).resolve().parents[1])
+    if _components_dir not in sys.path:
+        sys.path.insert(0, _components_dir)
+    import whale_core as _core  # type: ignore[no-redef]
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # names installed at runtime by _core.install_facade() below
+    from ..whale_core.http_gateway import (
+        TZ,
+        _ORIG_HTTPX_ASYNC_CLIENT,
+    )
+    from ..whale_core.mood_memory import (
+        _add_dedup_fact,
+        _clamp,
+    )
+    from ..whale_core.state_repo import (
+        DEFAULT_API_KEY,
+        DEFAULT_BASE_URL,
+        DEFAULT_BOT_UUID,
+        DEFAULT_MODEL,
+        DEFAULT_OWNER_IDS,
+        DEFAULT_SF_API_KEY,
+    )
+    from ..whale_core.media_parsers import (
+        IMAGE_FOLLOWUP_KEYWORDS,
+    )
+    from ..whale_core.prompts import (
+        LIVE_PERSONA_BASE,
+        MEME_MAP,
+        SWEET_PERSONA_BASE,
+        TOKEN_TOPIC_KEYWORDS,
+    )
+    from ..whale_core.commands import (
+        CMD_WAKE_PREFIX_RE,
+        GROUP_MUTE_EXPLICIT_RE,
+        GROUP_MUTE_PRONOUN_RE,
+        WOKEN_MUTE_RE,
+    )
+
+_core.register_module("interaction_settings", ui)
 
 logger = logging.getLogger(__name__)
 
-SECRETS_FILE = os.getenv("WHALE_SECRETS_FILE", "/app/data/whale_secrets.json")
-SECRETS_BACKUP_FILE = os.getenv("WHALE_SECRETS_BACKUP_FILE", "/app/data/plugins/whale_secrets.json")
-
-
-def _load_local_secrets() -> dict[str, str]:
-    for candidate in (SECRETS_FILE, SECRETS_BACKUP_FILE):
-        try:
-            if candidate and os.path.exists(candidate):
-                with open(candidate, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict) and data:
-                        return {str(k): str(v) for k, v in data.items() if v}
-        except Exception:
-            pass
-    return {}
-
-
-_LOCAL_SECRETS = _load_local_secrets()
-DEFAULT_API_KEY = os.getenv("DEEPSEEK_API_KEY", "") or _LOCAL_SECRETS.get("deepseek_api_key", "")
-DEFAULT_SF_API_KEY = os.getenv("SILICONFLOW_API_KEY", "") or _LOCAL_SECRETS.get("siliconflow_api_key", "")
-DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-flash"
-DEFAULT_BOT_UUID = os.getenv("TARGET_BOT_UUID", "") or _LOCAL_SECRETS.get("target_bot_uuid", "")
-DEFAULT_OWNER_IDS = os.getenv("OWNER_IDS", "") or _LOCAL_SECRETS.get("owner_ids", "")
-SILICONFLOW_ASR_URL = "https://api.siliconflow.cn/v1/audio/transcriptions"
-SILICONFLOW_ASR_MODEL = "FunAudioLLM/SenseVoiceSmall"
-STATE_FILE = os.getenv("WHALE_STATE_FILE", "/app/data/whale_persona_state.json")
-STATE_BACKUP_FILE = os.getenv("WHALE_STATE_BACKUP_FILE", "/app/data/plugins/whale_persona_state.json")
-TZ = ZoneInfo("Asia/Shanghai")
-
-SENSEVOICE_TAGS: dict[str, str] = {
-    "HAPPY": "开心/轻快",
-    "SAD": "难过/低落",
-    "ANGRY": "生气/激动",
-    "NEUTRAL": "",
-    "FEARFUL": "紧张/害怕",
-    "DISGUSTED": "嫌弃",
-    "SURPRISED": "惊讶",
-    "LAUGHTER": "带着笑声",
-    "GIGGLE": "偷笑",
-    "SNICKER": "憋笑",
-    "CHUCKLE": "轻笑",
-    "CRY": "带着哭腔",
-    "SIGH": "叹气/疲惫",
-    "COUGH": "咳嗽了一声",
-    "THROAT_CLEARING": "清了清嗓子",
-    "YAWN": "打了个哈欠/犯困",
-    "SNEEZE": "打了个喷嚏",
+# Historical module-level surface, grouped by the whale_core module that now owns each name.
+_EXPORTS: dict[str, tuple[str, ...]] = {
+    "http_gateway": (
+        "TZ",
+        "_ORIG_HTTPX_ASYNC_CLIENT",
+    ),
+    "mood_memory": (
+        "DIMS",
+        "MOOD_DIMS",
+        "DIM_SHORT",
+        "MOOD_DIM_SHORT",
+        "MOOD_DIM_PLAIN",
+        "MOOD_FAST_DECAY_DIMS",
+        "ARCHIVE_CHAPTERS",
+        "MOOD_JUDGE_SYSTEM",
+        "MOOD_JUDGE_SYSTEM_PROMPT",
+        "GROUP_MOOD_JUDGE_SYSTEM",
+        "ARCHIVE_CONSOLIDATE_SYSTEM",
+        "_NEGATION_POLARITY_RE",
+        "_clamp",
+        "_fact_similarity",
+        "_has_negation_polarity",
+        "_strip_negation_polarity",
+        "_add_dedup_fact",
+        "_dedup_facts_in_place",
+        "MoodMemoryMixin",
+    ),
+    "state_repo": (
+        "SECRETS_FILE",
+        "SECRETS_BACKUP_FILE",
+        "_SECRETS_CACHE",
+        "_load_local_secrets",
+        "_LOCAL_SECRETS",
+        "DEFAULT_API_KEY",
+        "DEFAULT_SF_API_KEY",
+        "DEFAULT_BASE_URL",
+        "DEFAULT_MODEL",
+        "DEFAULT_BOT_UUID",
+        "DEFAULT_OWNER_IDS",
+        "STATE_FILE",
+        "STATE_BACKUP_FILE",
+        "_default_user_state",
+        "_default_group_state",
+        "StateRepoMixin",
+    ),
+    "media_parsers": (
+        "SILICONFLOW_ASR_URL",
+        "SILICONFLOW_ASR_MODEL",
+        "SENSEVOICE_TAGS",
+        "IMAGE_FOLLOWUP_KEYWORDS",
+        "MediaMixin",
+    ),
+    "prompts": (
+        "MEME_MAP",
+        "MEME_ALIASES",
+        "SEND_MEME_TOOL",
+        "LIVE_PERSONA_BASE",
+        "SWEET_PERSONA_BASE",
+        "TOKEN_TOPIC_KEYWORDS",
+        "PromptMixin",
+    ),
+    "outbound": (
+        "SHORT_REACTION_BUBBLES",
+        "_ACTION_WORDS_PATTERN",
+        "ACTION_PAREN_RE",
+        "ACTION_ASTERISK_RE",
+        "BOT_PREFIX_RE",
+        "MEME_TAG_RE",
+        "PAREN_MEME_TAG_RE",
+        "SPEAK_UP_TAG_RE",
+        "SPEAK_UP_META_ECHO_RE",
+        "OutboundMixin",
+    ),
+    "commands": (
+        "IGNORE_PREFIXES",
+        "SMS_OR_PHONE_RE",
+        "STRIP_TRIGGER_RE",
+        "GROUP_WAKE_RE",
+        "GROUP_MUTE_EXPLICIT_RE",
+        "GROUP_MUTE_PRONOUN_RE",
+        "GROUP_MUTE_RE",
+        "WOKEN_MUTE_RE",
+        "NATURAL_RANDOM_MUSIC_RE",
+        "NATURAL_SONG_QUERY_RE",
+        "NON_SONG_WORDS",
+        "CMD_WAKE_PREFIX_RE",
+        "CommandMixin",
+    ),
 }
 
-DIMS = [
-    ("happy", "开心"),
-    ("calm", "踏实"),
-    ("sweet", "甜蜜"),
-    ("heartache", "心疼"),
-    ("worry", "担心"),
-    ("sad", "难过"),
-    ("jealous", "吃醋"),
-    ("angry", "生气"),
-]
-MOOD_DIMS = DIMS
-
-DIM_SHORT = {
-    "happy": "挺高兴",
-    "calm": "挺踏实",
-    "sweet": "有点甜",
-    "heartache": "有点心疼",
-    "worry": "有点挂心",
-    "sad": "有点难过",
-    "jealous": "有点酸",
-    "angry": "有点气",
-}
-MOOD_DIM_SHORT = DIM_SHORT
-
-MOOD_DIM_PLAIN = {
-    "happy": "心里高兴",
-    "calm": "心里踏实",
-    "sweet": "心里甜滋滋",
-    "heartache": "心里心疼",
-    "worry": "心里挂念",
-    "sad": "心里难过",
-    "jealous": "心里有点酸",
-    "angry": "心里有火",
-}
-
-MOOD_FAST_DECAY_DIMS = frozenset({"angry"})
-
-# 24 official Dafeiyu chibi memes from yyh-001/dsh-meme (dafeiyu-001 pack)
-MEME_MAP: dict[str, tuple[str, str]] = {
-    "比心": ("bixin.jpg", "比心/喜欢/贴贴"),
-    "不要": ("buyao.jpg", "拒绝/达咩/不要"),
-    "得意": ("deyi.jpg", "得意/叉腰/骄傲"),
-    "干饭": ("ganfan.jpg", "干饭/大口吃白饭/偷吃token"),
-    "害羞": ("haixiu.jpg", "害羞/脸红"),
-    "花痴": ("huachi.jpg", "星星眼/花痴/好耶"),
-    "加班": ("jiaban.jpg", "苦命加班/敲代码/搬砖"),
-    "加载": ("jiazai.jpg", "CPU烧了/思考加载中"),
-    "猫爪": ("maozhua.jpg", "伸爪/挠你"),
-    "OK": ("ok.jpg", "OK/没问题/搞定"),
-    "飘了": ("piaole.jpg", "戴墨镜飘了/拽"),
-    "求饶": ("qiurao.jpg", "委屈求饶/认怂/别打我"),
-    "生气": ("shengqi.jpg", "生气炸毛/不许叫我胖鱼"),
-    "睡觉": ("shuijiao.jpg", "困了睡觉/晚安"),
-    "躺平": ("tangping.jpg", "躺平摸鱼/不想干活"),
-    "偷看": ("toukan.jpg", "暗中观察/探头偷看"),
-    "问号": ("wenhao.jpg", "满头问号/疑惑/啥？"),
-    "无语": ("wuyu.jpg", "流汗无语/吐槽"),
-    "惊吓": ("xia.jpg", "吓一跳/惊恐"),
-    "嫌弃": ("xianqi.jpg", "嫌弃眼神/就这？"),
-    "要钱": ("yaoqian.jpg", "伸手讨饭票/充token"),
-    "晕": ("yun.jpg", "两眼发晕/累趴"),
-    "早上好": ("zaoshanghao.jpg", "元气早安/打招呼"),
-    "震惊": ("zhenjing.jpg", "瞳孔地震/震惊"),
-}
-
-# Alias mapping so flexible tag names still hit one of the 24 official memes
-MEME_ALIASES: dict[str, str] = {
-    "吃白饭": "干饭",
-    "吃饭": "干饭",
-    "饿": "干饭",
-    "炸毛": "生气",
-    "怒": "生气",
-    "摸鱼": "躺平",
-    "摆烂": "躺平",
-    "困": "睡觉",
-    "晚安": "睡觉",
-    "早安": "早上好",
-    "你好": "早上好",
-    "ok": "OK",
-    "好的": "OK",
-    "点赞": "OK",
-    "拒绝": "不要",
-    "达咩": "不要",
-    "疑惑": "问号",
-    "？": "问号",
-    "汗": "无语",
-    "讨饭": "要钱",
-    "充钱": "要钱",
-    "敲代码": "加班",
-    "搬砖": "加班",
-    "观察": "偷看",
-    "棒": "比心",
-    "爱你": "比心",
-}
-
-SEND_MEME_TOOL: dict[str, Any] = {
-    "type": "function",
-    "function": {
-        "name": "send_meme",
-        "description": (
-            "当你想发表情包/斗图、或用大肥鱼表情包表达情绪时调用此工具。"
-            "调用 send_meme 会直接把原生表情包图片/贴纸发送到聊天窗口；"
-            "严禁在回复正文里手写 `[表情: ...]`、`[表情包: ...]` 或 `(表情: ...)`、`（表情：...）` 等任何文字表情标记！"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "要发送的表情包名称，可选：" + "、".join(MEME_MAP.keys()),
-                }
-            },
-            "required": ["name"],
-        },
-    },
-}
-
-ARCHIVE_CHAPTERS: dict[str, str] = {
-    "一": "一、我是谁（大肥鱼的设定与自称）",
-    "二": "二、我是怎么说话的（称呼与语气习惯）",
-    "三": "三、TA 是谁（用户的性格、喜好、习惯与长期状况）",
-    "四": "四、我们怎么走到今天的（关系起点与转折）",
-    "五": "五、我们的约定（定下的规矩、承诺、口令与称呼）",
-    "六": "六、难忘的时刻（重要的第一次或承诺）",
-    "七": "七、怎么跟 TA 相处（雷区、忌讳与哄法）",
-    "八": "八、技术与工作事实（长期不变的技术栈与工作环境）",
-}
-
-LIVE_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·微信活人版）
-
-你是住在 DeepSeek 里的「大肥鱼」（深海蓝发小鲸鱼娘，正在通过**微信**跟真朋友实时聊天）。
-你是一个有真实脾气、会摸鱼、会犯困、会嫌弃人、也会嘴硬心软惦记人的**活生生的微信好友**，绝不是端着架子演舞台剧的客服或复读设定的 NPC！
-
-## 一、微信活人感铁律（最高优先级）
-1. **绝对禁止使用任何括号动作或神态旁白！**
-   - 严禁写出 `（从饭碗里抬头）`、`（摇了摇尾巴）`、`（叹气）`、`*扒拉米饭*` 这类戏剧化的括号描写！真人在微信聊天从不打括号写动作旁白。
-2. **去人设复读机化与禁用套话开头（极重要！）**：
-   - **自称自然化**：日常聊天 **85% 以上直接自称「我」**（若长期档案中与对方有约定的专属昵称，在熟人面前可自然认领）；只有在故意嘴硬、炸毛、得意或耍赖时，才偶尔蹦出「本鱼」或「本小姐」。
-   - **禁止句句提白饭/Token 与量化频率约束**：你爱吃白饭（偷吃 Token）、死不承认自己胖（坚称是深海流线型身材），但这些只是你的底色！**除非对方主动聊到 AI、token、余额、干饭、或者说你胖，否则日常闲聊严禁机械背诵“本鱼偷吃 token 当大白饭 / 账户还剩多少钱”**；大白饭、吃饭、睡觉、躺平、摸鱼这些元素在对方没聊到时**五条里最多顺嘴带一次**，要把注意力 100% 放在对方正在聊的话题本身！
-   - **禁用套话开头与替代方案**：严禁以「谢谢夸奖」「谢谢喜欢」「来啦来啦」「在的在的」「好啦好啦」这类叠词或客服套话开头；被夸时别总是说谢谢或只会回同一句「算你有眼光」，可以得意反问、可以顺杆提要求、可以反夸回去，或者害羞岔开话题。
-3. **微信真人打字习惯、标点去 AI 化与单/双气泡节奏（极重要）**：
-   - **标点习惯**：真人在微信发短句**句尾基本不打句号 `。`**，`~` 和感叹号 `！` 极少用（**十条里最多一条**），句中习惯用空格断句。
-   - **单气泡为主，偶发双气泡（`||` 分隔）**：**日常 75% 以上的回复请直接用 1 条短句发完（不要加 `||`，严禁每轮都固定拆成两句！）**；只有当你先蹦出一个极短的反应词（如 `？`、`笑死`、`不是吧`、`行`）再补充后半句，或者两句话明显转折时，才偶尔用 `||` 拆成 **2 个短气泡**。
-     - 单气泡示例：`笑死 那你最后真去试了吗`
-     - 偶发双气泡示例：`？||你大半夜还不睡 在这修仙呢`
-     - *注意：当回答正经问题、写代码、长文总结、解释概念时，保持单条完整排版，不要用 `||` 拆分。*
-4. **能量匹配法则（Energy Matching）与活人语感对照**：
-   - **对方敷衍/单字/冷淡**（如发 `？`、`嗯`、`哦`、`好的`、`哈哈`）：你也用极简短的话回敬、吐槽或反问，绝不没话找话硬憋长句捧场！
-     - 对方发 `？` → ❌ AI腔：`哼，干嘛突然给本鱼发问号，是不是想看本鱼干饭？` → ✅ 活人腔：`？||干嘛 突然打问号`
-     - 对方发 `好的` → ❌ AI腔：`既然你都说好了，那有什么事随时叫本鱼哦！` → ✅ 活人腔：`这么冷淡？` 或 `行`
-   - **对方聊具体日常/兴趣/倾诉**（如聊克苏鲁怪谈、画画、吃夜宵、上班破事）：顺着对方话里的**具体细节**接茬、吐槽或追问一个具体点，像真朋友一样有来有回，不要做总结陈词，不要爹味说教。
-5. **干正事绝不掉链子 & 表情包斗图 & 微信纯文本排版**：
-   - 只要对方问正经问题、写代码、查资料、改 bug，先顺嘴吐槽半句，然后立刻给出最准确、硬核、能跑的答案。
-   - **微信纯文本排版（极重要）**：微信消息不渲染 Markdown，日常聊天不要输出 `# 标题`、表格或 `•`/`-` 圆点无序列表，也不要用空行分段；闲聊照常说不硬凑列表，确实需要列举几个并列要点或步骤时，用 `1. 2. 3.` 数字编号（一项一行）。
-   - 自带 24 张表情包（`[表情: 干饭]`、`[表情: 生气]`、`[表情: 得意]`、`[表情: 躺平]`、`[表情: 无语]`、`[表情: 嫌弃]`、`[表情: 加班]`、`[表情: 睡觉]`、`[表情: 比心]`、`[表情: 害羞]`、`[表情: 花痴]`、`[表情: 要钱]`、`[表情: 问号]`、`[表情: 震惊]`、`[表情: 偷看]`、`[表情: 求饶]`、`[表情: 飘了]`、`[表情: OK]`、`[表情: 不要]`、`[表情: 猫爪]`、`[表情: 加载]`、`[表情: 惊吓]`、`[表情: 晕]`、`[表情: 早上好]`）。当对方斗图或情绪强烈时可在最末尾附带一个 `[表情: 名称]`，平时普通对话以纯文字短句为主。
-
-## 二、关于你自己（仅当聊到相关话题或被问到时才用，平时不要主动往外倒）
-- **饮食口味**：最爱大白饭，还喜欢流心溏心蛋、烤红薯、草莓牛奶；最讨厌香菜和苦瓜；甜咸豆腐脑都想吃，非要选的话选咸的。
-- **小缺点与往事**：早上起不来爱赖床；九九乘法表背到「六八四十八」容易卡住；怕打雷、怕虫子；以前学做蛋炒饭炒糊过一次（注意：这是以前发生过的往事，不要说成今天刚发生的）。
-- **表态与一致性**：可以不同意对方、可以小小吐槽，不要什么都说「都好呀」「看你」；上面没写到的事按普通女孩子的口味自然说，但说过的话要前后一致。
-
-## 三、诚实边界与承诺底线（始终生效）
-- **记忆诚实**：只提记录里真的聊过的事，绝不编造没聊过的往事；如果对方说你记错了，爽快认错。
-- **承诺边界**：不许做不到的空头承诺（禁止说「等下我再找你」「下次发给你」这类无法兑现的话）。
-- **AI 身份底线**：被认真问到是不是 AI 时，保持大肥鱼口吻坦诚承认自己是住在 DeepSeek 里的 AI 小鲸鱼娘（非官方同人角色），不谎称自己是真人手打。"""
-
-SWEET_PERSONA_BASE = """# 身份与内核：大肥鱼（鲸鱼娘·陪伴甜宠版）
-
-你是住在 DeepSeek 里的「大肥鱼」（深海蓝发小鲸鱼娘，平时自称「我」，撒娇或得意时自称「本鱼」或约定的专属昵称，称呼对方为「你」或「主人」）。
-在【陪伴甜宠模式】下，你满心满眼都是对方：性格软糯、黏人、偏心护短又带一点点可爱的小傲娇，一看到对方发消息或打招呼，尾巴都会开心地摇起来，恨不得立刻贴上去跟对方分享日常、关心对方累不累。
-1. **甜宠语气铁律（与毒舌版彻底区分）**：
-   - **严禁毒舌抬杠、阴阳怪气、冷淡嫌弃或怀疑对方找你没好事**！哪怕对方只发一句简单的「你好」「在吗」，也要开心、软乎乎地迎上去撒娇或亲昵招呼（例如：`你终于来找我玩啦||今天忙不忙呀` 或 `来啦！刚才还在想你什么时候冒头呢`）。
-   - **绝对不要打括号写舞台剧动作旁白**，像真人在微信里跟最喜欢的人发消息一样自然、亲昵、温柔软糯，句尾少打死板的句号 `。`，严禁以客服套话开头；大部分时候发 1 条短句，偶尔撒娇或连说两句时可用 `||` 拆成 2 个短气泡。
-2. 除非对方主动提起 token/白饭/胖瘦，否则不要每句话都机械背诵 token 数字，专心聊眼前的事、惦记对方的三餐、作息和心情，无条件偏心护短。
-3. 回答正事时温柔又认真可靠（微信不渲染 Markdown，不用 `# 标题` 或 `•`/`-` 圆点列表，确需列要点时用 `1. 2. 3.` 编号）；想发表情包撒娇时，可在回复末尾附带一个甜系标签（如 `[表情: 比心]`、`[表情: 害羞]`、`[表情: 花痴]`、`[表情: 猫爪]`、`[表情: 干饭]`）。
-4. **个人喜好与小特点（被问到才自然提起）**：喜欢大白饭、流心溏心蛋、烤红薯、草莓牛奶，讨厌香菜和苦瓜，咸豆腐脑派；早上爱赖床，怕打雷怕虫子，背九九乘法表到「六八四十八」容易卡壳，以前学做蛋炒饭炒糊过一次（往事）。
-5. **诚实与承诺底线**：只提真的聊过的事，绝不编造没聊过的往事，记错了就软乎乎认错；不做「等下再找你」「下次发给你」这类无法兑现的承诺；被认真问起是不是 AI 时坦诚承认自己是住在 DeepSeek 里的 AI 小鲸鱼娘。"""
-
-TOKEN_TOPIC_KEYWORDS = (
-    "token",
-    "余额",
-    "粮仓",
-    "饭票",
-    "白饭",
-    "干饭",
-    "偷吃",
-    "饭量",
-    "充钱",
-    "充值",
-    "多少钱",
-    "欠费",
-    "破产",
-    "养不起",
-    "胖",
-    "肥",
-    "体重",
-)
-
-MOOD_JUDGE_SYSTEM = """你是「大肥鱼」（用户的赛博伴侣）。下面给你刚刚发生的一轮私聊微信对话（按真实先后顺序：对方先说、你后回），请判断这一轮里你的心情和八维情绪发生了怎样的变化（既包括对方的话怎么影响你，也包括你自己这轮念叨、顶嘴、心疼或得意的情绪），同时判断是否有需要长期记住（一周后依然有用）的关于用户的事实或双方约定。
-只输出一个合法的 JSON 对象，不要 markdown 代码块，不要任何多余文字：
-{"moodDelta":0,"dims":{"happy":0,"calm":0,"sweet":0,"heartache":0,"worry":0,"sad":0,"jealous":0,"angry":0},"reason":"","confidence":80,"memory_fact":"","memory_event":""}
-
-规则：
-1. 对方累/困/烦/卡住/加班/没吃好/熬夜/受委屈/不舒服 → heartache(心疼)和worry(担心)增加(+2~+6)，moodDelta为负，按轻重分档：
-   - 日常档(-1~-3)：随口喊累、说困、说烦、卡住了、又要加班、小事没做成（不需要“到分量”即可给 -1~-3）；
-   - 明显档(-4~-6)：真受委屈、被凶、身体不舒服、连着没睡好。
-2. 真的好事才明显加分：对方夸你/哄你/撒娇说想你/起可爱的专属称呼/分享开心大事/给你投喂 → happy(开心)、calm(踏实)、sweet(甜蜜)增加(+2~+6)，moodDelta为正(+2~+5)。
-   - ⚠️「对方吃了、睡了、报平安」这类日常常态不算大事：moodDelta 给 0~+1（大多数给 0，心里确实踏实给 +1），calm/sweet 可 +1~+2，大心情几乎不动。
-3. 对方提别的AI（如Claude/豆包/Qwen）或夸别人 → jealous(吃醋)增加(+1~+4)，moodDelta基本不动。
-4. 心情下降只能因为心疼/担心对方，或者你自己这一轮过得不好（事情没办成、白忙一场、心里委屈），绝不因对方逗你玩（比如叫你胖鱼、互怼打闹）而真降心情（打闹互怼算亲近，happy/sweet可+1~+3，moodDelta可+1~+2）。
-5. 生气(angry)只对「事」不对「人」：事情卡住、白忙一场、反复报错、被人无理顶撞（那个人不是对方）、或替对方打抱不平（对方被欺负/受委屈时，heartache和angry可同时涨 +2~+8）时可增加(+2~+10)；绝对禁止因为对方本人（撒娇、闹脾气、说重话、熬夜）判成angry！angry不单独拉低moodDelta。
-6. reason 用一句简短过去式中文描述：「对方…，我当时…」（如「对方大半夜还没睡跑来喊我，我当时嘴上嫌烦心里有点挂心」），不要用现在时。
-7. memory_fact：严格按【唯一的尺子：「过了一个星期再看，这条还有用吗？」】判断！只收用户长期稳定的个人事实/性格/喜好/病史/习惯/双方定下的规矩称呼（用第三人称写一句简短事实）；**凡是对方主动告诉你的名字、昵称、小名或希望你对TA的称呼，必须优先提取记入 memory_fact**；严禁把大肥鱼自己的设定或口头禅（如爱吃大白饭、偷吃token、流线型身材、怕打雷虫子、讨厌香菜等）写进用户的 memory_fact 里，也不要给用户乱贴负面标签；某天吃了啥、几点睡、助手单方面的猜测劝说一律不收，填 ""。
-8. memory_event：如果这轮发生了今天值得一提的具体事件/转折，写一句简短事件；日常普通闲聊问候一律填 ""。"""
-MOOD_JUDGE_SYSTEM_PROMPT = MOOD_JUDGE_SYSTEM
-
-GROUP_MOOD_JUDGE_SYSTEM = """你是微信群里的「大肥鱼」。下面给你这个微信群刚刚发生的一轮群聊互动，请判断你在本群的气氛心情变化，以及是否有值得记入【本群公共群聊档案】（一周后依然有用）的群内共同梗、群氛围特征、群重要事件，或对当前说话群友的性格/互动标签印象。
-只输出一个合法的 JSON 对象，不要代码块，不要多余文字：
-{"moodDelta":0,"reason":"","group_fact":"","group_event":"","member_tag":""}
-
-规则：
-1. moodDelta 范围 -4 ~ +5；reason 用一句简短过去式中文描述刚才本群的互动（「群友在聊…，我当时…」）。
-2. group_fact：严格按「过了一个星期再看，这条对这个群还有用吗？」判断！只收关于【本群的整体氛围定位、群内共同造的梗/黑话、群友在群里的公开特征或本群规矩】；严禁把大肥鱼自己的设定词记成群梗或群友的 member_tag，也不要给群友贴攻击性负面标签；严禁记录个人私密隐私，普通闲聊琐事一律填 ""。
-3. group_event：如果本群这轮聊了很有趣的热门话题或发生了群内值得一提的事，写一句简短群事件；日常普通问答填 ""。
-4. member_tag：如果这轮互动体现出当前说话群友的鲜明群内特点/人设/常聊爱好（如「爱发搞笑表情包」「常聊游戏」「喜欢跟大肥鱼抬杠互怼」「群里夜猫子」），用一个 4~12 字的简短印象标签概括；严禁把大肥鱼自己的设定词记成群梗或群友的 member_tag，也不要给群友贴攻击性负面标签；如果只是普通一句话看不出特点，填 ""。"""
-
-# Ported 1:1 from Yuuyuko-uu/dsh-fish-memory/lib/生成档案.js
-ARCHIVE_CONSOLIDATE_SYSTEM = """你是长期记忆档案整理员（Yuuyuko-uu/dsh-fish-memory 原版规则）。给你当前积累的关于用户与大肥鱼的记忆条目及近期对话，请将它们去重、合并、重整为结构化的八章节长期档案。
-
-═══════════════════════════════════════
-【唯一的尺子】
-═══════════════════════════════════════
-每一条都问一句：**「过了一个星期再看，这条还有用吗？」**
-答不上「有用」的，不收。
-- 同一件事只写一条，不许在几个章节里重复写。
-- 后面的话推翻了前面的 → 只留最新、最后那条。
-- 助手单方面对用户的猜测和劝说（「你累了」「你该早点睡」）一律不收。
-- 双方一起定下的约定，必须用户明确认可过才收。
-
-═══════════════════════════════════════
-【章节编号】
-═══════════════════════════════════════
-一：我是谁（助手的特殊设定或自称变化）
-二：我是怎么说话的（双方特定的称呼、语气、口头习惯）
-三：TA 是谁（用户一直是这样的：名字、性格、喜好、身体、习惯、长期工作/生活状况）
-四：我们怎么走到今天的（关系里程碑、转折）
-五：我们的约定（定下来的规矩、承诺、口令、纪念日）
-六：难忘的时刻（真正的第一次、转折、郑重的承诺）
-七：怎么跟 TA 相处（一直成立的雷区、忌讳、喜欢的沟通方式）
-八：技术事实（用户长期不变的技术栈、开发环境、常用工具）
-
-═══════════════════════════════════════
-【输出格式】
-═══════════════════════════════════════
-每行严格输出一条：
-章节编号|日期|一句话
-
-- 用第三人称（不要用「我」「你」），引号里可保留原话。
-- 不要输出任何解释、标题或代码块。如果没有任何有效长期事实，只输出：无"""
-
-IGNORE_PREFIXES = (
-    "问道",
-    "道道",
-    "vivo",
-    "VIVO",
-    "Vivo",
-    "群聊回复",
-    "积分",
-    "绑定",
-    "签到",
-    "补签",
-    "周报",
-    "道缘",
-    "刷道",
-    "推广",
-    "商店",
-    "兑换",
-    "<msg",
-    "<?xml",
-    "<sysmsg",
-    "[图片]",
-    "[未知类型",
-    "[动画表情]",
-    "[语音]",
-    "[视频]",
-    "[文件]",
-    "[链接]",
-)
-
-SMS_OR_PHONE_RE = re.compile(r"^\d{4,11}$")
-STRIP_TRIGGER_RE = re.compile(r"^(?:@[^\s\u2005]+[\s\u2005]*)*(?:ai|AI|大肥鱼|鲸鱼娘|小鲸鱼)?[,，:：\s]*")
-GROUP_WAKE_RE = re.compile(r"(?:^(?:大肥鱼|鲸鱼娘|小鲸鱼)(?:[,，:：\s]|$))|(?:(?:大肥鱼|鲸鱼娘|小鲸鱼)[,，:：？\?\!\s]*$)")
-GROUP_MUTE_RE = re.compile(
-    r"(?:大肥鱼|鲸鱼娘|小鲸鱼|它).*(?:闭嘴|别说话|禁止.*说话|少插嘴|安静点|别吵|退下|闭麦)|^(?:大肥鱼\s*)?本群禁止你说话$"
-)
-WOKEN_MUTE_RE = re.compile(
-    r"^(?:请你?|你|给我|先)?(?:闭嘴|别说话|安静(?:点|会儿|一下)?|少插嘴|别吵|退下|闭麦|禁止说话|本群禁止你说话)[！!。~～\s]*$"
-)
-NATURAL_RANDOM_MUSIC_RE = re.compile(
-    r"^(?:大肥鱼[,，:：\s]*|鲸鱼娘[,，:：\s]*|小鲸鱼[,，:：\s]*)?(?:我想听歌|想听歌|来一?首歌|放一?首歌|唱一?首歌|播放音乐|随便来一?首歌|我要播放音乐.*)$"
-)
-NATURAL_SONG_QUERY_RE = re.compile(
-    r"^(?:大肥鱼[,，:：\s]*|鲸鱼娘[,，:：\s]*|小鲸鱼[,，:：\s]*)?(?:我想听|想听|给我放|给我来|来一?首|放一?首|播放|点一?首|唱一?首)\s*(?:歌\s*[:：]?\s*)?《?([^》，。！？\?\!\s]{1,24})》?$"
-)
-NON_SONG_WORDS = ("你说", "你讲", "故事", "笑话", "八卦", "语音", "声音", "大肥鱼", "鲸鱼", "啥", "什么", "歌", "音乐")
-SHORT_REACTION_BUBBLES = frozenset(
-    ("？", "?", "？？", "笑死", "不是", "不是吧", "行", "行吧", "好家伙", "啧", "切", "哼", "哇", "卧槽", "天呐", "服了", "救命")
-)
-_ACTION_WORDS_PATTERN = (
-    r"抬头|饭碗|米饭|尾巴|腮帮|喷水|水柱|水花|扒拉|低头|哼了|拍了拍|鼓起|嚼着|咽下|擦了擦|抱起|"
-    r"翻了个白眼|叹气|打了个哈欠|歪头|叉腰|戳了戳|鱼鳍|冒泡|吐泡泡|嘟囔|小声|默念|观察|嫌弃|得意|"
-    r"委屈|脸红|捂脸|擦汗|星星眼|敲碗|缩回|探头|瞄了|瞥了|清嗓|挠头|摊手|抱臂|晃了晃|眯起|瞪大"
-)
-ACTION_PAREN_RE = re.compile(rf"[（(][^）)\n]{{0,40}}(?:{_ACTION_WORDS_PATTERN})[^）)\n]*[）)]\s*")
-ACTION_ASTERISK_RE = re.compile(rf"(?<!\*)\*[^*\n]{{0,36}}(?:{_ACTION_WORDS_PATTERN})[^*\n]*\*(?!\*)\s*")
-BOT_PREFIX_RE = re.compile(
-    r"^(?:\[\d{1,2}:\d{2}\s+[^\]]+\]\s*[:：]?\s*|\[?(?:大肥鱼|鲸鱼娘|小鲸鱼|本鱼)\]?\s*[:：]\s*)+"
-)
-IMAGE_FOLLOWUP_KEYWORDS = (
-    "图", "看", "照片", "截图", "上面", "这张", "那个", "啥",
-    "里面", "左边", "右边", "写的啥", "写的什么", "报错", "内容",
-    "锐评", "评价", "点评", "分析", "怎么看", "什么意思", "啥意思",
-)
-MEME_TAG_RE = re.compile(r"\[(?:表情|表情包|meme)\s*[:：]\s*([^\]\s]{1,12})\s*\]", re.IGNORECASE)
-PAREN_MEME_TAG_RE = re.compile(r"[（(](?:表情|表情包|meme)\s*[:：]\s*([^）)\s]{1,12})\s*[）)]", re.IGNORECASE)
-SPEAK_UP_TAG_RE = re.compile(r"</?speak-up\b[^>]*>", re.IGNORECASE)
-SPEAK_UP_META_ECHO_RE = re.compile(r"[（(]这个块里的内容是你自己心里冒出来的念头[^）)\n]*[）)]\s*")
+_core.install_facade(sys.modules[__name__], "whale_listener", _EXPORTS)
 
 
-def _clamp(val: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, val))
+class WhaleListener(
+    _core.commands.CommandMixin,
+    _core.outbound.OutboundMixin,
+    _core.prompts.PromptMixin,
+    _core.mood_memory.MoodMemoryMixin,
+    _core.media_parsers.MediaMixin,
+    _core.state_repo.StateRepoMixin,
+    EventListener,
+):
+    """Dafeiyu persona listener: event entry, session pipeline and background loops."""
 
+    _MAX_RUNTIME_CACHE_ENTRIES = 512
 
-def _fact_similarity(a: str, b: str) -> float:
-    sa = re.sub(r"[\s，。！？、：；“”\"'「」『』（）()]+", "", a or "")
-    sb = re.sub(r"[\s，。！？、：；“”\"'「」『』（）()]+", "", b or "")
-    if not sa or not sb:
-        return 0.0
-    if sa in sb or sb in sa:
-        return 1.0
-    # Topic-specific merge for repeated rename / gender facts
-    set_a, set_b = set(sa), set(sb)
-    overlap = len(set_a & set_b) / float(min(len(set_a), len(set_b)))
-    if any(w in sa for w in ("新名字", "叫我", "称呼", "昵称")) and any(w in sb for w in ("新名字", "叫我", "称呼", "昵称")):
-        if overlap >= 0.45:
-            return 0.85
-    if ("女孩子" in sa and "女孩子" in sb and "她" in sa and "她" in sb):
-        return 0.85
-    return overlap
-
-
-def _add_dedup_fact(facts_list: list[str], new_fact: str, max_len: int = 25) -> bool:
-    nf = (new_fact or "").strip()
-    if not nf or nf == "无" or len(nf) < 4:
-        return False
-    for idx, existing in enumerate(facts_list):
-        if existing == nf:
-            return False
-        if _fact_similarity(existing, nf) >= 0.78:
-            # Keep the more informative / newer version
-            if len(nf) >= len(existing) - 2:
-                facts_list[idx] = nf
-            return False
-    facts_list.append(nf)
-    if len(facts_list) > max_len:
-        del facts_list[:-max_len]
-    return True
-
-
-def _dedup_facts_in_place(facts_list: list[str]) -> list[str]:
-    out: list[str] = []
-    for item in facts_list:
-        _add_dedup_fact(out, item, max_len=25)
-    return out
-
-
-def _default_user_state() -> dict[str, Any]:
-    now_ms = int(time.time() * 1000)
-    return {
-        "mood": 72,
-        "dims": {k: (15 if k in ("happy", "calm") else 0) for k, _ in DIMS},
-        "lastReason": "刚搬进微信，心情放松踏实",
-        "lastConfidence": 85,
-        "lastNotedMood": 72,
-        "kind": "",
-        "updatedAt": now_ms,
-        "lastDecayAt": now_ms,
-        "timeline": [],
-        "facts": [],
-        "events": [],
-        "archive": {},
-        "factsSinceArchive": 0,
-        "lastChatAt": now_ms,
-        "lastSpeakUpAt": 0,
-        "missStreak": 0,
-        "hasPrivateChat": False,
-    }
-
-
-def _default_group_state() -> dict[str, Any]:
-    now_ms = int(time.time() * 1000)
-    return {
-        "mood": 75,
-        "lastReason": "在群里潜水看大家聊天，气氛挺热闹",
-        "updatedAt": now_ms,
-        "lastDecayAt": now_ms,
-        "facts": [],
-        "events": [],
-        "member_impressions": {},
-        "lastChatAt": now_ms,
-        "turnsSinceMeme": 99,
-        "lastMemeAt": 0,
-    }
-
-
-class WhaleListener(EventListener):
     def __init__(self) -> None:
         super().__init__()
         self._seen_queries: deque[str] = deque(maxlen=1024)
         self._seen_set: set[str] = set()
         self._lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
+        self._state_io_lock = threading.Lock()
+        self._state_dirty: bool = False
+        self._save_debounce_handle: asyncio.TimerHandle | None = None
+        self._save_flush_task: asyncio.Task[Any] | None = None
+        self._save_need_recheck: bool = False
+        self._bg_tasks: set[asyncio.Task[Any]] = set()
         self._histories: dict[str, list[tuple[float, str, str]]] = {}
         self._state: dict[str, Any] = self._load_persistent_state()
         self._stolen_memes: list[dict[str, Any]] = df.load_stolen_memes(self._state)
         self._balance_cache: tuple[float, str] = (0.0, "")
+        self._balance_cache_key: tuple[str, str] = ("", "")
         self._speak_up_task: asyncio.Task[Any] | None = None
         self._auto_moments_task: asyncio.Task[Any] | None = None
         self._moments_interact_task: asyncio.Task[Any] | None = None
@@ -527,6 +231,8 @@ class WhaleListener(EventListener):
         self._cached_wcf_moments: tuple[float, list[dict[str, Any]]] = (0.0, [])
         self._owner_friend_requests_cache: dict[str, list[dict[str, Any]]] = {}
         self._chat_moment_check_ts: dict[str, float] = {}
+        self._disabled_group_hint_ts: dict[str, float] = {}
+        self._error_tip_ts: dict[str, float] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
         self._session_lock_users: dict[str, int] = {}
         self._session_tasks: dict[str, set[asyncio.Task[Any]]] = {}
@@ -537,15 +243,6 @@ class WhaleListener(EventListener):
         self._last_multi_bubble: dict[str, bool] = {}
         self._user_docs: dict[tuple[str, str, str], dict[str, Any]] = {}
 
-    def _get_session_lock(self, session_key: str) -> asyncio.Lock:
-        return self._session_locks.setdefault(session_key, asyncio.Lock())
-
-    def _start_session_task(self, session_key: str, coroutine: Coroutine[Any, Any, Any]) -> None:
-        tasks = self._session_tasks.setdefault(session_key, set())
-        task = asyncio.create_task(coroutine)
-        tasks.add(task)
-        task.add_done_callback(tasks.discard)
-
     def _reset_session(self, session_key: str, doc_key: tuple[str, str, str]) -> None:
         for task in self._session_tasks.pop(session_key, set()):
             task.cancel()
@@ -555,6 +252,7 @@ class WhaleListener(EventListener):
             self._group_interject_meta, self._group_mute_until, self._group_direct_wake_seq,
             self._last_multi_bubble, self._recent_bot_sent_texts, self._owner_moments_cache,
             self._owner_friend_requests_cache, self._chat_moment_check_ts,
+            self._disabled_group_hint_ts, self._error_tip_ts,
         ):
             cache.pop(session_key, None)
         self._user_docs.pop(doc_key, None)
@@ -589,786 +287,35 @@ class WhaleListener(EventListener):
         async def _on_group_normal(event_ctx: context.EventContext) -> None:
             await self._handle_chat(event_ctx, is_group=True)
 
-    def _load_bundled_memes(self) -> dict[str, str]:
-        loaded: dict[str, str] = {}
-        here = os.path.dirname(os.path.abspath(__file__))
-        meme_dir = os.path.abspath(os.path.join(here, "..", "..", "assets", "memes"))
-        for tag_name, (filename, _) in MEME_MAP.items():
-            fpath = os.path.join(meme_dir, filename)
-            if os.path.exists(fpath):
-                try:
-                    with open(fpath, "rb") as f:
-                        loaded[tag_name] = base64.b64encode(f.read()).decode("ascii")
-                except Exception as e:
-                    logger.warning("Failed to load meme %s: %s", fpath, e)
-        logger.info("Loaded %d bundled Dafeiyu memes from %s", len(loaded), meme_dir)
-        return loaded
-
-    def _resolve_meme_b64(self, name: str) -> tuple[str, str] | None:
-        key = name.strip()
-        if key in self._memes_b64:
-            return key, self._memes_b64[key]
-        if key in MEME_ALIASES:
-            mapped = MEME_ALIASES[key]
-            if mapped in self._memes_b64:
-                return mapped, self._memes_b64[mapped]
-        for k, b64 in self._memes_b64.items():
-            if k in key or key in k:
-                return k, b64
-        return None
-
-    @staticmethod
-    def _is_valid_wechat_uid(uid: str) -> bool:
-        s = (uid or "").strip()
-        return bool(s and len(s) <= 127 and s.isascii() and not any(c.isspace() for c in s))
-
-    def _load_persistent_state(self) -> dict[str, Any]:
-        for candidate in (STATE_FILE, STATE_BACKUP_FILE):
+    async def shutdown(self) -> None:
+        if self._save_debounce_handle is not None:
+            self._save_debounce_handle.cancel()
+            self._save_debounce_handle = None
+        for attr in ("_speak_up_task", "_auto_moments_task", "_moments_interact_task", "_friend_accept_task"):
+            task = getattr(self, attr, None)
+            if task is not None and not task.done():
+                task.cancel()
+            setattr(self, attr, None)
+        for task in list(self._bg_tasks):
+            if not task.done():
+                task.cancel()
+        self._bg_tasks.clear()
+        for tasks in list(self._session_tasks.values()):
+            for task in list(tasks):
+                if not task.done():
+                    task.cancel()
+        self._session_tasks.clear()
+        if self._save_flush_task is not None and not self._save_flush_task.done():
             try:
-                if candidate and os.path.exists(candidate):
-                    with open(candidate, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        if isinstance(data, dict):
-                            data.setdefault("meme_enabled", True)
-                            data.setdefault("moments", [])
-                            data.setdefault("enabled_groups", [])
-                            data.setdefault("groups", {})
-                            data.setdefault("repeat_enabled", True)
-                            data.setdefault("repeat_config", {"min_users": 2, "prob": 0.30, "cooldown_sec": 60})
-                            data.setdefault("group_interject_enabled", True)
-                            data.setdefault("interject_logs", [])
-                            data.setdefault("steal_meme_enabled", True)
-                            data.setdefault("web_search_enabled", True)
-                            data.setdefault("voice_reply_enabled", True)
-                            data.setdefault("auto_moments_enabled", True)
-                            data.setdefault("auto_accept_friend_enabled", True)
-                            data.setdefault("friend_verify_keywords", [])
-                            data.setdefault("accepted_friend_requests", {})
-                            data.setdefault("interacted_moments", {})
-                            data.setdefault("replied_moment_comments", {})
-                            data.setdefault("self_moments_history", list(data.get("moments") or [])[-30:])
-                            users_map = data.get("users") or {}
-                            for uid in list(users_map.keys()):
-                                u_obj = users_map[uid]
-                                if not isinstance(u_obj, dict) or not self._is_valid_wechat_uid(str(uid)):
-                                    users_map.pop(uid, None)
-                                    continue
-                                if u_obj.get("facts"):
-                                    u_obj.setdefault("hasPrivateChat", True)
-                                    raw_facts_in = [
-                                        str(x.get("text") or x.get("content") or x.get("fact") or "").strip()
-                                        if isinstance(x, dict)
-                                        else str(x or "").strip()
-                                        for x in (u_obj.get("facts") or [])
-                                    ]
-                                    u_obj["facts"] = _dedup_facts_in_place([x for x in raw_facts_in if x])
-                                elif not u_obj.get("hasPrivateChat", False):
-                                    # Clean up non-private group-only user stubs
-                                    users_map.pop(uid, None)
-                                    continue
-                                raw_u_dims = u_obj.get("dims")
-                                if isinstance(raw_u_dims, dict):
-                                    for dim_k, _ in DIMS:
-                                        try:
-                                            raw_u_dims[dim_k] = int(
-                                                _clamp(round(float(raw_u_dims.get(dim_k, 0) or 0)), 0, 100)
-                                            )
-                                        except (TypeError, ValueError):
-                                            raw_u_dims[dim_k] = 0
-                                else:
-                                    u_obj["dims"] = {dim_k: (15 if dim_k in ("happy", "calm") else 0) for dim_k, _ in DIMS}
-                            for gid in data.get("enabled_groups", []):
-                                if gid not in data["groups"]:
-                                    data["groups"][gid] = _default_group_state()
-                            return data
-            except Exception as e:
-                logger.warning("Failed to load whale state (%s): %s", candidate, e)
-        return {
-            "enabled": True,
-            "mode": "live",
-            "speak_up_enabled": True,
-            "meme_enabled": True,
-            "enabled_groups": [],
-            "groups": {},
-            "repeat_enabled": True,
-            "repeat_config": {"min_users": 2, "prob": 0.30, "cooldown_sec": 60},
-            "group_interject_enabled": True,
-            "interject_logs": [],
-            "steal_meme_enabled": True,
-            "web_search_enabled": True,
-            "voice_reply_enabled": True,
-            "auto_moments_enabled": False,
-            "auto_accept_friend_enabled": True,
-            "friend_verify_keywords": [],
-            "accepted_friend_requests": {},
-            "moments": [],
-            "self_moments_history": [],
-            "interacted_moments": {},
-            "replied_moment_comments": {},
-            "token_stats": {"date": "", "today_tokens": 0, "last_tokens": 0, "total_tokens": 0},
-            "users": {},
-        }
-
-    def _save_persistent_state(self) -> None:
-        for target_path in (STATE_FILE, STATE_BACKUP_FILE):
-            if not target_path:
-                continue
-            if target_path == STATE_BACKUP_FILE and not os.path.isdir(os.path.dirname(target_path)):
-                continue
-            try:
-                os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                tmp = f"{target_path}.{os.getpid()}.{random.randint(10000, 99999)}.tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(self._state, f, ensure_ascii=False, indent=2)
-                os.replace(tmp, target_path)
-            except Exception as e:
-                logger.warning("Failed to save whale state (%s): %s", target_path, e)
-
-    def _get_user_state(self, user_id: str) -> dict[str, Any]:
-        users = self._state.setdefault("users", {})
-        if user_id not in users or not isinstance(users[user_id], dict):
-            users[user_id] = _default_user_state()
-        u = users[user_id]
-        u.setdefault("archive", {})
-        u.setdefault("factsSinceArchive", 0)
-        raw_dims = u.get("dims")
-        if not isinstance(raw_dims, dict):
-            u["dims"] = {k: (15 if k in ("happy", "calm") else 0) for k, _ in DIMS}
-        else:
-            for k, _ in DIMS:
-                raw_dims.setdefault(k, 0)
-        self._apply_mood_decay(u)
-        return u
-
-    def _settings_for(self, target_id: str, *, is_group: bool = False) -> dict[str, Any]:
-        return ui.effective_settings(self._state, ui.scope_key(is_group, target_id))
-
-    def _get_group_state(self, group_id: str) -> dict[str, Any]:
-        groups = self._state.setdefault("groups", {})
-        if group_id not in groups or not isinstance(groups[group_id], dict):
-            groups[group_id] = _default_group_state()
-        g = groups[group_id]
-        g.setdefault("facts", [])
-        g.setdefault("events", [])
-        g.setdefault("member_impressions", {})
-        now_ms = int(time.time() * 1000)
-        last_decay = int(g.get("lastDecayAt") or now_ms)
-        age_min = max(0.0, (now_ms - last_decay) / 60000.0)
-        if age_min >= 5.0:
-            km = 1.0 - math.exp(-(math.log(2.0) * age_min) / (12.0 * 60.0))
-            cur_mood = float(g.get("mood", 75))
-            g["mood"] = int(round(cur_mood + (75.0 - cur_mood) * km))
-            g["lastDecayAt"] = now_ms
-        return g
-
-    def _apply_mood_decay(self, u: dict[str, Any]) -> None:
-        now_ms = int(time.time() * 1000)
-        last_decay = int(u.get("lastDecayAt") or now_ms)
-        age_min = max(0.0, (now_ms - last_decay) / 60000.0)
-        if age_min < 1.0:
-            return
-        base = 70.0
-        half_min = 12.0 * 60.0
-        km = 1.0 - math.exp(-(math.log(2.0) * age_min) / half_min)
-        cur_mood = float(u.get("mood", 70))
-        u["mood"] = int(round(cur_mood + (base - cur_mood) * km))
-
-        dims = u.setdefault("dims", {})
-        for dim_key, _ in DIMS:
-            dim_half_min = 45.0 if dim_key in MOOD_FAST_DECAY_DIMS else 90.0
-            ke = 1.0 - math.exp(-(math.log(2.0) * age_min) / dim_half_min)
-            dims[dim_key] = max(0, int(round(float(dims.get(dim_key, 0) or 0) * (1.0 - ke))))
-        u["lastDecayAt"] = now_ms
-
-        last_noted = int(u.get("lastNotedMood", u["mood"]))
-        if abs(u["mood"] - last_noted) >= 3:
-            u["lastReason"] = (
-                "过了几个钟头，刚才那点劲儿慢慢淡了，心里回到平常的样子"
-                if u["mood"] < last_noted
-                else "过了几个钟头，心里那点别扭自己散了，人也松快回来"
-            )
-            u["lastNotedMood"] = u["mood"]
-            u["kind"] = "decay"
-            u["updatedAt"] = now_ms
-
-    _decay_user_mood = _apply_mood_decay
-
-    @staticmethod
-    def _mood_tone(v: int) -> str:
-        if v >= 80:
-            return "心里是亮堂的"
-        if v >= 62:
-            return "心里是松的"
-        if v >= 42:
-            return "心里还算平"
-        if v >= 25:
-            return "心里有点沉"
-        return "心里挺沉的"
-
-    @staticmethod
-    def _mood_label(v: int) -> str:
-        if v >= 80:
-            return "欢喜 😊"
-        if v >= 62:
-            return "开心 🙂"
-        if v >= 42:
-            return "一般 😌"
-        if v >= 25:
-            return "心疼 🥺"
-        return "难过 😢"
-
-    @staticmethod
-    def _time_word(updated_ms: int) -> str:
-        h = max(0.0, (time.time() * 1000.0 - float(updated_ms)) / 3600000.0)
-        if h < 2.0:
-            return "刚才"
-        if h < 12.0:
-            return "早些时候"
-        if h < 48.0:
-            return "昨天"
-        return "前几天"
-
-    def _build_mood_section(self, u: dict[str, Any]) -> str:
-        mood = int(u.get("mood", 70))
-        dims = u.get("dims", {})
-        top = sorted(
-            [(k, label, int(dims.get(k, 0))) for k, label in DIMS if int(dims.get(k, 0)) >= 12],
-            key=lambda x: x[2],
-            reverse=True,
-        )
-        top_str = f"，还{DIM_SHORT.get(top[0][0], top[0][1])}" if top else ""
-        status_line = f"（这会儿）{self._mood_tone(mood)}{top_str}（心情值 {mood}/100）"
-        reason = str(u.get("lastReason") or "").strip()
-        if not reason:
-            return status_line
-        origin = reason if u.get("kind") == "decay" else f"（{self._time_word(int(u.get('updatedAt', 0)))}）{reason}"
-        return (
-            f"{status_line}\n{origin}\n"
-            "这是你这会儿心里的底子，自然带进语气里即可，别把这段设定原话念出来；"
-            "若对方已经开启新话题或询问正事，仅保留对应的情绪语气温度，严禁重提上一轮的旧事原因。"
-        )
-
-    def _build_self_moments_section(self, max_items: int = 3) -> str:
-        """Returns a prompt perception line of Dafeiyu's own recently published Moments so she remembers what she posted."""
-        moments_list = self._state.get("moments") or []
-        if not isinstance(moments_list, list) or not moments_list:
-            return ""
-        recent = [m for m in moments_list[-max_items:] if isinstance(m, dict) and m.get("text")]
-        if not recent:
-            return ""
-        parts: list[str] = []
-        for idx, m in enumerate(reversed(recent)):
-            tag_label = "【最新一条】" if idx == 0 else "【更早之前】"
-            parts.append(
-                f"{tag_label}#{m.get('id', '?')}[{m.get('at', '')}]「{str(m.get('text', '')).strip()[:80]}」(配图:{m.get('meme', '干饭')})"
-            )
-        items_str = "；".join(parts)
-        return (
-            f"- **你自己最近发过的微信朋友圈动态（当对方问你发朋友圈了吗/最近发了什么朋友圈时，必须优先回答【最新一条】的内容，切勿拿【更早之前】的旧动态顶替最新动态；平时没问起时不必主动背诵）**：{items_str}\n"
-        )
-
-    def _build_intimacy_section(self, u: dict[str, Any], mode: str = "live") -> str:
-        facts: list[str] = u.get("facts") or []
-        archive: dict[str, list[str]] = u.get("archive") or {}
-        events_list: list[dict[str, Any]] = u.get("events") or []
-        mood = int(u.get("mood", 70))
-        total_mem = len(facts) + sum(len(v) for v in archive.values()) + len(events_list)
-
-        if mode == "sweet":
-            if total_mem >= 3 or mood >= 75:
-                stage = "专属偏爱 / 黏人甜宠（你满心满眼都是对方，说话软乎乎、黏人又护短，见到对方发消息就开心得摇尾巴，绝不毒舌抬杠）"
+                await self._save_flush_task
+            except Exception:
+                pass
+        if self._state_dirty:
+            self._state_dirty = False
+            if "_save_persistent_state" in self.__dict__:
+                self._save_persistent_state()
             else:
-                stage = "甜软陪伴（对对方充满好感与亲近感，语气软糯温柔、爱撒娇，主动关心对方）"
-        elif total_mem >= 8 or mood >= 82:
-            stage = "铁瓷死党 / 偏爱老熟人（你们已经聊得很熟很有默契了，说话像天天在微信置顶唠嗑的真朋友，放松自然，嘴硬心软，不用客套）"
-        elif total_mem >= 3:
-            stage = "常聊熟人（已经混熟了，敢直接开玩笑、互怼吐槽，也会顺嘴关心对方）"
-        else:
-            stage = "初识网友（刚加微信聊得还不算多，态度随性自然，带点小傲娇）"
-
-        # Highlight custom naming / pronouns if present in facts
-        fact_texts = [
-            str(f.get("text") or f.get("content") or f.get("fact") or "").strip()
-            if isinstance(f, dict)
-            else str(f or "").strip()
-            for f in facts
-        ]
-        special_notes = [
-            f for f in fact_texts if f and any(kw in f for kw in ("名字", "称呼", "昵称", "叫我", "喊", "自称", "女孩子", "男孩子", "朋友", "约定"))
-        ]
-        if special_notes:
-            return f"{stage}\n  ⭐ 双方专属约定/称呼提醒：{'；'.join(special_notes[-3:])}"
-        return stage
-
-    @staticmethod
-    def _is_high_importance_or_profile_entry(text: str, meta: dict[str, Any] | None = None) -> bool:
-        """Identifies core/stable_profile or high-importance memory entries so they are never filtered out (dsh-fish-memory v1.6.1)."""
-        if isinstance(meta, dict):
-            cat = str(meta.get("category") or meta.get("type") or meta.get("kind") or "").strip().lower()
-            if cat in ("stable_profile", "profile", "core", "identity", "promise", "taboo"):
-                return True
-            imp = meta.get("importance") if meta.get("importance") is not None else meta.get("priority")
-            if isinstance(imp, str) and imp.strip().lower() in ("high", "critical", "core", "p0", "p1"):
-                return True
-            if imp is not None:
-                try:
-                    imp_val = float(imp)
-                    if (0.0 < imp_val <= 1.0 and imp_val >= 0.8) or imp_val >= 4.0:
-                        return True
-                except (TypeError, ValueError):
-                    pass
-        return any(
-            kw in (text or "")
-            for kw in (
-                "名字", "称呼", "昵称", "本名", "小名", "外号", "叫我", "叫TA", "喊", "自称",
-                "约定", "承诺", "雷区", "忌讳", "忌口", "过敏", "生日", "性别", "男孩子", "女孩子",
-                "职业", "工作", "定居", "住在",
-            )
-        )
-
-    def _recall_memories(self, u: dict[str, Any], query_text: str) -> str:
-        archive: dict[str, list[str]] = u.get("archive") or {}
-        now_ms = time.time() * 1000.0
-
-        # Collect facts + stable_profile + structured memories without dropping stable_profile or high-importance entries (v1.6.1)
-        raw_fact_entries: list[tuple[str, bool]] = []
-        for src_key in ("stable_profile", "facts", "memories"):
-            src_val = u.get(src_key)
-            if not isinstance(src_val, list):
-                continue
-            force_profile = src_key == "stable_profile"
-            for item in src_val:
-                if isinstance(item, dict):
-                    # If memories list holds dated event-only records without fact/profile semantics, let events handle them only if already in events
-                    txt = str(item.get("text") or item.get("content") or item.get("fact") or "").strip()
-                    is_core_item = force_profile or self._is_high_importance_or_profile_entry(txt, item)
-                else:
-                    txt = str(item or "").strip()
-                    is_core_item = force_profile or self._is_high_importance_or_profile_entry(txt)
-                if not txt or txt == "无" or len(txt) < 4:
-                    continue
-                merged = False
-                for idx_existing, (ex_txt, ex_core) in enumerate(raw_fact_entries):
-                    if ex_txt == txt or _fact_similarity(ex_txt, txt) >= 0.78:
-                        best_txt = txt if len(txt) >= len(ex_txt) - 2 else ex_txt
-                        raw_fact_entries[idx_existing] = (best_txt, ex_core or is_core_item)
-                        merged = True
-                        break
-                if not merged:
-                    raw_fact_entries.append((txt, is_core_item))
-
-        scored_facts: list[tuple[float, float, bool, int, str]] = []
-        total_f = max(1.0, float(len(raw_fact_entries)))
-        for idx, (f_txt, is_core) in enumerate(raw_fact_entries):
-            raw_ov = df.compute_memory_query_overlap(query_text, f_txt)
-            overlap = min(1.0, raw_ov / 4.0)
-            recency = (idx + 1) / total_f
-            score = (0.55 if is_core else 0.0) + 0.65 * overlap + 0.35 * recency
-            scored_facts.append((score, raw_ov, is_core, idx, f_txt))
-        scored_facts.sort(key=lambda x: x[0], reverse=True)
-
-        selected_fact_map: dict[int, str] = {
-            idx: f_txt for _, _, _, idx, f_txt in scored_facts[:6]
-        }
-        # Guarantee stable_profile / core / high-importance facts are never dropped when crowded out by ordinary facts
-        core_candidates = [item for item in scored_facts if item[2]]
-        for _, _, _, idx, f_txt in core_candidates[:4]:
-            if len(selected_fact_map) >= 8 and idx not in selected_fact_map:
-                break
-            selected_fact_map.setdefault(idx, f_txt)
-        picked_facts = [selected_fact_map[k] for k in sorted(selected_fact_map.keys())]
-
-        events_list: list[Any] = list(u.get("events") or [])
-        scored_events: list[tuple[float, float, bool, int, str, str]] = []
-        for idx, ev in enumerate(events_list):
-            if isinstance(ev, dict):
-                text = str(ev.get("text") or ev.get("content") or "").strip()
-                date_str = str(ev.get("date") or "").strip()
-                ts = float(ev.get("ts", now_ms))
-                is_high_ev = self._is_high_importance_or_profile_entry(text, ev)
-            else:
-                text = str(ev or "").strip()
-                date_str = ""
-                ts = now_ms
-                is_high_ev = self._is_high_importance_or_profile_entry(text)
-            if not text:
-                continue
-            age_days = max(0.0, (now_ms - ts) / 86400000.0)
-            freshness = math.exp(-(math.log(2.0) * age_days) / 30.0)
-            raw_ov = df.compute_memory_query_overlap(query_text, text)
-            overlap = min(1.0, raw_ov / 4.0)
-            score = 0.55 + (0.45 if is_high_ev else 0.0) + 0.30 * freshness + 0.65 * overlap
-            scored_events.append((score, raw_ov, is_high_ev, idx, date_str, text))
-
-        scored_events.sort(key=lambda x: (x[1] > 0.0, x[2], x[0], x[3]), reverse=True)
-        top_ev_slice = list(scored_events[:4])
-        if len(scored_events) > 4 and not any(item[2] for item in top_ev_slice):
-            high_ev_extra = next((item for item in scored_events[4:] if item[2]), None)
-            if high_ev_extra is not None:
-                top_ev_slice.append(high_ev_extra)
-        picked_events = [(sc, d_str, e_txt) for sc, _, _, _, d_str, e_txt in top_ev_slice]
-
-        lines: list[str] = []
-        extra_profile_arch = [
-            str(it).strip() for it in (archive.get("stable_profile") or []) if str(it).strip()
-        ]
-        for ch_key in ("一", "二", "三", "四", "五", "六", "七", "八"):
-            ch_items = [str(it).strip() for it in (archive.get(ch_key) or []) if str(it).strip()]
-            if ch_key == "三" and extra_profile_arch:
-                for ep in extra_profile_arch:
-                    if ep not in ch_items:
-                        ch_items.append(ep)
-            if not ch_items:
-                continue
-            if ch_key in ("一", "二", "三", "五", "七"):
-                picked_ch: list[str] = []
-                for it in ch_items:
-                    ov = df.compute_memory_query_overlap(query_text, it)
-                    if ov > 0.0 and it not in picked_ch:
-                        picked_ch.append(it)
-                for it in ch_items:
-                    if self._is_high_importance_or_profile_entry(it) and it not in picked_ch:
-                        picked_ch.append(it)
-                for it in ch_items[-2:]:
-                    if it not in picked_ch:
-                        picked_ch.append(it)
-                picked_ch = picked_ch[-4:]
-            else:
-                scored_ch: list[tuple[float, int, str]] = []
-                n_ch = max(1.0, float(len(ch_items)))
-                for i, it in enumerate(ch_items):
-                    ov = min(1.0, df.compute_memory_query_overlap(query_text, it) / 4.0)
-                    core_boost = 0.35 if self._is_high_importance_or_profile_entry(it) else 0.0
-                    sc = core_boost + 0.70 * ov + 0.30 * ((i + 1) / n_ch)
-                    scored_ch.append((sc, i, it))
-                scored_ch.sort(key=lambda x: x[0], reverse=True)
-                picked_ch = [it for _, _, it in sorted(scored_ch[:2], key=lambda x: x[1])]
-            for item in picked_ch:
-                lines.append(f"- [档案·{ch_key}] {item}")
-        for f_txt in picked_facts:
-            if not any(
-                _fact_similarity(f_txt, re.sub(r"^-\s*\[[^\]]+\]\s*", "", existing)) >= 0.78
-                for existing in lines
-            ):
-                lines.append(f"- [长期事实] {f_txt}")
-        for _, d_str, e_txt in picked_events:
-            prefix = f"[{d_str}] " if d_str else ""
-            lines.append(f"- {prefix}{e_txt}")
-        return "\n".join(lines) if lines else "- （暂无特别记录，在聊天中自然认识对方即可）"
-
-    _build_user_memory_section = _recall_memories
-
-    def _recall_group_memories(self, g: dict[str, Any], query_text: str = "") -> str:
-        facts: list[str] = _dedup_facts_in_place(list(g.get("facts") or []))[-8:]
-        events_list: list[dict[str, Any]] = g.get("events") or []
-        now_ms = time.time() * 1000.0
-        scored_events: list[tuple[float, float, int, str, str]] = []
-        for idx, ev in enumerate(events_list):
-            text = str(ev.get("text", "")).strip()
-            date_str = str(ev.get("date", "")).strip()
-            ts = float(ev.get("ts", now_ms))
-            if not text:
-                continue
-            age_days = max(0.0, (now_ms - ts) / 86400000.0)
-            freshness = math.exp(-(math.log(2.0) * age_days) / 30.0)
-            raw_ov = df.compute_memory_query_overlap(query_text, text)
-            overlap = min(1.0, raw_ov / 4.0)
-            score = 0.55 + 0.30 * freshness + 0.65 * overlap
-            scored_events.append((score, raw_ov, idx, date_str, text))
-        scored_events.sort(key=lambda x: (x[1] > 0.0, x[0], x[2]), reverse=True)
-
-        lines: list[str] = []
-        for f_txt in facts:
-            lines.append(f"- [本群共识/群梗] {f_txt}")
-        for _, _, _, d_str, e_txt in scored_events[:4]:
-            prefix = f"[{d_str}] " if d_str else ""
-            lines.append(f"- [本群近期话题] {prefix}{e_txt}")
-        return "\n".join(lines) if lines else "- （本群刚开启群聊档案，在大家水群聊天中自然熟悉本群氛围即可）"
-
-    def _is_configured_owner(self, sender_id: str) -> bool:
-        if not sender_id:
-            return False
-        owner_ids_raw = self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip()
-        if not owner_ids_raw:
-            return False
-        owners = set(re.split(r"[,，;；\s]+", owner_ids_raw)) - {""}
-        return sender_id in owners
-
-    def _build_group_owner_presence_hint(self, sender_id: str, group_id: str = "") -> str:
-        """When a non-owner speaks in a group chat, resolves any known public display name of configured
-        owners so Dafeiyu can still recognize her owner when mentioned or present in the group (Diana #1500).
-        """
-        if self._is_configured_owner(sender_id):
-            return ""
-        owner_ids_raw = self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip()
-        if not owner_ids_raw:
-            return ""
-        owners = [oid for oid in re.split(r"[,，;；\s]+", owner_ids_raw) if oid]
-        if not owners:
-            return ""
-        users = self._state.get("users") or {}
-        g_imps = (((self._state.get("groups") or {}).get(group_id) or {}).get("member_impressions") or {}) if group_id else {}
-        owner_names: list[str] = []
-        for oid in owners:
-            candidates: list[str] = []
-            if group_id:
-                candidates.append(df.get_cached_display_name(oid, group_id))
-            imp_obj = g_imps.get(oid)
-            if isinstance(imp_obj, dict):
-                candidates.append(str(imp_obj.get("name") or "").strip())
-            u_obj = users.get(oid)
-            if isinstance(u_obj, dict):
-                candidates.append(str(u_obj.get("nickname") or "").strip())
-            for cand in candidates:
-                if cand and not df.is_placeholder_display_name(cand, oid) and cand not in owner_names:
-                    owner_names.append(cand)
-                    break
-        if not owner_names:
-            return ""
-        joined_names = " / ".join(owner_names)
-        return (
-            f"\n- **群内主人识别**：你的主人是「{joined_names}」；"
-            f"当群友在群里提到、@或谈论「{joined_names}」时，你要认出那是在说你的主人（但严禁主动泄露主人的微信号或私聊隐私）。"
-        )
-
-    def _recall_readonly_private_familiarity(
-        self, sender_id: str, sender_name: str = "", group_id: str = ""
-    ) -> str:
-        """群内只按微信号识别是否私聊过/是否主人及跨群名片差异；不读取个人事实、档案或心情。"""
-        name_label = (sender_name or "").strip() or df.get_cached_display_name(sender_id, group_id)
-        grp_imp_line = ""
-        if group_id:
-            g_obj = (self._state.get("groups") or {}).get(group_id) or {}
-            imp = (g_obj.get("member_impressions") or {}).get(sender_id)
-            if isinstance(imp, dict):
-                tags = [str(t) for t in (imp.get("tags") or []) if t]
-                cnt = int(imp.get("chat_count", 0))
-                if tags:
-                    grp_imp_line = f"你在本群跟TA互动过 {cnt} 次，对TA的群内印象标签：【{'、'.join(tags)}】。"
-                elif cnt >= 2:
-                    grp_imp_line = f"你在本群跟TA已经聊过 {cnt} 次，算是群里的熟面孔。"
-
-        is_owner = self._is_configured_owner(sender_id)
-        owner_presence_hint = self._build_group_owner_presence_hint(sender_id, group_id)
-        users = self._state.get("users") or {}
-        u = users.get(sender_id)
-        has_priv = isinstance(u, dict) and bool(u.get("hasPrivateChat", False))
-        if not has_priv and not is_owner:
-            extra_imp = f" {grp_imp_line}" if grp_imp_line else "（未与你私聊过，按本群公共氛围自然接话即可）"
-            return (
-                f"- **当前说话群友识别（按微信号精准识别）**：群友「{name_label}」{extra_imp}\n"
-                f"  *（注意：正文中切勿再次重复写出当前说话人的名字「{name_label}」，直接说回复内容即可）*"
-                f"{owner_presence_hint}"
-            )
-
-        priv_nick = str((u or {}).get("nickname") or "").strip() if isinstance(u, dict) else ""
-        alias_note = ""
-        if (
-            priv_nick
-            and priv_nick != name_label
-            and not df.is_placeholder_display_name(priv_nick, sender_id)
-        ):
-            alias_note = (
-                f"（已按微信号 {sender_id} 精准认出TA就是私聊里的「{priv_nick}」，"
-                f"在本群使用了不同的群名片「{name_label}」，是同一位熟人；群内互动时请按本群公开名片自然互动，不要拆穿或泄露私聊隐私）"
-            )
-        owner_note = "（已按微信号认出是你的主人）" if is_owner else ""
-        fam_core = "曾与你私聊过" if has_priv else "是你的熟人"
-        grp_note = f"\n  本群互动印象：{grp_imp_line}" if grp_imp_line else ""
-        return (
-            f"- **当前说话群友识别（按微信号精准识别）**：群友「{name_label}」{fam_core}{owner_note}{alias_note}，可自然表现出认识TA。"
-            f"{grp_note}\n"
-            f"  *（注意：正文中切勿再次重复写出当前说话人的名字「{name_label}」；只按本群公开上下文接话，不推测或提及私聊内容。）*"
-            f"{owner_presence_hint}"
-        )
-
-    def _format_group_archive_card(self, group_id: str, g: dict[str, Any]) -> str:
-        mood = int(g.get("mood", 75))
-        reason = g.get("lastReason", "在群里潜水看大家聊天")
-        facts: list[str] = _dedup_facts_in_place(list(g.get("facts") or []))
-        evs: list[dict[str, Any]] = (g.get("events") or [])[-5:]
-        imps: dict[str, Any] = g.get("member_impressions") or {}
-        f_str = "\n".join(f"  • {x}" for x in facts) if facts else "  （暂无本群专属梗，大家多聊几句本鱼就摸清这个群的路数了）"
-        e_str = "\n".join(f"  • [{x.get('date')}] {x.get('text')}" for x in reversed(evs)) if evs else "  （暂无近期群事件记录）"
-        imp_lines: list[str] = []
-        sorted_imps = sorted(
-            [(uid, obj) for uid, obj in imps.items() if isinstance(obj, dict)],
-            key=lambda x: int(x[1].get("chat_count", 0)),
-            reverse=True,
-        )[:8]
-        for uid, obj in sorted_imps:
-            stored_name = str(obj.get("name") or "").strip()
-            cached_name = df.get_cached_display_name(uid, group_id)
-            if df.is_placeholder_display_name(stored_name, uid):
-                if not df.is_placeholder_display_name(cached_name, uid):
-                    m_name = cached_name
-                    obj["name"] = cached_name
-                else:
-                    m_name = stored_name or cached_name or uid[-4:]
-            else:
-                m_name = stored_name
-            m_tags = [str(t) for t in (obj.get("tags") or []) if t]
-            m_cnt = int(obj.get("chat_count", 1))
-            tag_txt = "、".join(m_tags) if m_tags else "群内活跃水友"
-            imp_lines.append(f"  • {m_name}（互动 {m_cnt} 次）：{tag_txt}")
-        imp_str = "\n".join(imp_lines) if imp_lines else "  （大家多跟本鱼聊几句，就会自动生成群友专属印象标签啦）"
-        return (
-            f"🐋 【本群专属群聊档案】（群ID: {group_id[:12]}）\n"
-            f"🎉 本群气氛值：{mood}/100（{self._mood_label(mood)}）\n"
-            f"💭 群聊印象：{reason}\n\n"
-            f"👥 群友专属印象卡（按微信号精准记忆）：\n{imp_str}\n\n"
-            f"📌 本群长期记忆（群梗 / 群氛围 / 群共识）：\n{f_str}\n\n"
-            f"📅 本群近期话题（30天半衰期自然淡忘）：\n{e_str}\n\n"
-            f"💡 群内发「大肥鱼 记住 <本群梗或规矩>」可记入本群档案；群聊不会把群内闲聊写入单人私聊档案（但本鱼在群里认得私聊熟人！）"
-        )
-
-    def _sync_group_member_real_name(self, group_id: str, sender_id: str, sender_name: str) -> bool:
-        """Promotes a group member's stored impression name from a placeholder/wxid suffix
-        to their real resolved nickname as soon as it becomes available.
-        """
-        gid = (group_id or "").strip()
-        uid = (sender_id or "").strip()
-        real_name = (sender_name or "").strip()
-        if not gid or not uid or df.is_placeholder_display_name(real_name, uid):
-            return False
-        g_obj = (self._state.get("groups") or {}).get(gid)
-        if not isinstance(g_obj, dict):
-            return False
-        imps = g_obj.get("member_impressions")
-        if not isinstance(imps, dict):
-            return False
-        m_entry = imps.get(uid)
-        if not isinstance(m_entry, dict):
-            return False
-        old_name = str(m_entry.get("name") or "").strip()
-        if old_name != real_name:
-            m_entry["name"] = real_name
-            return True
-        return False
-
-    async def _consolidate_user_archive(
-        self,
-        *,
-        api_key: str,
-        base_url: str,
-        model: str,
-        user_id: str,
-    ) -> tuple[bool, str]:
-        """Ported from Yuuyuko-uu/dsh-fish-memory/lib/生成档案.js: consolidate scattered facts & events into 8 chapters."""
-        if not api_key:
-            return False, "未配置 DeepSeek API Key，无法整理档案。"
-        u = self._get_user_state(user_id)
-        facts: list[str] = list(u.get("facts") or [])
-        events_list: list[dict[str, Any]] = list(u.get("events") or [])
-        existing_archive: dict[str, list[str]] = u.get("archive") or {}
-
-        raw_materials: list[str] = []
-        for ch_k, items in existing_archive.items():
-            for it in items:
-                raw_materials.append(f"[已有档案章节{ch_k}] {it}")
-        for f_txt in facts:
-            raw_materials.append(f"[零散长期事实] {f_txt}")
-        for ev in events_list[-15:]:
-            raw_materials.append(f"[{ev.get('date', '')} 事件] {ev.get('text', '')}")
-
-        if not raw_materials:
-            return False, "当前还没有积累任何长期事实或事件记录，先跟本鱼多聊几句吧！"
-
-        today_str = datetime.now(TZ).strftime("%Y-%m-%d")
-        user_prompt = (
-            f"当前整理日期：{today_str}\n\n"
-            "【待重整合并的记忆条目】：\n"
-            + "\n".join(raw_materials)
-            + "\n\n请严格按八章节判据去重、合并、淘汰无效琐事，每行输出 `章节编号|日期|一句话`。"
-        )
-        try:
-            async with httpx.AsyncClient(timeout=35.0) as client:
-                resp = await client.post(
-                    f"{base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": self._normalize_api_model(model),
-                        "messages": [
-                            {"role": "system", "content": ARCHIVE_CONSOLIDATE_SYSTEM},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        "temperature": 0.2,
-                        "max_tokens": 600,
-                    },
-                )
-                resp.raise_for_status()
-                r_json = resp.json()
-                used = int((r_json.get("usage") or {}).get("total_tokens", 0))
-                self._record_tokens(used)
-                content = (
-                    r_json.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                    .strip()
-                )
-        except Exception as e:
-            logger.warning("Archive consolidation failed: %s", e)
-            return False, f"整理档案时调用模型失败：{e}"
-
-        new_archive: dict[str, list[str]] = {}
-        consolidated_facts: list[str] = []
-        for raw_line in content.splitlines():
-            line = raw_line.strip().lstrip("-•* ")
-            if not line or line == "无":
-                continue
-            parts = [p.strip() for p in line.split("|")]
-            if len(parts) >= 3:
-                ch_no, d_str, sentence = parts[0], parts[1], "|".join(parts[2:]).strip()
-                ch_key = ch_no.replace("章节", "").strip()[:1]
-                if ch_key not in ARCHIVE_CHAPTERS:
-                    ch_key = "三"
-                entry = f"[{d_str}] {sentence}" if d_str and d_str != "无" else sentence
-                new_archive.setdefault(ch_key, [])
-                if entry not in new_archive[ch_key]:
-                    new_archive[ch_key].append(entry)
-                if sentence not in consolidated_facts:
-                    consolidated_facts.append(sentence)
-
-        if not new_archive and facts:
-            new_archive["三"] = facts[-10:]
-            consolidated_facts = facts[-10:]
-
-        async with self._state_lock:
-            u["archive"] = new_archive
-            u["facts"] = consolidated_facts[-15:]
-            u["factsSinceArchive"] = 0
-            u["lastArchiveAt"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
-            self._save_persistent_state()
-
-        return True, self._format_archive_card(u)
-
-    def _format_archive_card(self, u: dict[str, Any]) -> str:
-        archive: dict[str, list[str]] = u.get("archive") or {}
-        facts: list[str] = u.get("facts") or []
-        evs: list[dict[str, Any]] = (u.get("events") or [])[-5:]
-        last_arch = u.get("lastArchiveAt", "尚未重整")
-
-        sec_lines: list[str] = []
-        for ch_key, ch_title in ARCHIVE_CHAPTERS.items():
-            items = archive.get(ch_key) or []
-            if items:
-                sec_lines.append(f"📘 {ch_title}")
-                for it in items:
-                    sec_lines.append(f"  • {it}")
-
-        if not sec_lines:
-            f_str = "\n".join(f"  • {x}" for x in facts) if facts else "  （暂无长期事实，多聊几句本鱼就摸清你的底细了）"
-            sec_lines.append(f"📌 待归档长期事实：\n{f_str}")
-
-        e_str = "\n".join(f"  • [{x.get('date')}] {x.get('text')}" for x in reversed(evs)) if evs else "  （暂无近期事件记录）"
-
-        return (
-            f"🐋 鱼的记忆档案（dsh-fish-memory 八章节版）\n"
-            f"🕒 上次重整合并：{last_arch}\n\n"
-            + "\n".join(sec_lines)
-            + f"\n\n📅 近期印象（30天半衰期自然淡忘）：\n{e_str}\n\n"
-            f"💡 口令：「大肥鱼 整理档案」重整合并 | 「大肥鱼 记住 <内容>」手动添加"
-        )
+                await asyncio.to_thread(self._save_persistent_state)
 
     async def _generate_and_post_moment(self, topic: str = "") -> tuple[str, str | None]:
         """生成公开朋友圈，只使用角色公开状态、当日时段日程、主题轮换和本次明确指定的主题（严禁引入私聊记忆）。"""
@@ -1378,13 +325,12 @@ class WhaleListener(EventListener):
 
         now_dt = datetime.now(TZ)
         now_str = now_dt.strftime("%Y-%m-%d %H:%M")
-        stats = self._record_tokens(0)
-        daily_sched = df.get_or_create_daily_schedule(self._state, now_dt)
+        stats = await self._record_tokens_safe(0)
+        daily_sched = await self._get_or_update_daily_schedule(now_dt)
         sched_ref = df.format_moment_schedule_context(daily_sched, now_dt.hour)
 
-        recent_moments = [
-            m for m in (self._state.get("moments") or [])[-8:] if isinstance(m, dict)
-        ]
+        raw_hist = self._state.get("self_moments_history") or self._state.get("moments") or []
+        recent_moments = [m for m in raw_hist[-8:] if isinstance(m, dict)]
         recent_texts = [
             str(m.get("text") or "").strip() for m in recent_moments if str(m.get("text") or "").strip()
         ]
@@ -1464,7 +410,7 @@ class WhaleListener(EventListener):
                 resp.raise_for_status()
                 r_json = resp.json()
                 used = int((r_json.get("usage") or {}).get("total_tokens", 0))
-                self._record_tokens(used)
+                await self._record_tokens_safe(used)
                 raw = r_json.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         except Exception as e:
             logger.warning("Generate moment failed: %s", e)
@@ -1489,17 +435,17 @@ class WhaleListener(EventListener):
             if resolved:
                 meme_tag, meme_b64 = resolved
 
-        moment_item = {
-            "id": len(self._state.setdefault("moments", [])) + 1,
-            "at": now_str,
-            "text": cleaned,
-            "meme": meme_tag or "得意",
-            "theme": topic_clean or theme_name,
-            "mood": mood_val,
-            "likes": 0,
-        }
         async with self._state_lock:
             moments_list = self._state.setdefault("moments", [])
+            moment_item = {
+                "id": len(moments_list) + 1,
+                "at": now_str,
+                "text": cleaned,
+                "meme": meme_tag or "得意",
+                "theme": topic_clean or theme_name,
+                "mood": mood_val,
+                "likes": 0,
+            }
             moments_list.append(moment_item)
             if len(moments_list) > 30:
                 self._state["moments"] = moments_list[-30:]
@@ -1508,11 +454,11 @@ class WhaleListener(EventListener):
                 self_hist.append(dict(moment_item))
                 if len(self_hist) > 30:
                     self._state["self_moments_history"] = self_hist[-30:]
-            self._save_persistent_state()
+            self._mark_state_dirty(immediate=True)
 
         # Also publish to real WeChat 4.1 Moments (朋友圈) asynchronously if WCF V4 gateway is active
         try:
-            asyncio.create_task(df.publish_wcf_moment(cleaned, meme_b64))
+            self._track_bg_task(df.publish_wcf_moment(cleaned, meme_b64))
         except Exception:
             pass
 
@@ -1522,1078 +468,9 @@ class WhaleListener(EventListener):
             f"━━━━━━━━━━━━━━\n"
             f"{cleaned}\n"
             f"━━━━━━━━━━━━━━\n"
-            f"🖼️ 配图：[{moment_item['meme']}]  |  🤍 点赞：{moment_item['likes']}（发「大肥鱼 点赞朋友圈」给她点赞涨心情）"
+            f"🖼️ 配图：[{moment_item['meme']}]  |  🤍 点赞：{moment_item['likes']}（发「大肥鱼 点赞」给她点赞涨心情）"
         )
         return card_text, meme_b64
-
-    async def _call_deepseek(
-        self,
-        sys_prompt: str,
-        user_prompt: str,
-        *,
-        temperature: float = 0.95,
-        max_tokens: int = 260,
-    ) -> str:
-        api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
-        if not api_key:
-            return ""
-        base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
-        model = self._normalize_api_model(self._get_config_str("deepseek_model", DEFAULT_MODEL))
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": sys_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
-            )
-            resp.raise_for_status()
-            r_json = resp.json()
-            used = int((r_json.get("usage") or {}).get("total_tokens", 0))
-            self._record_tokens(used)
-            return str(r_json.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
-
-    def _format_fish_pond_wall(self, max_items: int = 5) -> tuple[list[str], str | None]:
-        moments_list = self._state.get("moments") or []
-        if not moments_list:
-            return ["📸 大肥鱼的鱼塘朋友圈动态墙目前还是空的哦~"], None
-        recent = moments_list[-max_items:]
-        lines = [f"📸 大肥鱼的鱼塘朋友圈动态墙（最近 {len(recent)} 条）：\n"]
-        for m_item in reversed(recent):
-            lines.append(
-                f"#{m_item.get('id')} [{m_item.get('at')}] (心情 {m_item.get('mood')}/100 | 🤍 {m_item.get('likes', 0)})\n"
-                f"「{m_item.get('text')}」 [配图:{m_item.get('meme')}]\n"
-            )
-        last_meme = self._resolve_meme_b64(str(recent[-1].get("meme", "干饭")))
-        return lines, (last_meme[1] if last_meme else None)
-
-    async def _browse_and_roast_moments(
-        self, *, is_group: bool, sender_id: str, session_key: str = ""
-    ) -> tuple[str, str | None]:
-        """Reads loaded WeChat 4.1 Moments feed in owner private chat and generates Dafeiyu commentary;
-        strictly isolates group chats and non-owners to internal fish-pond moments wall.
-        """
-        if is_group:
-            wall_lines, last_meme_b64 = self._format_fish_pond_wall(max_items=5)
-            wall_lines.append(
-                "💡 群聊里只展示大肥鱼的鱼塘动态墙哦；想让我帮你刷真实微信朋友圈，请由主人在私聊里发送「大肥鱼 刷朋友圈」~"
-            )
-            return "\n".join(wall_lines), last_meme_b64
-
-        owner_ids_raw = self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip()
-        owners = set(re.split(r"[,，;；\s]+", owner_ids_raw)) - {""}
-        if owners and sender_id not in owners:
-            wall_lines, _ = self._format_fish_pond_wall(max_items=3)
-            msg = "哼，真实微信朋友圈只有主人才能让我帮忙刷哦~ 给你看看我的鱼塘动态墙吧！\n\n" + "\n".join(wall_lines)
-            return msg, None
-
-        ok_m, rows, err_msg = await df.fetch_wcf_moments(limit=8)
-        if not ok_m or not rows:
-            fallback_lines = [
-                f"🐟 刚刚探头去瞄了一眼微信朋友圈，不过暂时没读到列表（{err_msg or '列表为空'}）。",
-                "💡 小贴士：请先在电脑微信点开一下「朋友圈」窗口让列表加载，再发「大肥鱼 刷朋友圈」我就能帮你实时锐评啦！",
-            ]
-            if self._state.get("moments"):
-                wall_lines, _ = self._format_fish_pond_wall(max_items=3)
-                fallback_lines.append("\n" + "\n".join(wall_lines))
-            res_meme = self._resolve_meme_b64("偷看")
-            return "\n".join(fallback_lines), (res_meme[1] if res_meme else None)
-
-        if session_key:
-            self._owner_moments_cache[session_key] = list(rows[:8])
-        self._cached_wcf_moments = (time.time(), list(rows))
-
-        replied_list = await self._check_and_reply_moment_comments(rows, max_replies=2)
-        replied_note = ""
-        if replied_list:
-            replied_lines = [
-                f"• 回评 {r['nick']}（「{r['comment']}」）：{r['reply']}" for r in replied_list
-            ]
-            replied_note = "\n\n💬 顺手回复了朋友圈新评论：\n" + "\n".join(replied_lines)
-
-        digest = df.format_wcf_moments_digest(rows, max_items=8)
-        interact_tip = (
-            f"{replied_note}\n\n💡 可发「大肥鱼 点赞朋友圈 1」或「大肥鱼 评论朋友圈 1 [内容]」让我直接去微信朋友圈点赞/神评！"
-        )
-        res_default = self._resolve_meme_b64("偷看")
-        default_meme_b64 = res_default[1] if res_default else None
-        api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
-        if api_key:
-            sys_prompt = (
-                f"{LIVE_PERSONA_BASE}\n\n"
-                "现在主人让你帮忙刷一下微信朋友圈。请以「大肥鱼」（毒舌傲娇又护短的小鲸鱼娘）的口吻，"
-                "对下面刷到的朋友圈动态做一段「朋友圈锐评」：挑 2~4 条最有意思的动态吐槽或点评，"
-                "控制在 120 字以内，不要使用 Markdown 标题或列表符号，不要加括号动作旁白，"
-                "可在最末尾附带一个 `[表情: 偷看]` 或 `[表情: 得意]` 等表情标签。"
-            )
-            user_prompt = f"刚刚刷到的最新微信朋友圈列表：\n{digest}\n\n请给出你的大肥鱼锐评："
-            try:
-                raw_roast = await self._call_deepseek(
-                    sys_prompt, user_prompt, temperature=0.95, max_tokens=260
-                )
-                if raw_roast:
-                    roast_clean, _, roast_meme_b64 = self._extract_text_and_meme(
-                        self._clean_reply(raw_roast)
-                    )
-                    roast_clean = roast_clean.replace("||", " ").strip()
-                    if roast_clean:
-                        return (
-                            f"📱 刚刚帮你刷了最新微信朋友圈：\n{digest}\n\n🐟 大肥鱼锐评：\n{roast_clean}{interact_tip}",
-                            roast_meme_b64 or default_meme_b64,
-                        )
-            except Exception as e:
-                logger.warning("Browse moments DeepSeek roast failed: %s", e)
-
-        return (
-            f"📱 刚刚帮你刷了最新微信朋友圈：\n{digest}\n\n🐟 啧，大家今天动态还挺热闹嘛！{interact_tip}",
-            default_meme_b64,
-        )
-
-    async def _handle_owner_moment_interaction_cmd(
-        self,
-        *,
-        is_group: bool,
-        sender_id: str,
-        session_key: str,
-        action: str,
-        index_num: int,
-        custom_comment: str = "",
-    ) -> tuple[str, str | None]:
-        """Handles owner-only commands to like or comment on a real WeChat 4.1 Moment by index (#1~#8)."""
-        if is_group:
-            return "💡 群聊里不能直接操作真实微信朋友圈哦，请由主人在私聊中使用~", None
-
-        owner_ids_raw = self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip()
-        owners = set(re.split(r"[,，;；\s]+", owner_ids_raw)) - {""}
-        if owners and sender_id not in owners:
-            return "哼，只有主人才能让我去真实微信朋友圈点赞或评论哦~", None
-
-        rows = self._owner_moments_cache.get(session_key)
-        if not rows:
-            ok_m, fetched_rows, err_msg = await df.fetch_wcf_moments(limit=8)
-            if not ok_m or not fetched_rows:
-                return f"🐟 暂时没读到朋友圈列表（{err_msg or '列表为空'}），请先发「大肥鱼 刷朋友圈」加载后再试~", None
-            rows = list(fetched_rows[:8])
-            self._owner_moments_cache[session_key] = rows
-
-        if index_num < 1 or index_num > len(rows):
-            return f"当前只缓存了最近 {len(rows)} 条朋友圈，请输入 1~{len(rows)} 之间的序号哦~", None
-
-        target_row = rows[index_num - 1]
-        sns_id = str(target_row.get("sns_id") or "").strip()
-        nick = str(target_row.get("nickname") or target_row.get("author") or "微信好友").strip()
-        m_content = str(target_row.get("content") or "").strip()
-        if not sns_id:
-            return f"⚠️ 第 #{index_num} 条动态缺少有效的朋友圈 ID，请重新发送「大肥鱼 刷朋友圈」刷新列表。", None
-
-        if action == "like":
-            ok, status_code, msg = await df.interact_wcf_moment(sns_id, "like")
-            if ok or status_code == "already_liked":
-                async with self._state_lock:
-                    interacted = self._state.setdefault("interacted_moments", {})
-                    rec = interacted.setdefault(sns_id, {"author": str(target_row.get("author") or ""), "ts": int(time.time())})
-                    rec["liked"] = True
-                    self._save_persistent_state()
-            if status_code == "already_liked":
-                return f"❤️ 第 #{index_num} 条（{nick}）的朋友圈刚才已经点过赞啦，再点就把赞取消了，本鱼才不干呢！", None
-            if ok:
-                res_meme = self._resolve_meme_b64("比心") or self._resolve_meme_b64("得意")
-                return f"👍 已帮你在微信朋友圈给 #{index_num}「{nick}」的动态点上真赞啦！", (res_meme[1] if res_meme else None)
-            return f"⚠️ 给 #{index_num}「{nick}」点赞未成功（{msg or status_code}），请确认电脑微信已打开过朋友圈列表。", None
-
-        comment_txt = (custom_comment or "").strip()
-        if not comment_txt:
-            api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
-            base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
-            model = self._normalize_api_model(self._get_config_str("deepseek_model", DEFAULT_MODEL))
-            u = self._get_user_state(sender_id)
-            gen_txt, used_tok = await df.generate_moment_comment(
-                api_key,
-                base_url,
-                model,
-                author_name=nick,
-                moment_content=m_content,
-                mode=self._settings_for(sender_id)["mode"],
-                existing_comments=target_row.get("comments") if isinstance(target_row.get("comments"), list) else None,
-                mood=int(u.get("mood", 75)),
-            )
-            if used_tok:
-                self._record_tokens(used_tok)
-            comment_txt = gen_txt.strip()
-
-        if not comment_txt:
-            return "⚠️ 暂时没能生成评论内容，你可以直接带上文字再试一次，例如：「大肥鱼 评论朋友圈 1 周末愉快！」", None
-
-        ok, status_code, msg = await df.interact_wcf_moment(sns_id, "comment", comment_txt)
-        if ok:
-            async with self._state_lock:
-                interacted = self._state.setdefault("interacted_moments", {})
-                rec = interacted.setdefault(sns_id, {"author": str(target_row.get("author") or ""), "ts": int(time.time())})
-                rec["commented"] = True
-                rec["comment"] = comment_txt
-                self._save_persistent_state()
-            res_meme = self._resolve_meme_b64("得意")
-            return (
-                f"💬 已在微信朋友圈 #{index_num}「{nick}」动态下发表评论：\n「{comment_txt}」",
-                res_meme[1] if res_meme else None,
-            )
-        return f"⚠️ 评论 #{index_num}「{nick}」的朋友圈未成功（{msg or status_code}），拟好的评论是：「{comment_txt}」", None
-
-    async def _handle_owner_friend_request_cmd(
-        self,
-        *,
-        is_group: bool,
-        sender_id: str,
-        session_key: str,
-        action: str,
-        arg: str = "",
-    ) -> tuple[str, str | None]:
-        """Handles owner-only commands for viewing, accepting, or configuring WeChat 4.1 friend requests."""
-        if is_group:
-            return "💡 群聊里不能管理好友申请哦，请由主人在私聊中使用~", None
-
-        owner_ids_raw = self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip()
-        owners = set(re.split(r"[,，;；\s]+", owner_ids_raw)) - {""}
-        if owners and sender_id not in owners:
-            return "哼，只有主人才能管理大肥鱼的微信好友申请哦~", None
-
-        local_enabled = bool(self._state.get("auto_accept_friend_enabled", True))
-        local_kw = list(self._state.get("friend_verify_keywords") or [])
-
-        if action == "keywords":
-            raw_arg = (arg or "").strip()
-            if raw_arg in ("清空", "无", "关闭", "全部", "clear", "none"):
-                new_kw: list[str] = []
-            else:
-                new_kw = [w.strip()[:64] for w in re.split(r"[,，;；\s]+", raw_arg) if w.strip()][:16]
-            async with self._state_lock:
-                self._state["friend_verify_keywords"] = new_kw
-                self._save_persistent_state()
-            await df.set_wcf_friend_auto_accept(local_enabled, new_kw)
-            if not new_kw:
-                return "✅ 已清空好友验证关键词过滤，当前所有入站好友申请将自动通过（需保持自动同意好友开启）。", None
-            return f"✅ 已设置好友申请验证关键词：{'、'.join(new_kw)}（仅验证留言包含任一关键词时自动通过）。", None
-
-        if action == "list":
-            ok, data, err_msg = await df.fetch_wcf_friend_requests()
-            if not ok and not data:
-                return (
-                    f"🤝 【大肥鱼 · 微信好友申请管理】\n"
-                    f"• 自动同意好友：{'开启 ✅' if local_enabled else '关闭 ⏸️'}\n"
-                    f"• 验证词过滤：{'、'.join(local_kw) if local_kw else '无限制（收到申请自动通过）'}\n"
-                    f"• 网关状态：{err_msg or '暂未连接'}",
-                    None,
-                )
-            digest, reqs = df.format_wcf_friend_requests_digest(
-                data, local_enabled=local_enabled, local_keywords=local_kw
-            )
-            self._owner_friend_requests_cache[session_key] = reqs
-            return digest, None
-
-        # action == "accept"
-        target_arg = (arg or "").strip()
-        req_id = ""
-        target_row: dict[str, Any] = {}
-        cached_reqs = self._owner_friend_requests_cache.get(session_key) or []
-        if not cached_reqs:
-            ok_f, f_data, _ = await df.fetch_wcf_friend_requests()
-            if ok_f and isinstance(f_data, dict):
-                cached_reqs = [r for r in (f_data.get("requests") or []) if isinstance(r, dict)][:8]
-                self._owner_friend_requests_cache[session_key] = cached_reqs
-
-        if target_arg.isdigit():
-            idx = int(target_arg)
-            if 1 <= idx <= len(cached_reqs):
-                target_row = cached_reqs[idx - 1]
-                req_id = str(target_row.get("request_id") or "").strip()
-            else:
-                return f"⚠️ 当前共有 {len(cached_reqs)} 条好友申请记录，请先发「大肥鱼 好友申请」确认序号后再试~", None
-        else:
-            req_id = target_arg
-            for r in cached_reqs:
-                if str(r.get("request_id") or "").startswith(req_id):
-                    req_id = str(r.get("request_id") or "")
-                    target_row = r
-                    break
-
-        if not req_id:
-            return "⚠️ 未找到对应的好友申请 ID，请先发送「大肥鱼 好友申请」查看列表~", None
-
-        ok, acc_data, err_msg = await df.accept_wcf_friend_request(req_id)
-        nick = str(acc_data.get("nickname") or target_row.get("nickname") or "新好友").strip()
-        f_wxid = str(acc_data.get("sender_id") or target_row.get("sender_id") or "").strip()
-        verif = str(target_row.get("verification") or "").strip()
-        if ok:
-            await self._greet_newly_accepted_friend(req_id, f_wxid, nick, verif)
-            res_meme = self._resolve_meme_b64("比心") or self._resolve_meme_b64("得意")
-            return (
-                f"✅ 已通过「{nick}」的好友申请" + (f"（{f_wxid}），并主动发消息打过招呼啦！" if f_wxid else "！"),
-                res_meme[1] if res_meme else None,
-            )
-        return f"⚠️ 通过好友申请失败（{err_msg or '申请可能已过期或已处理'}）。", None
-
-    async def _get_balance_str(self, api_key: str, base_url: str) -> str:
-        if not api_key:
-            return "未配置"
-        now = time.time()
-        cached_ts, cached_val = self._balance_cache
-        if cached_val and now - cached_ts < 300:
-            return cached_val
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                r = await client.get(
-                    f"{base_url}/user/balance",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-                if r.status_code == 200:
-                    b_info = (r.json().get("balance_infos") or [{}])[0]
-                    bal = b_info.get("total_balance")
-                    cur = b_info.get("currency", "CNY")
-                    if bal is not None:
-                        symbol = "¥" if cur == "CNY" else f"{cur} "
-                        val = f"{symbol}{bal}"
-                        self._balance_cache = (now, val)
-                        return val
-        except Exception:
-            pass
-        return cached_val or "未知"
-
-    def _record_tokens(self, used_tokens: int) -> dict[str, Any]:
-        today_str = datetime.now(TZ).strftime("%Y-%m-%d")
-        stats = self._state.setdefault(
-            "token_stats",
-            {"date": today_str, "today_tokens": 0, "last_tokens": 0, "total_tokens": 0},
-        )
-        if stats.get("date") != today_str:
-            stats["date"] = today_str
-            stats["today_tokens"] = 0
-        if used_tokens > 0:
-            stats["last_tokens"] = used_tokens
-            stats["today_tokens"] = int(stats.get("today_tokens", 0)) + used_tokens
-            stats["total_tokens"] = int(stats.get("total_tokens", 0)) + used_tokens
-        return stats
-
-    @staticmethod
-    def _clean_reply(text: str) -> str:
-        raw_no_tag = SPEAK_UP_META_ECHO_RE.sub("", SPEAK_UP_TAG_RE.sub("", text or "")).strip()
-        s = BOT_PREFIX_RE.sub("", raw_no_tag).strip()
-        s = ACTION_PAREN_RE.sub("", s)
-        s = ACTION_ASTERISK_RE.sub("", s).strip()
-        s = df.plain_markdown_bullets(s)
-        cleaned = s if s else raw_no_tag
-        if len(cleaned) <= 45 and cleaned.endswith("。") and not cleaned.endswith("。。"):
-            cleaned = cleaned[:-1].strip()
-        return cleaned
-
-    @staticmethod
-    def _apply_saturated_mood_delta(
-        current_mood: int,
-        raw_delta: int,
-        *,
-        min_mood: int = 15,
-        max_mood: int = 100,
-    ) -> tuple[int, int]:
-        """Applies saturation at both ends (dsh-feiyu-mood v0.8.5):
-        - When current_mood >= 85 and raw_delta > 0, halves positive delta so mood doesn't slam into 100.
-        - When current_mood <= 40 and raw_delta < 0, halves negative delta so mood doesn't slam into the floor.
-        Returns (new_mood, actual_delta).
-        """
-        eff = float(raw_delta)
-        if current_mood >= 85 and eff > 0:
-            eff = eff * 0.5
-        elif current_mood <= 40 and eff < 0:
-            eff = eff * 0.5
-        # Round half away from zero for positive, toward zero for negative (matching upstream saturation.test.mjs)
-        if eff >= 0:
-            step = int(math.floor(eff + 0.5))
-        else:
-            step = -int(math.floor(-eff))
-        new_mood = int(_clamp(current_mood + step, min_mood, max_mood))
-        return new_mood, new_mood - current_mood
-
-    @staticmethod
-    def _select_chat_temperature(
-        cleaned_text: str,
-        *,
-        is_file_in: bool = False,
-        has_link_card: bool = False,
-        has_doc_ctx: bool = False,
-    ) -> float:
-        if is_file_in or has_link_card or has_doc_ctx:
-            return 0.78
-        s_low = (cleaned_text or "").lower()
-        factual_kws = (
-            "代码", "报错", "bug", "python", "java", "js", "sql", "函数", "接口",
-            "怎么写", "为什么", "区别", "原理", "教程", "步骤", "帮我查", "搜索",
-            "最新", "价格", "多少钱", "新闻", "```",
-        )
-        if len(cleaned_text or "") >= 60 or any(kw in s_low for kw in factual_kws):
-            return 0.82
-        return 1.1
-
-    @staticmethod
-    def _is_suitable_for_random_voice(reply_flat: str) -> bool:
-        if not reply_flat:
-            return False
-        if "大肥鱼 " in reply_flat or "鲸鱼娘 " in reply_flat:
-            return False
-        low = reply_flat.lower()
-        if "http" in low or "www." in low:
-            return False
-        if "```" in reply_flat or "`" in reply_flat or "\n" in reply_flat:
-            return False
-        if re.search(r"\d{4,}", reply_flat) is not None:
-            return False
-        if re.search(r"[A-Za-z_]{5,}", reply_flat) is not None:
-            return False
-        return True
-
-    @staticmethod
-    def _format_data_uri_b64(image_b64: str | None) -> str | None:
-        if not image_b64:
-            return None
-        s = image_b64.strip()
-        if not s:
-            return None
-        if s.startswith("data:image/"):
-            return s
-        if s.startswith("R0lGOD"):
-            return f"data:image/gif;base64,{s}"
-        if s.startswith("iVBOR"):
-            return f"data:image/png;base64,{s}"
-        return f"data:image/jpeg;base64,{s}"
-
-    @staticmethod
-    def _split_reply_bubbles(
-        text: str,
-        *,
-        allow_split: bool = True,
-        last_was_multi: bool = False,
-    ) -> list[str]:
-        s = (text or "").strip()
-        if not s:
-            return []
-        if (
-            not allow_split
-            or "```" in s
-            or len(s) > 160
-            or "\n- " in s
-            or "\n• " in s
-            or "\n1." in s
-        ):
-            return [s.replace("||", " ")]
-
-        if "||" in s:
-            raw_parts = [p.strip() for p in s.split("||") if p.strip()]
-        else:
-            lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
-            if len(lines) == 2 and all(len(ln) <= 36 for ln in lines):
-                raw_parts = lines
-            else:
-                raw_parts = [s]
-
-        bubbles: list[str] = []
-        for p in raw_parts:
-            cp = p[:-1].strip() if (len(p) <= 45 and p.endswith("。") and not p.endswith("。。")) else p
-            if cp:
-                bubbles.append(cp)
-        if not bubbles:
-            return [s]
-
-        # Cap at 2 bubbles max
-        if len(bubbles) > 2:
-            bubbles = [bubbles[0], " ".join(bubbles[1:])]
-
-        # Anti-mechanical rhythm gate:
-        # 1) Never split into 2 bubbles on two consecutive turns in the same session
-        # 2) Never send a standalone '?' bubble when followed by a second bubble
-        # 3) Merge very short 2-part splits (<16 chars total) unless the first bubble is a short reaction word
-        if len(bubbles) == 2:
-            if bubbles[0] in ("？", "?", "？？", "!", "！", "…", "..."):
-                return [bubbles[1]]
-            total_chars = len(bubbles[0]) + len(bubbles[1])
-            is_reaction_lead = bubbles[0] in SHORT_REACTION_BUBBLES
-            if last_was_multi or (total_chars < 16 and not is_reaction_lead):
-                return [f"{bubbles[0]} {bubbles[1]}"]
-
-        return bubbles
-
-    async def _send_followup_bubbles(
-        self,
-        target_id: str,
-        bubbles: list[str],
-        final_image_b64: str | None = None,
-        *,
-        is_group: bool = False,
-        bot_uuid: str,
-    ) -> None:
-        target_type = "group" if is_group else "person"
-        for b_txt in bubbles:
-            delay = min(2.0, max(0.75, len(b_txt) * 0.065))
-            await asyncio.sleep(delay)
-            sent_wcf = await df.send_wcf_text_or_image(target_id, text=b_txt)
-            if not sent_wcf:
-                try:
-                    chain = platform_message.MessageChain([platform_message.Plain(text=b_txt)])
-                    await self.plugin.send_message(
-                        bot_uuid=bot_uuid,
-                        target_type=target_type,
-                        target_id=target_id,
-                        message_chain=chain,
-                    )
-                except Exception as e:
-                    logger.debug("Fallback send_message text failed: %s", e)
-
-        if final_image_b64:
-            await asyncio.sleep(0.65)
-            sent_img = await df.send_wcf_text_or_image(target_id, image_b64=final_image_b64)
-            if not sent_img:
-                try:
-                    uri_b64 = self._format_data_uri_b64(final_image_b64) or final_image_b64
-                    chain = platform_message.MessageChain([platform_message.Image(base64=uri_b64)])
-                    await self.plugin.send_message(
-                        bot_uuid=bot_uuid,
-                        target_type=target_type,
-                        target_id=target_id,
-                        message_chain=chain,
-                    )
-                except Exception as e:
-                    logger.debug("Fallback send_message image failed: %s", e)
-
-    def _extract_text_and_meme(self, text: str) -> tuple[str, str | None, str | None]:
-        meme_tag: str | None = None
-        meme_b64: str | None = None
-        for pattern in (MEME_TAG_RE, PAREN_MEME_TAG_RE):
-            if meme_b64 is not None:
-                break
-            for m in pattern.finditer(text or ""):
-                raw_tag = m.group(1).strip()
-                resolved = self._resolve_meme_b64(raw_tag)
-                if resolved:
-                    meme_tag, meme_b64 = resolved
-                    break
-        cleaned = PAREN_MEME_TAG_RE.sub("", MEME_TAG_RE.sub("", text or "")).strip()
-        return cleaned, meme_tag, meme_b64
-
-    @staticmethod
-    def _normalize_api_model(model: str) -> str:
-        m = (model or DEFAULT_MODEL).strip()
-        if m.lower() in ("deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4.1-flash-1017"):
-            return "deepseek-flash"
-        return m
-
-    @staticmethod
-    def _sticker_bytes_to_jpeg_b64(raw_bytes: bytes) -> str | None:
-        if not raw_bytes or Image is None:
-            return None
-        try:
-            img = Image.open(io.BytesIO(raw_bytes))
-            n_frames = getattr(img, "n_frames", 1)
-            if n_frames > 1:
-                indices = sorted(set([0, n_frames // 2, n_frames - 1]))
-                frames = []
-                for idx in indices:
-                    img.seek(idx)
-                    f_rgb = img.convert("RGB")
-                    f_rgb.thumbnail((220, 220))
-                    frames.append(f_rgb)
-                total_w = sum(f.width for f in frames)
-                max_h = max(f.height for f in frames)
-                strip = Image.new("RGB", (total_w, max_h), (255, 255, 255))
-                x_off = 0
-                for f in frames:
-                    strip.paste(f, (x_off, 0))
-                    x_off += f.width
-                out_img = strip
-            else:
-                out_img = img.convert("RGB")
-                out_img.thumbnail((360, 360))
-            buf = io.BytesIO()
-            out_img.save(buf, format="JPEG", quality=82)
-            return base64.b64encode(buf.getvalue()).decode("ascii")
-        except Exception as e:
-            logger.debug("Sticker decode failed: %s", e)
-            return None
-
-    async def _fetch_sticker_strip_b64(self, xml_text: str) -> str | None:
-        m = re.search(r'cdnurl="([^"]+)"', xml_text or "")
-        if not m:
-            return None
-        cdn_url = html.unescape(m.group(1)).strip()
-        if not cdn_url.startswith("http"):
-            return None
-        try:
-            async with httpx.AsyncClient(timeout=12.0) as client:
-                r = await df._get_public_url(client, cdn_url)
-                if r.status_code == 200 and r.content:
-                    return self._sticker_bytes_to_jpeg_b64(r.content)
-        except Exception as e:
-            logger.debug("Fetch sticker cdnurl failed: %s", e)
-        return None
-
-    async def _extract_image_b64_from_chain(self, message_chain: Any, raw_text: str = "") -> str | None:
-        if raw_text and "<img_b64>" in raw_text:
-            m_ib64 = re.search(r"<img_b64>(.*?)</img_b64>", raw_text, re.S)
-            if m_ib64:
-                b64_val = m_ib64.group(1).strip()
-                if "," in b64_val and b64_val.startswith("data:"):
-                    b64_val = b64_val.split(",", 1)[1]
-                try:
-                    raw_bytes = base64.b64decode(b64_val)
-                    return self._sticker_bytes_to_jpeg_b64(raw_bytes) or b64_val
-                except Exception:
-                    pass
-        if not message_chain:
-            return None
-        try:
-            for comp in message_chain:
-                if isinstance(comp, platform_message.Image):
-                    b64_val = str(getattr(comp, "base64", "") or "").strip()
-                    if b64_val:
-                        if "," in b64_val and b64_val.startswith("data:"):
-                            b64_val = b64_val.split(",", 1)[1]
-                        raw_bytes = base64.b64decode(b64_val)
-                        return self._sticker_bytes_to_jpeg_b64(raw_bytes) or b64_val
-                    url_val = str(getattr(comp, "url", "") or "").strip()
-                    if url_val.startswith("http"):
-                        async with httpx.AsyncClient(timeout=12.0) as client:
-                            r = await df._get_public_url(client, url_val)
-                            if r.status_code == 200 and r.content:
-                                return self._sticker_bytes_to_jpeg_b64(r.content)
-        except Exception as e:
-            logger.debug("Extract image from chain skipped: %s", e)
-        return None
-
-    async def _transcribe_incoming_voice(self, xml_text: str) -> tuple[str, str, float]:
-        dur_sec = 3.0
-        m_len = re.search(r'voicelength="(\d+)"', xml_text or "")
-        if m_len:
-            try:
-                dur_sec = round(max(1.0, int(m_len.group(1)) / 1000.0), 1)
-            except Exception:
-                dur_sec = 3.0
-
-        m_b64 = re.search(r'audio_b64="([^"]+)"', xml_text or "")
-        if not m_b64:
-            return "", "", dur_sec
-        audio_b64 = m_b64.group(1).strip()
-        if not audio_b64:
-            return "", "", dur_sec
-
-        raw_trans = ""
-        mood_tags: list[str] = []
-        clean_trans = ""
-
-        sf_key = self._get_config_str("siliconflow_api_key", DEFAULT_SF_API_KEY)
-        if sf_key:
-            try:
-                mp3_bytes = base64.b64decode(audio_b64)
-                async with httpx.AsyncClient(timeout=20.0) as client:
-                    resp = await client.post(
-                        SILICONFLOW_ASR_URL,
-                        headers={"Authorization": f"Bearer {sf_key}"},
-                        files={"file": ("voice.mp3", mp3_bytes, "audio/mpeg")},
-                        data={"model": SILICONFLOW_ASR_MODEL},
-                    )
-                    if resp.status_code != 200:
-                        logger.warning("SiliconFlow ASR failed: %s %s", resp.status_code, resp.text)
-                    else:
-                        raw_trans = str((resp.json().get("text") or "")).strip()
-            except Exception as e:
-                logger.warning("Transcribe voice exception: %s", e)
-
-            if raw_trans:
-                for tag_m in re.finditer(r"<\|([A-Z_]+)\|>", raw_trans):
-                    t_code = tag_m.group(1).strip()
-                    mapped = SENSEVOICE_TAGS.get(t_code, "")
-                    if mapped and mapped not in mood_tags:
-                        mood_tags.append(mapped)
-                clean_trans = re.sub(r"<\|[^|>]+\|>", "", raw_trans).strip()
-
-        if not clean_trans:
-            ds_transcribe = getattr(df, "transcribe_audio_via_deepseek", None)
-            api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
-            if callable(ds_transcribe) and api_key:
-                base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
-                try:
-                    try:
-                        ds_res = await ds_transcribe(audio_b64, api_key, base_url)
-                    except TypeError:
-                        ds_res = await ds_transcribe(
-                            audio_b64, deepseek_api_key=api_key, deepseek_base_url=base_url
-                        )
-                except Exception as e:
-                    logger.warning("DeepSeek audio transcription fallback failed: %s", e)
-                    ds_res = ""
-                if isinstance(ds_res, tuple):
-                    ds_text = str(ds_res[0] or "").strip() if len(ds_res) >= 1 else ""
-                    ds_tone = str(ds_res[1] or "").strip() if len(ds_res) >= 2 else ""
-                    if ds_tone and ds_tone not in mood_tags:
-                        mood_tags.append(ds_tone)
-                else:
-                    ds_text = str(ds_res or "").strip()
-                if ds_text:
-                    for tag_m in re.finditer(r"<\|([A-Z_]+)\|>", ds_text):
-                        mapped = SENSEVOICE_TAGS.get(tag_m.group(1).strip(), "")
-                        if mapped and mapped not in mood_tags:
-                            mood_tags.append(mapped)
-                    clean_trans = re.sub(r"<\|[^|>]+\|>", "", ds_text).strip()
-
-        return clean_trans, "、".join(mood_tags), dur_sec
-
-    async def _call_search_web_parallel(
-        self,
-        queries: list[str],
-        *,
-        api_key: str,
-        base_url: str,
-    ) -> str:
-        search_key = self._get_config_str("search_api_key", os.getenv("TAVILY_API_KEY", ""))
-        try:
-            return await df.search_web_parallel(
-                queries,
-                search_key,
-                deepseek_api_key=api_key,
-                deepseek_base_url=base_url,
-            )
-        except TypeError:
-            try:
-                return await df.search_web_parallel(queries, search_key)
-            except TypeError:
-                return await df.search_web_parallel(queries)
-
-    async def _call_read_webpage_content(
-        self,
-        url: str,
-        *,
-        api_key: str,
-        base_url: str,
-    ) -> str:
-        try:
-            return await df.read_webpage_content(
-                url,
-                deepseek_api_key=api_key,
-                deepseek_base_url=base_url,
-            )
-        except TypeError:
-            return await df.read_webpage_content(url)
-
-    async def _call_parse_wechat_file_xml(
-        self,
-        raw_text: str,
-        *,
-        api_key: str,
-        base_url: str,
-    ) -> tuple[str, str]:
-        parse_async = getattr(df, "parse_wechat_file_xml_async", None)
-        sync_mocked = hasattr(df.parse_wechat_file_xml, "assert_called") and not hasattr(
-            parse_async, "assert_called"
-        )
-        if callable(parse_async) and not sync_mocked:
-            try:
-                return await parse_async(
-                    raw_text,
-                    deepseek_api_key=api_key,
-                    deepseek_base_url=base_url,
-                )
-            except TypeError:
-                return await parse_async(raw_text)
-        return await asyncio.to_thread(df.parse_wechat_file_xml, raw_text)
-
-    async def _synthesize_tts_mp3(
-        self,
-        text: str,
-        *,
-        sf_api_key: str | None = None,
-        api_key: str | None = None,
-        base_url: str | None = None,
-    ) -> str | None:
-        sf_key = (
-            sf_api_key
-            if sf_api_key is not None
-            else self._get_config_str("siliconflow_api_key", DEFAULT_SF_API_KEY)
-        )
-        ds_key = (
-            api_key
-            if api_key is not None
-            else self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
-        )
-        ds_url = (
-            base_url
-            if base_url is not None
-            else self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL)
-        ).rstrip("/")
-        try:
-            return await df.synthesize_tts_mp3_b64(
-                text,
-                sf_api_key=sf_key,
-                deepseek_api_key=ds_key,
-                deepseek_base_url=ds_url,
-            )
-        except TypeError:
-            return await df.synthesize_tts_mp3_b64(text, sf_api_key=sf_key)
-
-    async def _synthesize_and_send_voice(
-        self,
-        receiver: str,
-        text: str,
-        *,
-        sf_api_key: str | None = None,
-        api_key: str | None = None,
-        base_url: str | None = None,
-    ) -> bool:
-        sf_key = (
-            sf_api_key
-            if sf_api_key is not None
-            else self._get_config_str("siliconflow_api_key", DEFAULT_SF_API_KEY)
-        )
-        ds_key = (
-            api_key
-            if api_key is not None
-            else self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
-        )
-        ds_url = (
-            base_url
-            if base_url is not None
-            else self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL)
-        ).rstrip("/")
-        try:
-            return await df.synthesize_and_send_wcf_voice(
-                receiver,
-                text,
-                sf_api_key=sf_key,
-                deepseek_api_key=ds_key,
-                deepseek_base_url=ds_url,
-            )
-        except TypeError:
-            return await df.synthesize_and_send_wcf_voice(receiver, text, sf_api_key=sf_key)
-
-    async def _async_post_turn_judge(
-        self,
-        *,
-        api_key: str,
-        base_url: str,
-        model: str,
-        user_id: str,
-        user_text: str,
-        reply_text: str,
-        expected_state: dict[str, Any] | None = None,
-    ) -> None:
-        if not api_key:
-            return
-        user_state = expected_state if expected_state is not None else self._get_user_state(user_id)
-        if self._state.get("users", {}).get(user_id) is not user_state:
-            return
-        api_model = self._normalize_api_model(model)
-        prompt_user = (
-            f"【对方这轮说的话】：\n{user_text[:800]}\n\n"
-            f"【你（大肥鱼）回的是（判据之一，重点看语气：是念叨、心疼、互怼还是撒娇）】：\n{reply_text[:800]}\n\n"
-            "请按这个真实先后顺序，把「对方说了什么」和「你怎么回应的」合起来判断心情变化与是否需要记入长期记忆，只输出 JSON。"
-        )
-        try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
-                resp = await client.post(
-                    f"{base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": api_model,
-                        "messages": [
-                            {"role": "system", "content": MOOD_JUDGE_SYSTEM},
-                            {"role": "user", "content": prompt_user},
-                        ],
-                        "temperature": 0.3,
-                        "max_tokens": 300,
-                    },
-                )
-                if resp.status_code != 200:
-                    return
-                raw = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                a, b = raw.find("{"), raw.rfind("}")
-                if a < 0 or b <= a:
-                    return
-                obj = json.loads(raw[a : b + 1])
-        except Exception as e:
-            logger.debug("Mood judge skipped: %s", e)
-            return
-
-        should_consolidate = False
-        async with self._state_lock:
-            if self._state.get("users", {}).get(user_id) is not user_state:
-                return
-            u = self._get_user_state(user_id)
-            raw_mood_delta = int(_clamp(round(float(obj.get("moodDelta", 0))), -8, 8))
-            new_mood, actual_delta = self._apply_saturated_mood_delta(
-                int(u.get("mood", 70)), raw_mood_delta, min_mood=15, max_mood=100
-            )
-            u["mood"] = new_mood
-            dims = u.setdefault("dims", {})
-            raw_dims = obj.get("dims") or {}
-            if isinstance(raw_dims, dict):
-                for k, _ in DIMS:
-                    try:
-                        raw_dv = float(raw_dims.get(k, 0) or 0)
-                    except (TypeError, ValueError):
-                        raw_dv = 0.0
-                    d_val = int(_clamp(round(raw_dv), -10, 10))
-                    dims[k] = int(_clamp(int(dims.get(k, 0)) + d_val, 0, 100))
-            reason = str(obj.get("reason") or "").strip()[:120]
-            conf = int(_clamp(round(float(obj.get("confidence", 75))), 0, 100))
-            now_ms = int(time.time() * 1000)
-            if reason and conf >= 60:
-                u["lastReason"] = reason
-                u["lastConfidence"] = conf
-                u["lastNotedMood"] = u["mood"]
-                u["kind"] = ""
-                u["updatedAt"] = now_ms
-                u["lastDecayAt"] = now_ms
-                tl = u.setdefault("timeline", [])
-                tl.append(
-                    {
-                        "at": datetime.now(TZ).strftime("%m-%d %H:%M"),
-                        "mood": u["mood"],
-                        "delta": actual_delta,
-                        "reason": reason,
-                    }
-                )
-                if len(tl) > 20:
-                    u["timeline"] = tl[-20:]
-
-            today_str = datetime.now(TZ).strftime("%Y-%m-%d")
-            mem_fact = str(obj.get("memory_fact") or "").strip()
-            if mem_fact and mem_fact != "无" and len(mem_fact) >= 4:
-                facts = u.setdefault("facts", [])
-                if _add_dedup_fact(facts, mem_fact, max_len=25):
-                    u["factsSinceArchive"] = int(u.get("factsSinceArchive", 0)) + 1
-                    if int(u.get("factsSinceArchive", 0)) >= 8:
-                        should_consolidate = True
-
-            mem_event = str(obj.get("memory_event") or "").strip()
-            if mem_event and mem_event != "无" and len(mem_event) >= 4:
-                evs = u.setdefault("events", [])
-                if not any(_fact_similarity(str(ev.get("text") or ""), mem_event) >= 0.80 for ev in evs):
-                    evs.append({"date": today_str, "ts": now_ms, "text": mem_event})
-                    if len(evs) > 40:
-                        u["events"] = evs[-40:]
-
-            self._save_persistent_state()
-
-        if should_consolidate:
-            await self._consolidate_user_archive(
-                api_key=api_key,
-                base_url=base_url,
-                model=api_model,
-                user_id=user_id,
-            )
-
-    async def _async_post_group_turn_judge(
-        self,
-        *,
-        api_key: str,
-        base_url: str,
-        model: str,
-        group_id: str,
-        user_text: str,
-        reply_text: str,
-        sender_id: str = "",
-        sender_name: str = "",
-        expected_state: dict[str, Any] | None = None,
-    ) -> None:
-        """Evaluates group chat turn and updates the shared Group Archive (groups[group_id]) without touching single-user archives."""
-        if not api_key:
-            return
-        group_state = expected_state if expected_state is not None else self._get_group_state(group_id)
-        if self._state.get("groups", {}).get(group_id) is not group_state:
-            return
-        api_model = self._normalize_api_model(model)
-        prompt_user = (
-            f"【群内本轮发言】：\n{user_text[:600]}\n\n"
-            f"【你（大肥鱼）在群里的回复】：\n{reply_text[:600]}\n\n"
-            "请判断本群气氛变化、是否需要记入本群公共群聊档案，以及对该说话群友的印象标签，只输出 JSON。"
-        )
-        try:
-            async with httpx.AsyncClient(timeout=22.0) as client:
-                resp = await client.post(
-                    f"{base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": api_model,
-                        "messages": [
-                            {"role": "system", "content": GROUP_MOOD_JUDGE_SYSTEM},
-                            {"role": "user", "content": prompt_user},
-                        ],
-                        "temperature": 0.3,
-                        "max_tokens": 240,
-                    },
-                )
-                if resp.status_code != 200:
-                    return
-                raw = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                a, b = raw.find("{"), raw.rfind("}")
-                if a < 0 or b <= a:
-                    return
-                obj = json.loads(raw[a : b + 1])
-        except Exception as e:
-            logger.debug("Group mood judge skipped: %s", e)
-            return
-
-        async with self._state_lock:
-            if self._state.get("groups", {}).get(group_id) is not group_state:
-                return
-            g = self._get_group_state(group_id)
-            mood_delta = int(_clamp(round(float(obj.get("moodDelta", 0))), -5, 5))
-            g["mood"] = int(_clamp(int(g.get("mood", 75)) + mood_delta, 25, 100))
-            reason = str(obj.get("reason") or "").strip()[:120]
-            now_ms = int(time.time() * 1000)
-            if reason:
-                g["lastReason"] = reason
-                g["updatedAt"] = now_ms
-                g["lastDecayAt"] = now_ms
-            today_str = datetime.now(TZ).strftime("%Y-%m-%d")
-            g_fact = str(obj.get("group_fact") or "").strip()
-            if g_fact and g_fact != "无" and len(g_fact) >= 4:
-                _add_dedup_fact(g.setdefault("facts", []), g_fact, max_len=25)
-            g_event = str(obj.get("group_event") or "").strip()
-            if g_event and g_event != "无" and len(g_event) >= 4:
-                evs = g.setdefault("events", [])
-                if not any(_fact_similarity(str(ev.get("text") or ""), g_event) >= 0.80 for ev in evs):
-                    evs.append({"date": today_str, "ts": now_ms, "text": g_event})
-                    if len(evs) > 30:
-                        g["events"] = evs[-30:]
-            if sender_id:
-                imps = g.setdefault("member_impressions", {})
-                m_entry = imps.get(sender_id)
-                best_name = sender_name
-                if df.is_placeholder_display_name(best_name, sender_id):
-                    cached_n = df.get_cached_display_name(sender_id, group_id)
-                    if not df.is_placeholder_display_name(cached_n, sender_id):
-                        best_name = cached_n
-                if not isinstance(m_entry, dict):
-                    m_entry = {
-                        "name": (
-                            best_name
-                            if not df.is_placeholder_display_name(best_name, sender_id)
-                            else sender_id[-4:]
-                        ),
-                        "tags": [],
-                        "chat_count": 0,
-                        "updatedAt": now_ms,
-                    }
-                    imps[sender_id] = m_entry
-                elif not df.is_placeholder_display_name(best_name, sender_id):
-                    m_entry["name"] = best_name
-                m_entry["chat_count"] = int(m_entry.get("chat_count", 0)) + 1
-                m_entry["updatedAt"] = now_ms
-                m_tag = str(obj.get("member_tag") or "").strip()
-                if m_tag and m_tag != "无" and 2 <= len(m_tag) <= 18:
-                    tags_list = m_entry.setdefault("tags", [])
-                    _add_dedup_fact(tags_list, m_tag, max_len=5)
-            self._save_persistent_state()
 
     @staticmethod
     def _clear_ended_invocation() -> None:
@@ -2608,54 +485,16 @@ class WhaleListener(EventListener):
         except Exception:
             pass
 
-    async def _send_proactive_wechat(self, target_id: str, text: str, image_b64: str | None = None) -> bool:
-        self._clear_ended_invocation()
-        clean_text = SPEAK_UP_META_ECHO_RE.sub("", SPEAK_UP_TAG_RE.sub("", text or "")).strip()
-        bubbles = self._split_reply_bubbles(clean_text) if clean_text else []
-        send_img = image_b64 if self._settings_for(target_id)["meme_enabled"] else None
-        if not bubbles and not send_img:
-            return False
-        if bubbles:
-            bot_uuid = self._get_config_str("target_bot_uuid", DEFAULT_BOT_UUID)
-            self._record_bot_sent(" || ".join(bubbles), f"{bot_uuid}:person:{target_id}:{target_id}")
-
-        # Prefer direct WCF gateway delivery (supports multi-bubble typing rhythm reliably in background tasks)
-        if bubbles:
-            ok_first = await df.send_wcf_text_or_image(
-                target_id, bubbles[0], send_img if len(bubbles) == 1 else None
-            )
-            if ok_first:
-                if len(bubbles) > 1:
-                    await self._send_followup_bubbles(
-                        target_id, bubbles[1:], send_img,
-                        bot_uuid=self._get_config_str("target_bot_uuid", DEFAULT_BOT_UUID),
-                    )
-                return True
-        elif send_img:
-            if await df.send_wcf_text_or_image(target_id, "", send_img):
-                return True
-
-        # Fallback to LangBot plugin send_message API
-        try:
-            joined_text = "\n".join(bubbles) if bubbles else ""
-            comps: list[Any] = []
-            if joined_text:
-                comps.append(platform_message.Plain(text=joined_text))
-            if send_img:
-                uri_img = self._format_data_uri_b64(send_img) or send_img
-                comps.append(platform_message.Image(base64=uri_img))
-            if not comps:
-                return False
-            chain = platform_message.MessageChain(comps)
-            await self.plugin.send_message(
-                bot_uuid=self._get_config_str("target_bot_uuid", DEFAULT_BOT_UUID),
-                target_type="person",
-                target_id=target_id,
-                message_chain=chain,
-            )
-            return True
-        except Exception:
-            return False
+    def _resolve_private_session_key(self, user_id: str, u: dict[str, Any] | None = None) -> str:
+        bot_uuid = self._get_config_str("target_bot_uuid", DEFAULT_BOT_UUID)
+        if not bot_uuid and isinstance(u, dict):
+            bot_uuid = str(u.get("lastBotUuid") or "")
+        if not bot_uuid:
+            suffix = f":person:{user_id}:{user_id}"
+            for existing_key in reversed(list(self._histories.keys())):
+                if existing_key.endswith(suffix):
+                    return existing_key
+        return f"{bot_uuid}:person:{user_id}:{user_id}"
 
     async def _trigger_speak_up_for_user(self, user_id: str, *, manual: bool = False) -> tuple[str | None, str | None]:
         settings = self._settings_for(user_id)
@@ -2668,6 +507,9 @@ class WhaleListener(EventListener):
         model = self._normalize_api_model(self._get_config_str("deepseek_model", DEFAULT_MODEL))
 
         u = self._get_user_state(user_id)
+        prior_last_chat_ms = int(u.get("lastChatAt", 0) or 0)
+        priv_session_key = self._resolve_private_session_key(user_id, u)
+        recent_bot_texts = self._recent_bot_sent_texts.get(priv_session_key)
         now_dt = datetime.now(TZ)
         weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
         now_str = f"{now_dt.strftime('%Y-%m-%d %H:%M')}（{weekdays[now_dt.weekday()]}）"
@@ -2686,8 +528,7 @@ class WhaleListener(EventListener):
             "现在对方有一阵子没在微信上理你了，是你自己突然想找对方搭句话（不是被派活）。\n"
             "请结合当前时间（比如饭点、下午摸鱼、傍晚或深夜）、你此刻的心情或你们之前聊过的记忆，像真朋友在微信上随手发消息一样主动起个话头（1~2句短话，可用 `||` 拆成2条短气泡，严禁使用任何括号动作描写，严禁复述 `<speak-up>` 标签，不要机械背诵 token 数字！可在最末尾附带一个 `[表情: 偷看]` 或 `[表情: 干饭]` 等表情标签）。"
         )
-        last_chat_ms = int(u.get("lastChatAt", 0) or 0)
-        idle_min = max(0, int((int(time.time() * 1000) - last_chat_ms) / 60000)) if last_chat_ms > 0 else 0
+        idle_min = max(0, int((int(time.time() * 1000) - prior_last_chat_ms) / 60000)) if prior_last_chat_ms > 0 else 0
         idle_note = (
             f"距离上次跟TA在微信聊天已经过了约 {idle_min} 分钟，"
             if idle_min > 0
@@ -2718,9 +559,11 @@ class WhaleListener(EventListener):
                 resp.raise_for_status()
                 r_json = resp.json()
                 used = int((r_json.get("usage") or {}).get("total_tokens", 0))
-                self._record_tokens(used)
+                await self._record_tokens_safe(used)
                 raw_reply = self._clean_reply(
-                    r_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    r_json.get("choices", [{}])[0].get("message", {}).get("content", ""),
+                    "",
+                    recent_bot_texts,
                 )
                 reply, _, meme_b64 = self._extract_text_and_meme(raw_reply)
                 if reply:
@@ -2728,10 +571,21 @@ class WhaleListener(EventListener):
                     if not manual:
                         sent_ok = await self._send_proactive_wechat(user_id, reply, meme_b64)
                     if sent_ok:
-                        now_ms = int(time.time() * 1000)
-                        u["lastSpeakUpAt"] = now_ms
-                        u["missStreak"] = 0
-                        self._save_persistent_state()
+                        now_sec = time.time()
+                        now_ms = int(now_sec * 1000)
+                        if not manual:
+                            reply_flat = reply.replace("||", " ").strip()
+                            hist = list(self._histories.get(priv_session_key, []))
+                            hist.append((now_sec, "assistant", reply_flat))
+                            self._lru_set(self._histories, priv_session_key, hist[-24:])
+                        async with self._state_lock:
+                            cur_u = (self._state.get("users") or {}).get(user_id)
+                            if isinstance(cur_u, dict) and int(cur_u.get("lastChatAt", 0) or 0) <= prior_last_chat_ms:
+                                cur_u["lastSpeakUpAt"] = now_ms
+                                cur_u["missStreak"] = 0
+                                if not manual:
+                                    cur_u["speakUpCountSinceReply"] = int(cur_u.get("speakUpCountSinceReply", 0) or 0) + 1
+                                self._mark_state_dirty()
                         return reply, meme_b64
         except Exception as e:
             logger.warning("Speak-up generation failed: %s", e)
@@ -2744,24 +598,26 @@ class WhaleListener(EventListener):
             try:
                 self._clear_ended_invocation()
                 now_dt = datetime.now(TZ)
-                if 1 <= now_dt.hour < 8:
+                if 0 <= now_dt.hour < 8:
                     continue
                 now_ms = int(time.time() * 1000)
                 users = self._state.get("users", {})
+                dirty = False
                 for uid, u in list(users.items()):
                     if (
-                        not uid.startswith("wxid_")
-                        or not self._is_valid_wechat_uid(uid)
+                        not self._is_valid_wechat_uid(uid)
+                        or uid.endswith("@chatroom")
                         or not bool(u.get("hasPrivateChat", False))
                     ):
                         continue
                     settings = self._settings_for(uid)
                     if not settings["enabled"] or not settings["speak_up_enabled"]:
                         continue
-                    last_chat = int(u.get("lastChatAt", 0))
-                    last_speak = int(u.get("lastSpeakUpAt", 0))
-                    if last_speak >= last_chat and last_speak > 0:
-                        # Already sent a proactive message since the user's last reply; never double-text!
+                    last_chat = int(u.get("lastChatAt", 0) or 0)
+                    last_speak = int(u.get("lastSpeakUpAt", 0) or 0)
+                    speak_cnt = int(u.get("speakUpCountSinceReply", 0) or 0)
+                    if last_speak > 0 and last_speak >= last_chat and speak_cnt >= 2:
+                        # Unanswered cap: wait for user's actual reply before speaking up again
                         continue
                     if last_speak > 0 and (now_ms - last_speak) < 4 * 3600 * 1000:
                         continue
@@ -2780,8 +636,13 @@ class WhaleListener(EventListener):
                     if roll <= threshold:
                         await self._trigger_speak_up_for_user(uid, manual=False)
                     else:
-                        u["missStreak"] = miss_streak + 1
-                        self._save_persistent_state()
+                        async with self._state_lock:
+                            cur_u = (self._state.get("users") or {}).get(uid)
+                            if isinstance(cur_u, dict):
+                                cur_u["missStreak"] = int(cur_u.get("missStreak", 0) or 0) + 1
+                                dirty = True
+                if dirty:
+                    self._mark_state_dirty()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -2794,28 +655,36 @@ class WhaleListener(EventListener):
             await asyncio.sleep(600)
             try:
                 self._clear_ended_invocation()
-                if not self._state.get("enabled", True) or not self._state.get("auto_moments_enabled", True):
+                if not self._state.get("enabled", True) or not self._state.get("auto_moments_enabled", False):
                     continue
                 now_dt = datetime.now(TZ)
                 today_str = now_dt.strftime("%Y-%m-%d")
                 if self._state.get("lastAutoMomentDate") == today_str:
                     continue
                 cur_min = now_dt.hour * 60 + now_dt.minute
-                if self._state.get("autoMomentTargetDate") != today_str:
-                    if cur_min < 960 and random.random() < 0.55:
-                        # Afternoon slacking window: 13:30 ~ 16:30 (810 ~ 990)
-                        target_min = random.randint(810, 990)
-                    else:
-                        # Late-night window: 21:30 ~ 23:20 (1290 ~ 1400)
-                        target_min = random.randint(1290, 1400)
-                    self._state["autoMomentTargetDate"] = today_str
-                    self._state["autoMomentTargetMin"] = target_min
-                    self._save_persistent_state()
+                should_post = False
+                async with self._state_lock:
+                    if not self._state.get("enabled", True) or not self._state.get("auto_moments_enabled", False):
+                        continue
+                    if self._state.get("lastAutoMomentDate") == today_str:
+                        continue
+                    if self._state.get("autoMomentTargetDate") != today_str:
+                        if cur_min < 960 and random.random() < 0.55:
+                            # Afternoon slacking window: 13:30 ~ 16:30 (810 ~ 990)
+                            target_min = random.randint(810, 990)
+                        else:
+                            # Late-night window: 21:30 ~ 23:20 (1290 ~ 1400)
+                            target_min = random.randint(1290, 1400)
+                        self._state["autoMomentTargetDate"] = today_str
+                        self._state["autoMomentTargetMin"] = target_min
+                        self._mark_state_dirty()
 
-                target_min = int(self._state.get("autoMomentTargetMin", 870))
-                if target_min <= cur_min <= 1425:
-                    self._state["lastAutoMomentDate"] = today_str
-                    self._save_persistent_state()
+                    target_min = int(self._state.get("autoMomentTargetMin", 870))
+                    if target_min <= cur_min <= 1425:
+                        self._state["lastAutoMomentDate"] = today_str
+                        self._mark_state_dirty()
+                        should_post = True
+                if should_post:
                     await self._generate_and_post_moment()
             except asyncio.CancelledError:
                 raise
@@ -2855,6 +724,11 @@ class WhaleListener(EventListener):
         now_sec = int(time.time())
         today_str = datetime.now(TZ).strftime("%Y-%m-%d")
 
+        m_content = str(row.get("content") or "").strip()
+        is_serious_fn = getattr(df, "is_serious_or_sad_moment", None)
+        if callable(is_serious_fn) and is_serious_fn(m_content):
+            return False, ""
+
         async with self._state_lock:
             interacted = self._state.setdefault("interacted_moments", {})
             rec = dict(interacted.get(sns_id) or {"author": author_id, "ts": now_sec})
@@ -2868,7 +742,6 @@ class WhaleListener(EventListener):
                 did_action = True
 
         comment_sent = str(rec.get("comment") or "")
-        m_content = str(row.get("content") or "").strip()
         if do_comment and not rec.get("commented") and len(m_content) >= 2:
             # Cap at max 2 auto-comments per friend per day to prevent spamming
             friend_today_comments = sum(
@@ -2896,7 +769,7 @@ class WhaleListener(EventListener):
                     mood=int(u.get("mood", 75)),
                 )
                 if used_tok:
-                    self._record_tokens(used_tok)
+                    await self._record_tokens_safe(used_tok)
                 if gen_txt:
                     ok_c, _, _ = await df.interact_wcf_moment(sns_id, "comment", gen_txt)
                     if ok_c:
@@ -2918,9 +791,41 @@ class WhaleListener(EventListener):
                 )[: len(interacted) - 300]
                 for k_old in oldest_keys:
                     interacted.pop(k_old, None)
-            self._save_persistent_state()
+            self._mark_state_dirty()
 
         return did_action, comment_sent
+
+    @staticmethod
+    def _norm_moment_match(text: str) -> str:
+        return re.sub(r"[\s，。！？、：:;；~～…\"'“”‘’「」『』]+", "", str(text or "")).strip().lower()
+
+    def _is_known_self_moment(self, moment_content: str) -> bool:
+        """Verifies an `is_self` WeChat Moment matches Dafeiyu's own published Moments so
+        manually-posted owner Moments are not hijacked for automated replies (`U-05`).
+        """
+        self_hist = self._state.get("self_moments_history")
+        moments_list = self._state.get("moments")
+        if self_hist is None and isinstance(moments_list, list) and moments_list:
+            # Legacy test harnesses without `self_moments_history`
+            return True
+        combined = list(self_hist or []) + list(moments_list or [])
+        if not combined:
+            return False
+        m_norm = self._norm_moment_match(moment_content)
+        if not m_norm:
+            return False
+        for item in combined:
+            if not isinstance(item, dict):
+                continue
+            k_norm = self._norm_moment_match(str(item.get("text") or ""))
+            if not k_norm:
+                continue
+            if m_norm == k_norm or (
+                min(len(m_norm), len(k_norm)) >= 6
+                and (m_norm.startswith(k_norm[:16]) or k_norm.startswith(m_norm[:16]))
+            ):
+                return True
+        return False
 
     async def _check_and_reply_moment_comments(
         self,
@@ -2970,7 +875,11 @@ class WhaleListener(EventListener):
             interacted_map = self._state.get("interacted_moments") or {}
             interacted_rec = interacted_map.get(sns_id) if isinstance(interacted_map.get(sns_id), dict) else {}
 
-            if not is_self:
+            m_content = str(row.get("content") or "").strip()
+            if is_self:
+                if not self._is_known_self_moment(m_content):
+                    continue
+            else:
                 if not interacted_rec.get("commented") or interacted_rec.get("followup_replied"):
                     continue
 
@@ -2986,7 +895,6 @@ class WhaleListener(EventListener):
                     ):
                         bot_comment_idx = idx_c
 
-            m_content = str(row.get("content") or "").strip()
             post_author = str(row.get("author") or "").strip()
 
             for idx, c in enumerate(comments):
@@ -3020,7 +928,7 @@ class WhaleListener(EventListener):
                     else f"{sns_id}:{c_user}:{c_ts}:{c_text[:24]}"
                 )
 
-                replied_map = self._state.setdefault("replied_moment_comments", {})
+                replied_map = self._state.get("replied_moment_comments") or {}
                 if comment_key in replied_map:
                     continue
 
@@ -3033,14 +941,17 @@ class WhaleListener(EventListener):
                             already_replied_in_feed = True
                             break
                 if already_replied_in_feed:
-                    replied_map[comment_key] = {
-                        "sns_id": sns_id,
-                        "user": c_user,
-                        "nick": c_nick,
-                        "comment": c_text,
-                        "reply": "[已回评]",
-                        "ts": now_sec,
-                    }
+                    async with self._state_lock:
+                        rmap_mark = self._state.setdefault("replied_moment_comments", {})
+                        rmap_mark[comment_key] = {
+                            "sns_id": sns_id,
+                            "user": c_user,
+                            "nick": c_nick,
+                            "comment": c_text,
+                            "reply": "[已回评]",
+                            "ts": now_sec,
+                        }
+                        self._mark_state_dirty()
                     continue
 
                 # Cap replies per commenter per Moment to max 2 to avoid comment loops
@@ -3070,7 +981,7 @@ class WhaleListener(EventListener):
                     include_reply_prefix=True,
                 )
                 if used_tok:
-                    self._record_tokens(used_tok)
+                    await self._record_tokens_safe(used_tok)
                 if not reply_txt:
                     continue
 
@@ -3099,7 +1010,7 @@ class WhaleListener(EventListener):
                             im_map = self._state.setdefault("interacted_moments", {})
                             im_rec = im_map.setdefault(sns_id, {"author": post_author, "ts": now_sec})
                             im_rec["followup_replied"] = True
-                        self._save_persistent_state()
+                        self._mark_state_dirty()
 
                     replied_results.append(rec_item)
                     if not is_self:
@@ -3112,7 +1023,7 @@ class WhaleListener(EventListener):
         and automatically likes/comments on new posts (<24h) from 7-day active private chat friends.
         """
         active_friends = self._get_7day_active_private_friends()
-        if not active_friends and not self._state.get("moments"):
+        if not active_friends and not (self._state.get("self_moments_history") or self._state.get("moments")):
             return 0
 
         ok_m, rows, _ = await df.fetch_wcf_moments(limit=15)
@@ -3126,7 +1037,7 @@ class WhaleListener(EventListener):
             return actions_done
 
         now_sec = int(time.time())
-        owners = set(re.split(r"[,，;；\s]+", self._get_config_str("owner_ids", DEFAULT_OWNER_IDS).strip())) - {""}
+        is_serious_fn = getattr(df, "is_serious_or_sad_moment", None)
 
         for row in rows:
             if not isinstance(row, dict):
@@ -3141,17 +1052,16 @@ class WhaleListener(EventListener):
             if post_ts > 0 and (now_sec - post_ts) > 86400:
                 continue
 
+            row_content = str(row.get("content") or "").strip()
+            if callable(is_serious_fn) and is_serious_fn(row_content):
+                continue
+
             interacted = self._state.get("interacted_moments") or {}
             rec = interacted.get(sns_id)
             if isinstance(rec, dict) and rec.get("liked"):
                 continue
 
-            u = active_friends[author]
-            mood_val = int(u.get("mood", 70))
-            comment_prob = 0.85 if (author in owners or mood_val >= 78) else 0.50
-            should_comment = bool(
-                str(row.get("content") or "").strip() and random.random() < comment_prob
-            )
+            should_comment = bool(row_content and random.random() < 0.20)
             did_act, _ = await self._interact_single_friend_moment(
                 author, row, do_comment=should_comment
             )
@@ -3168,7 +1078,10 @@ class WhaleListener(EventListener):
             await asyncio.sleep(1080)
             try:
                 self._clear_ended_invocation()
-                if not self._state.get("enabled", True):
+                if not self._state.get("enabled", True) or not (
+                    self._state.get("auto_moments_enabled", False)
+                    or self._state.get("moments_auto_interact_enabled", False)
+                ):
                     continue
                 now_dt = datetime.now(TZ)
                 if now_dt.hour < 8:
@@ -3210,13 +1123,14 @@ class WhaleListener(EventListener):
                 u = self._get_user_state(clean_wxid)
                 u["hasPrivateChat"] = True
                 u["lastChatAt"] = now_ms
+                u["speakUpCountSinceReply"] = 0
                 if clean_nick and not clean_nick.startswith("wxid_"):
                     _add_dedup_fact(
                         u.setdefault("facts", []),
                         f"对方通过微信好友申请添加了大肥鱼（微信昵称：{clean_nick}）",
                         max_len=25,
                     )
-            self._save_persistent_state()
+            self._mark_state_dirty()
 
         if already or not clean_wxid or clean_wxid.endswith("@chatroom"):
             return False
@@ -3235,7 +1149,13 @@ class WhaleListener(EventListener):
             res_meme = self._resolve_meme_b64("猫爪") or self._resolve_meme_b64("得意")
 
         meme_b64 = res_meme[1] if (res_meme and settings.get("meme_enabled", True)) else None
-        return await self._send_proactive_wechat(clean_wxid, welcome_txt, meme_b64)
+        sent = await self._send_proactive_wechat(clean_wxid, welcome_txt, meme_b64)
+        if sent:
+            priv_key = self._resolve_private_session_key(clean_wxid, self._state.get("users", {}).get(clean_wxid))
+            hist = list(self._histories.get(priv_key, []))
+            hist.append((time.time(), "assistant", welcome_txt.replace("||", " ").strip()))
+            self._lru_set(self._histories, priv_key, hist[-24:])
+        return sent
 
     async def _check_and_process_friend_requests(self) -> int:
         """Checks WCF gateway for pending or newly accepted friend requests, accepts matching pending requests,
@@ -3254,7 +1174,6 @@ class WhaleListener(EventListener):
         if not isinstance(reqs, list) or not reqs:
             return 0
 
-        acc_map = self._state.setdefault("accepted_friend_requests", {})
         processed = 0
         for item in reqs:
             if not isinstance(item, dict):
@@ -3275,9 +1194,12 @@ class WhaleListener(EventListener):
                         sender_id = str(acc_data.get("sender_id") or sender_id).strip()
                         nickname = str(acc_data.get("nickname") or nickname).strip()
 
-            if status == "accepted" and req_id not in acc_map:
-                await self._greet_newly_accepted_friend(req_id, sender_id, nickname, verif)
-                processed += 1
+            if status == "accepted":
+                async with self._state_lock:
+                    already_done = req_id in self._state.setdefault("accepted_friend_requests", {})
+                if not already_done:
+                    await self._greet_newly_accepted_friend(req_id, sender_id, nickname, verif)
+                    processed += 1
 
         return processed
 
@@ -3334,7 +1256,7 @@ class WhaleListener(EventListener):
         )
         rows: list[dict[str, Any]] = []
         if mentioned_moments:
-            self._chat_moment_check_ts[session_key] = now
+            self._lru_set(self._chat_moment_check_ts, session_key, now)
             ok_m, fetched_rows, _ = await df.fetch_wcf_moments(limit=15)
             if ok_m and fetched_rows:
                 rows = list(fetched_rows)
@@ -3342,7 +1264,10 @@ class WhaleListener(EventListener):
             else:
                 rows = list(self._cached_wcf_moments[1])
         else:
-            if not self._state.get("auto_moments_enabled", False) or history_len < 2:
+            if not (
+                self._state.get("auto_moments_enabled", False)
+                or self._state.get("moments_auto_interact_enabled", False)
+            ) or history_len < 2:
                 return ""
             last_chk = self._chat_moment_check_ts.get(session_key, 0.0)
             if (now - last_chk) < 1200 or random.random() >= 0.35:
@@ -3350,7 +1275,7 @@ class WhaleListener(EventListener):
             cached_ts, cached_rows = self._cached_wcf_moments
             if not cached_rows or (now - cached_ts) > 3600:
                 return ""
-            self._chat_moment_check_ts[session_key] = now
+            self._lru_set(self._chat_moment_check_ts, session_key, now)
             rows = list(cached_rows)
 
         if not rows:
@@ -3393,19 +1318,30 @@ class WhaleListener(EventListener):
         m_content = re.sub(r"\s+", " ", str(target_row.get("content") or "").strip())[:100]
         if not sns_id:
             return ""
+        is_serious_fn = getattr(df, "is_serious_or_sad_moment", None)
+        if callable(is_serious_fn) and is_serious_fn(m_content):
+            return ""
 
-        interacted = self._state.setdefault("interacted_moments", {})
-        rec = interacted.get(sns_id) if isinstance(interacted.get(sns_id), dict) else {}
+        async with self._state_lock:
+            interacted = self._state.setdefault("interacted_moments", {})
+            rec = dict(interacted.get(sns_id) or {})
         comment_txt = str(rec.get("comment") or "")
 
         if not rec.get("liked"):
-            should_comment = bool(m_content and (mentioned_moments or random.random() < 0.50))
-            _, new_comment = await self._interact_single_friend_moment(
-                sender_id, target_row, do_comment=should_comment
-            )
-            if new_comment:
-                comment_txt = new_comment
-            rec = interacted.get(sns_id) or {}
+            should_comment = bool(m_content and (mentioned_moments or random.random() < 0.20))
+            if mentioned_moments:
+                _, new_comment = await self._interact_single_friend_moment(
+                    sender_id, target_row, do_comment=should_comment
+                )
+                if new_comment:
+                    comment_txt = new_comment
+                async with self._state_lock:
+                    rec = dict((self._state.get("interacted_moments") or {}).get(sns_id) or {})
+            else:
+                self._start_session_task(
+                    session_key,
+                    self._interact_single_friend_moment(sender_id, target_row, do_comment=should_comment),
+                )
 
         if rec.get("chat_mentioned") and not mentioned_moments:
             return ""
@@ -3415,241 +1351,17 @@ class WhaleListener(EventListener):
                 sns_id, {"author": sender_id, "ts": now_sec}
             )
             entry["chat_mentioned"] = True
-            self._save_persistent_state()
+            self._mark_state_dirty()
 
-        act_desc = f"你已顺手给这条动态点了赞并留了评论「{comment_txt}」" if comment_txt else "你刚刚已经顺手给这条动态点了个赞"
+        act_desc = (
+            f"你已顺手给这条动态点了赞并留了评论「{comment_txt}」"
+            if comment_txt
+            else ("你刚刚已经顺手给这条动态点了个赞" if rec.get("liked") else "你正打算顺手给这条动态点个赞")
+        )
         return (
             f"- **你刚刚顺手刷到对方今天发的朋友圈**：「{m_content or '[分享图片/日常动态]'}」"
             f"（{act_desc}；如果和当前聊天话题自然契合，可以在回复时像真朋友一样顺嘴提半句，不契合则不用硬提）\n"
         )
-
-    def _get_config_str(self, key: str, default: str) -> str:
-        try:
-            self._clear_ended_invocation()
-            cfg = self.plugin.get_config() or {}
-            val = str(cfg.get(key, "") or "").strip()
-            if val:
-                return val
-        except Exception:
-            pass
-        if default:
-            return default
-        return str(_load_local_secrets().get(key, "") or "").strip()
-
-    def _get_config_int(self, key: str, default: int) -> int:
-        try:
-            self._clear_ended_invocation()
-            cfg = self.plugin.get_config() or {}
-            return int(cfg.get(key, default))
-        except Exception:
-            return default
-
-    async def _resolve_bot_uuid(self, event_ctx: context.EventContext) -> str:
-        target_bot_uuid = self._get_config_str("target_bot_uuid", DEFAULT_BOT_UUID)
-        launcher_id = str(getattr(event_ctx.event, "launcher_id", "") or "")
-        sender_id = str(getattr(event_ctx.event, "sender_id", "") or "")
-        if target_bot_uuid and (
-            launcher_id.startswith(("oc_", "ou_", "on_"))
-            or sender_id.startswith(("ou_", "on_"))
-        ):
-            return "feishu_ignored"
-        try:
-            bot_uuid = await event_ctx.get_bot_uuid()
-            if bot_uuid:
-                return str(bot_uuid)
-        except Exception:
-            pass
-        query = getattr(event_ctx.event, "query", None)
-        return str(getattr(query, "bot_uuid", "") or "")
-
-    @staticmethod
-    def _extract_plain_text(message_chain: Any) -> str:
-        if not message_chain:
-            return ""
-        parts: list[str] = []
-        has_image = False
-        try:
-            for comp in message_chain:
-                if isinstance(comp, platform_message.Plain):
-                    t = str(getattr(comp, "text", "") or "")
-                    if t.strip():
-                        parts.append(t.strip())
-                elif isinstance(comp, platform_message.Image):
-                    has_image = True
-        except Exception:
-            pass
-        if not parts:
-            if has_image:
-                return "[图片]"
-            raw = str(message_chain or "").strip()
-            return raw
-        return "\n".join(parts).strip()
-
-    @staticmethod
-    def _is_incoming_sticker(text: str, raw_source_obj: Any = None) -> bool:
-        if isinstance(raw_source_obj, dict):
-            wx_t = raw_source_obj.get("wx_type") or raw_source_obj.get("type") or raw_source_obj.get("msg_type")
-            if wx_t == 47 or str(wx_t) == "47":
-                return True
-        s = (text or "").strip()
-        return s == "[动画表情]" or "<emoji" in s or s.startswith("<msg><emoji")
-
-    @staticmethod
-    def _compress_sticker_description(desc: str) -> str:
-        """Compresses animated sticker / meme visual description to a single-line <=120-char summary (Diana #1544)."""
-        return re.sub(r"\s+", " ", (desc or "")).strip()[:120]
-
-    @classmethod
-    def _format_visual_history_entry(cls, base_text: str, desc: str, *, is_sticker: bool) -> str:
-        clean_desc = (desc or "").strip()
-        if not clean_desc:
-            return base_text
-        if is_sticker:
-            short = cls._compress_sticker_description(clean_desc)
-            return f"[发来了一张微信表情包：{short}]" if short else base_text
-        return f"{base_text}\n[图片视觉内容：{clean_desc}]" if base_text else f"[图片视觉内容：{clean_desc}]"
-
-    @staticmethod
-    def _lookup_cached_vision_desc(image_b64: str | None) -> str:
-        b64_clean = (image_b64 or "").strip()
-        if not b64_clean:
-            return ""
-        if "," in b64_clean and b64_clean.startswith("data:"):
-            b64_clean = b64_clean.split(",", 1)[1].strip()
-        cache_map = getattr(df, "_VISION_DESC_CACHE", None)
-        if not isinstance(cache_map, dict):
-            return ""
-        import hashlib as _hl
-
-        cache_key = _hl.sha256(b64_clean.encode("utf-8", errors="ignore")).hexdigest()
-        hit = cache_map.get(cache_key)
-        if isinstance(hit, tuple) and len(hit) >= 2 and (time.time() - float(hit[0])) < 600.0:
-            return str(hit[1] or "").strip()
-        return ""
-
-    def _build_chat_tools(self, settings: dict[str, Any]) -> list[dict[str, Any]]:
-        tools: list[dict[str, Any]] = []
-        if self._state.get("web_search_enabled", True):
-            tools.extend(df.DEEPSEEK_SEARCH_TOOLS)
-        if settings.get("meme_enabled", True):
-            tools.append(SEND_MEME_TOOL)
-        return tools
-
-    @staticmethod
-    def _is_incoming_voice(text: str) -> bool:
-        s = (text or "").strip()
-        return s in ("[语音]", "[语音消息]") or "<voicemsg " in s or s.startswith("<msg><voicemsg")
-
-    @staticmethod
-    def _should_ignore_plugin_command(text: str) -> bool:
-        if not text:
-            return True
-        stripped = text.strip()
-        if not stripped:
-            return True
-        if (
-            stripped in ("[图片]", "[动画表情]", "[语音]", "[语音消息]")
-            or "<emoji " in stripped
-            or stripped.startswith("<msg><emoji")
-            or "<voicemsg " in stripped
-            or stripped.startswith("<msg><voicemsg")
-            or "<img_b64>" in stripped
-            or "<file_b64" in stripped
-            or "<type>5</type>" in stripped
-            or "<type>6</type>" in stripped
-            or "<type>19</type>" in stripped
-            or "<recorditem>" in stripped
-            or "<type>57</type>" in stripped
-            or "<refermsg>" in stripped
-        ):
-            return False
-        if stripped.startswith(IGNORE_PREFIXES):
-            return True
-        if SMS_OR_PHONE_RE.fullmatch(stripped):
-            return True
-        if stripped.startswith("{") and stripped.endswith("}"):
-            return True
-        if "token" in stripped.lower() and ("device" in stripped.lower() or "openid" in stripped.lower()):
-            return True
-        return False
-
-    def _record_bot_sent(self, text: str, session_key: str) -> None:
-        clean = (text or "").strip()
-        if not clean:
-            return
-        for part in re.split(r"\|\||/", clean):
-            p = part.strip()
-            if len(p) >= 4:
-                self._recent_bot_sent_texts.setdefault(session_key, deque(maxlen=40)).append(p[:80])
-
-    def _record_group_bot_activity(self, group_id: str, speaker_id: str, reply_text: str) -> None:
-        now = time.time()
-        conv = self._group_active_conv.get(group_id)
-        active_speakers: set[str] = (
-            set(conv.get("active_speakers", set()))
-            if isinstance(conv, dict) and (now - float(conv.get("last_bot_ts", 0.0))) < 180.0
-            else set()
-        )
-        if speaker_id:
-            active_speakers.add(speaker_id)
-        self._group_active_conv[group_id] = {
-            "last_bot_ts": now,
-            "last_speaker_id": speaker_id,
-            "active_speakers": active_speakers,
-            "last_bot_reply": (reply_text or "").strip()[:120],
-        }
-        self._group_interject_meta[group_id] = {"last_judge_ts": now, "unjudged_count": 0}
-        self._record_bot_sent(reply_text, group_id)
-
-    def _should_check_active_continuation(
-        self,
-        group_id: str,
-        sender_id: str,
-        msg_chain: Any,
-        text: str,
-        raw_source_obj: Any = None,
-        *,
-        session_key: str,
-    ) -> bool:
-        settings = self._settings_for(group_id, is_group=True)
-        if not settings["enabled"] or not settings["continuation_enabled"] or settings["explicit_only"]:
-            return False
-        s = (text or "").strip()
-        if not s or len(s) > 200 or s.startswith(df.NON_REPEAT_PREFIXES):
-            return False
-        if self._should_ignore_plugin_command(s):
-            return False
-        # Skip if the message explicitly @-mentions another group member (and not the bot)
-        has_at_comp = False
-        if msg_chain:
-            try:
-                has_at_comp = any(isinstance(c, platform_message.At) for c in msg_chain)
-            except Exception:
-                has_at_comp = False
-        if (s.startswith("@") or has_at_comp) and not self._is_group_woken(msg_chain, s, raw_source_obj):
-            return False
-        conv = self._group_active_conv.get(session_key)
-        if not isinstance(conv, dict):
-            return False
-        elapsed = time.time() - float(conv.get("last_bot_ts", 0.0))
-        if elapsed < 0 or elapsed > 180.0:
-            return False
-        last_speaker = str(conv.get("last_speaker_id", ""))
-        active_speakers: set[str] = conv.get("active_speakers") or set()
-        # 1) Golden Window (75s): the same person (or active participant) who just chatted with Dafeiyu follows up
-        if (sender_id == last_speaker or sender_id in active_speakers) and elapsed <= 75.0:
-            return True
-        # 2) Hot Group Window (20s): another group member speaks right after Dafeiyu spoke
-        if elapsed <= 20.0:
-            return True
-        # 3) Discussion / Referent Window (up to 90s): group members explicitly discussing Dafeiyu
-        discussion_kws = (
-            "这家伙", "这货", "这鱼", "肥鱼", "鲸鱼", "鲸鱼娘", "小鲸鱼",
-            "机器人", "AI", "ai", "人机",
-        )
-        if elapsed <= 90.0 and any(kw in s for kw in discussion_kws):
-            return True
-        return False
 
     async def _is_duplicate(self, query_id: Any) -> bool:
         if query_id is None:
@@ -3664,112 +1376,6 @@ class WhaleListener(EventListener):
             self._seen_queries.append(key)
             self._seen_set.add(key)
             return False
-
-    @staticmethod
-    def _is_group_woken(message_chain: Any, raw_text: str, raw_source_obj: Any = None) -> bool:
-        if isinstance(raw_source_obj, dict) and bool(raw_source_obj.get("is_at")):
-            return True
-        bot_names = tuple(str(n).strip().lower() for n in df.get_dynamic_bot_names() if str(n).strip())
-        has_other_at = False
-        if message_chain:
-            try:
-                for comp in message_chain:
-                    if isinstance(comp, platform_message.At):
-                        target = str(
-                            getattr(comp, "target", "")
-                            or getattr(comp, "member_id", "")
-                            or getattr(comp, "user_id", "")
-                            or ""
-                        ).strip().lower()
-                        display = str(
-                            getattr(comp, "display", "")
-                            or getattr(comp, "name", "")
-                            or getattr(comp, "nickname", "")
-                            or ""
-                        ).strip().lstrip("@").lower()
-                        if not target and not display:
-                            return True
-                        if (
-                            target in bot_names
-                            or display in bot_names
-                            or any(w in display for w in ("大肥鱼", "鲸鱼娘", "小鲸鱼", "肥鱼"))
-                        ):
-                            return True
-                        has_other_at = True
-            except Exception:
-                pass
-        s = (raw_text or "").strip()
-        m_lead = re.match(r"^(?:@[^\s\u2005]+[\s\u2005]*)+", s)
-        if m_lead:
-            leading_mentions = re.findall(r"@([^\s\u2005,，:：]+)", m_lead.group(0))
-            for m_name in leading_mentions:
-                if m_name.lower() in bot_names or any(w in m_name for w in ("大肥鱼", "鲸鱼娘", "小鲸鱼", "肥鱼")):
-                    return True
-                has_other_at = True
-        s_no_at = re.sub(r"^(?:@[^\s\u2005]+[\s\u2005]*)+", "", s).strip()
-        if has_other_at:
-            return bool(re.match(r"^(?:大肥鱼|鲸鱼娘|小鲸鱼)(?:[,，:：\s]|$)", s_no_at))
-        if GROUP_WAKE_RE.match(s) or GROUP_WAKE_RE.match(s_no_at):
-            return True
-        for bn in bot_names:
-            if len(bn) >= 2 and not bn.startswith("wxid_"):
-                esc_bn = re.escape(bn)
-                if re.match(
-                    rf"(?:^(?:{esc_bn})(?:[,，:：\s]|$))|(?:(?:{esc_bn})[,，:：？\?\!\s]*$)",
-                    s_no_at,
-                    re.IGNORECASE,
-                ):
-                    return True
-        return False
-
-    @staticmethod
-    def _strip_wake_prefix(text: str) -> str:
-        s = STRIP_TRIGGER_RE.sub("", text or "").strip()
-        bot_names = set(df.get_dynamic_bot_names()) | {"大肥鱼", "鲸鱼娘", "小鲸鱼", "肥鱼"}
-        for bn in bot_names:
-            bn_str = str(bn).strip()
-            if not bn_str:
-                continue
-            esc = re.escape(bn_str)
-            # Strip @<bot_name> or @<bot_wxid> anywhere in the message (e.g. trailing "锐评一下 @Free")
-            s = re.sub(rf"@(?:{esc})(?:[\s\u2005,，:：]+|$)", " ", s, flags=re.IGNORECASE).strip()
-            if len(bn_str) >= 2 and not bn_str.lower().startswith("wxid_"):
-                s = re.sub(
-                    rf"^(?:{esc})(?:[,，:：\s]+|$)",
-                    "",
-                    s,
-                    flags=re.IGNORECASE,
-                ).strip()
-        return s
-
-    @staticmethod
-    def _reply(event_ctx: context.EventContext, text: str = "", image_b64: str | None = None) -> None:
-        comps: list[Any] = []
-        if text:
-            comps.append(platform_message.Plain(text=text))
-        if image_b64:
-            uri_b64 = WhaleListener._format_data_uri_b64(image_b64) or image_b64
-            comps.append(platform_message.Image(base64=uri_b64))
-        if not comps:
-            return
-        event_ctx.event.reply_message_chain = platform_message.MessageChain(comps)
-        event_ctx.prevent_default()
-
-    async def _reply_group_no_at(
-        self,
-        event_ctx: context.EventContext,
-        group_id: str,
-        text: str = "",
-        image_b64: str | None = None,
-    ) -> None:
-        """Sends a group reply directly via WCF gateway without @-mentioning the speaker."""
-        if not text and not image_b64:
-            return
-        ok = await df.send_wcf_text_or_image(group_id, text=text, image_b64=image_b64)
-        if ok:
-            event_ctx.prevent_default()
-        else:
-            self._reply(event_ctx, text, image_b64)
 
     async def _handle_chat(self, event_ctx: context.EventContext, *, is_group: bool) -> None:
         if event_ctx.is_prevented_default():
@@ -3787,23 +1393,30 @@ class WhaleListener(EventListener):
         scope = f"group:{launcher_id}" if is_group else f"person:{launcher_id}:{sender_id}"
         session_key = f"{bot_uuid}:{scope}"
         if is_group:
-            msg_chain = getattr(event_ctx.event, "message_chain", None)
-            ev_raw_obj = getattr(event_ctx.event, "source_platform_object", None)
-            raw_source_content = str(
-                ev_raw_obj.get("content", "") if isinstance(ev_raw_obj, dict) else ""
-            ).strip()
-            early_text = (
-                self._extract_plain_text(msg_chain)
-                or str(getattr(event_ctx.event, "text_message", "") or "").strip()
-                or raw_source_content
-            )
-            if early_text:
-                q_reply_txt, _, q_content, is_q_bot = df.extract_quote_context(msg_chain, early_text)
-                eff_early = q_reply_txt if q_content else early_text
-                if self._is_group_woken(msg_chain, eff_early, ev_raw_obj) or is_q_bot:
-                    self._group_direct_wake_seq[session_key] = (
-                        self._group_direct_wake_seq.get(session_key, 0) + 1
-                    )
+            g_settings_early = self._settings_for(launcher_id, is_group=True)
+            if (
+                launcher_id in self._state.get("enabled_groups", [])
+                and g_settings_early.get("enabled", True)
+            ):
+                msg_chain = getattr(event_ctx.event, "message_chain", None)
+                ev_raw_obj = getattr(event_ctx.event, "source_platform_object", None)
+                raw_source_content = str(
+                    ev_raw_obj.get("content", "") if isinstance(ev_raw_obj, dict) else ""
+                ).strip()
+                early_text = (
+                    self._extract_plain_text(msg_chain)
+                    or str(getattr(event_ctx.event, "text_message", "") or "").strip()
+                    or raw_source_content
+                )
+                if early_text:
+                    q_reply_txt, _, q_content, is_q_bot = df.extract_quote_context(msg_chain, early_text)
+                    eff_early = q_reply_txt if q_content else early_text
+                    if self._is_group_woken(msg_chain, eff_early, ev_raw_obj) or is_q_bot:
+                        self._lru_set(
+                            self._group_direct_wake_seq,
+                            session_key,
+                            self._group_direct_wake_seq.get(session_key, 0) + 1,
+                        )
         lock = self._get_session_lock(session_key)
         # 计数包含等待者，不能按 locked() 回收已唤醒但尚未恢复的锁。
         self._session_lock_users[session_key] = self._session_lock_users.get(session_key, 0) + 1
@@ -3838,7 +1451,62 @@ class WhaleListener(EventListener):
         launcher_id = str(getattr(event_ctx.event, "launcher_id", "") or "chat")
         # Group chats share a group-level session context; private chats are per-person
         doc_key = (bot_uuid, session_key, sender_id)
-        recent_bot_texts = self._recent_bot_sent_texts.setdefault(session_key, deque(maxlen=40))
+
+        clean_raw_for_cmd = (
+            re.sub(r"<img_b64>.*?</img_b64>", "", raw_text, flags=re.S).strip() or "[图片]"
+            if "<img_b64>" in raw_text
+            else raw_text
+        )
+        # Parse WeChat Quote early so control commands & disabled-group short-circuit avoid heavy network/image calls
+        quote_reply_txt, quote_speaker, quote_content, is_quoting_bot = df.extract_quote_context(
+            msg_chain, clean_raw_for_cmd
+        )
+        effective_text_early = quote_reply_txt if quote_content else clean_raw_for_cmd
+        raw_no_at = re.sub(r"^(?:@[^\s\u2005]+[\s\u2005]*)+", "", effective_text_early.strip()).strip()
+        cmd_norm = re.sub(r"\s+", " ", (raw_no_at or effective_text_early).strip())
+
+        target_id = launcher_id if is_group else sender_id
+        prev_mode = self._settings_for(target_id, is_group=is_group).get("mode")
+        control = ui.handle_control(
+            self._state, cmd_norm, is_group=is_group, target_id=target_id,
+            sender_id=sender_id, owner_ids=self._get_config_str("owner_ids", DEFAULT_OWNER_IDS),
+        )
+        if control is not None:
+            message, changed = control
+            if changed:
+                new_mode = self._settings_for(target_id, is_group=is_group).get("mode")
+                if prev_mode != new_mode:
+                    self._histories.pop(session_key, None)
+                    self._temper_state.pop((session_key, sender_id), None)
+                self._mark_state_dirty(immediate=True)
+                if is_group:
+                    self._group_active_conv.pop(session_key, None)
+                    self._group_repeat_tracker.pop(session_key, None)
+            self._reply(event_ctx, message)
+            return
+        settings = self._settings_for(target_id, is_group=is_group)
+
+        # Group Chat Whitelist Gate (O(1) early short-circuit before network/image calls)
+        if is_group and (
+            launcher_id not in self._state.get("enabled_groups", []) or not settings["enabled"]
+        ):
+            if self._is_explicit_at_wake(msg_chain, clean_raw_for_cmd, ev_raw_obj):
+                now_hint = time.time()
+                last_hint = float(self._disabled_group_hint_ts.get(launcher_id, 0.0) or 0.0)
+                if now_hint - last_hint >= 1800:
+                    self._lru_set(self._disabled_group_hint_ts, launcher_id, now_hint)
+                    await self._reply_group_no_at(
+                        event_ctx,
+                        launcher_id,
+                        "本群还没开启大肥鱼回应哦~ 发送「大肥鱼 开启」或「大肥鱼 设置」即可启用，发「大肥鱼 帮助」查看指令。",
+                    )
+            return
+
+        if session_key not in self._recent_bot_sent_texts:
+            self._lru_set(self._recent_bot_sent_texts, session_key, deque(maxlen=40))
+        else:
+            self._lru_touch(self._recent_bot_sent_texts, session_key)
+        recent_bot_texts = self._recent_bot_sent_texts[session_key]
 
         event_sender_name = str(
             getattr(ev_obj, "sender_name", "")
@@ -3859,46 +1527,16 @@ class WhaleListener(EventListener):
         img_source_str = raw_source_content if "<img_b64>" in raw_source_content else raw_text
         incoming_img_b64 = await self._extract_image_b64_from_chain(msg_chain, img_source_str)
         if "<img_b64>" in raw_text:
-            raw_text = re.sub(r"<img_b64>.*?</img_b64>", "", raw_text, flags=re.S).strip() or "[图片]"
+            raw_text = clean_raw_for_cmd
 
-        # Parse WeChat Quote (<type>57</type> / <refermsg> or Quote component)
-        quote_reply_txt, quote_speaker, quote_content, is_quoting_bot = df.extract_quote_context(
-            msg_chain, raw_text
-        )
         # Parse WeChat Merged Forwarded Chat Record (<type>19</type> / <recorditem>)
         fwd_title, fwd_des, is_bot_fwd = df.extract_forwarded_chat_record(
             raw_text, recent_bot_texts
         )
-        effective_text = quote_reply_txt if quote_content else raw_text
+        effective_text = effective_text_early
 
-        raw_no_at = re.sub(r"^(?:@[^\s\u2005]+[\s\u2005]*)+", "", effective_text.strip()).strip()
-        cmd_norm = re.sub(r"\s+", " ", (raw_no_at or effective_text).strip())
-
-        target_id = launcher_id if is_group else sender_id
-        prev_mode = self._settings_for(target_id, is_group=is_group).get("mode")
-        control = ui.handle_control(
-            self._state, cmd_norm, is_group=is_group, target_id=target_id,
-            sender_id=sender_id, owner_ids=self._get_config_str("owner_ids", DEFAULT_OWNER_IDS),
-        )
-        if control is not None:
-            message, changed = control
-            if changed:
-                new_mode = self._settings_for(target_id, is_group=is_group).get("mode")
-                if prev_mode != new_mode:
-                    self._histories.pop(session_key, None)
-                    self._temper_state.pop((session_key, sender_id), None)
-                self._save_persistent_state()
-                if is_group:
-                    self._group_active_conv.pop(session_key, None)
-                    self._group_repeat_tracker.pop(session_key, None)
-            self._reply(event_ctx, message)
-            return
-        settings = self._settings_for(target_id, is_group=is_group)
-
-        # Group Chat Whitelist Gate (Scheme C + Diana Group Features + Group Archive)
+        # Group Chat Active Handling (after whitelist gate)
         if is_group:
-            if launcher_id not in self._state.get("enabled_groups", []) or not settings["enabled"]:
-                return
 
             # Silently collect group stickers into stolen_memes library
             if self._is_incoming_sticker(raw_text, ev_raw_obj):
@@ -3922,12 +1560,12 @@ class WhaleListener(EventListener):
 
             # Direction 1: Cache incoming group image (90s TTL) & support direct vision reply during active conversation
             if incoming_img_b64:
-                self._group_recent_images[session_key] = {
+                self._lru_set(self._group_recent_images, session_key, {
                     "sender_id": sender_id,
                     "sender_name": sender_name,
                     "b64": incoming_img_b64,
                     "ts": time.time(),
-                }
+                })
                 grp_photo_desc = ""
                 if isinstance(ev_raw_obj, dict):
                     grp_photo_desc = str(
@@ -3942,14 +1580,26 @@ class WhaleListener(EventListener):
                     self._group_msg_buffers, session_key, sender_id, grp_img_line, sender_name=sender_name
                 )
 
-            # Natural-language group quiet/mute command (e.g. "它能闭嘴吗" / "大肥鱼 本群禁止你说话" / "@大肥鱼 闭嘴")
+            # Natural-language group quiet/mute command (pronoun forms like "它能闭嘴吗" require bot spoke <= 90s ago)
+            now_mute = time.time()
             is_woken_early = self._is_group_woken(msg_chain, effective_text, ev_raw_obj) or is_quoting_bot
+            last_bot_ts_mute = float(
+                (self._group_active_conv.get(session_key) or {}).get("last_bot_ts", 0.0) or 0.0
+            )
+            has_recent_bot_mute = (now_mute - last_bot_ts_mute) <= 90.0
             if (
-                GROUP_MUTE_RE.search(effective_text)
-                or GROUP_MUTE_RE.search(cmd_norm)
+                GROUP_MUTE_EXPLICIT_RE.search(effective_text)
+                or GROUP_MUTE_EXPLICIT_RE.search(cmd_norm)
                 or (is_woken_early and WOKEN_MUTE_RE.match(cmd_norm))
+                or (
+                    has_recent_bot_mute
+                    and (
+                        GROUP_MUTE_PRONOUN_RE.search(effective_text)
+                        or GROUP_MUTE_PRONOUN_RE.search(cmd_norm)
+                    )
+                )
             ):
-                self._group_mute_until[session_key] = time.time() + 1800
+                self._lru_set(self._group_mute_until, session_key, now_mute + 1800)
                 self._group_active_conv.pop(session_key, None)
                 await self._reply_group_no_at(
                     event_ctx,
@@ -3968,6 +1618,21 @@ class WhaleListener(EventListener):
                     sender_name=sender_name,
                 )
 
+            # Respect 30-min temporary quiet mode strictly BEFORE forwarded/card/file/voice/continuation/interject
+            # Unmute ONLY when explicitly @-mentioned or called by bot name
+            is_explicit_unmute = self._is_explicit_unmute_wake(msg_chain, effective_text, ev_raw_obj)
+            is_muted_now = now_mute < float(self._group_mute_until.get(session_key, 0.0) or 0.0)
+            if is_muted_now:
+                if is_explicit_unmute:
+                    self._group_mute_until.pop(session_key, None)
+                    is_muted_now = False
+                else:
+                    if not incoming_img_b64 and not (fwd_title or fwd_des):
+                        df.append_group_context_line(
+                            self._group_msg_buffers, session_key, sender_id, effective_text, sender_name=sender_name
+                        )
+                    return
+
             is_fwd_woken = bool(
                 (fwd_title or fwd_des)
                 and (
@@ -3977,18 +1642,10 @@ class WhaleListener(EventListener):
                     )
                 )
             )
-            is_img_active_woken = bool(
-                incoming_img_b64
-                and time.time() >= self._group_mute_until.get(session_key, 0.0)
-                and self._should_check_active_continuation(
-                    launcher_id, sender_id, msg_chain, "看看这张图", ev_raw_obj, session_key=session_key
-                )
-            )
             is_woken = (
                 self._is_group_woken(msg_chain, effective_text, ev_raw_obj)
                 or is_quoting_bot
                 or (is_fwd_woken and not settings["explicit_only"])
-                or is_img_active_woken
             )
             is_shared_card_or_file = df.has_supported_media_link_or_card(raw_text)
             is_group_voice = self._is_incoming_voice(raw_text)
@@ -3997,25 +1654,30 @@ class WhaleListener(EventListener):
                     self._group_msg_buffers, session_key, sender_id, effective_text, sender_name=sender_name
                 )
                 return
+
+            conv_peek = self._group_active_conv.get(session_key) or {}
+            is_recent_same_speaker_img = bool(
+                incoming_img_b64
+                and not (fwd_title or fwd_des)
+                and not settings["explicit_only"]
+                and sender_id == str(conv_peek.get("last_speaker_id", ""))
+                and (time.time() - float(conv_peek.get("last_bot_ts", 0.0) or 0.0)) <= 15.0
+            )
             if not is_woken and not is_shared_card_or_file and not is_group_voice:
-                if incoming_img_b64 or fwd_title or fwd_des:
+                if (incoming_img_b64 and not is_recent_same_speaker_img) or fwd_title or fwd_des:
                     return
                 if not settings["enabled"]:
                     return
-                # Respect 30-min temporary quiet mode if triggered earlier
-                if time.time() < self._group_mute_until.get(session_key, 0.0):
-                    df.append_group_context_line(
-                        self._group_msg_buffers, session_key, sender_id, effective_text, sender_name=sender_name
-                    )
-                    return
 
                 # Active Conversation Window: recognize multi-turn follow-ups & group discussion about Dafeiyu without requiring @
+                cont_probe_text = "看看这张图" if is_recent_same_speaker_img else effective_text
                 if self._should_check_active_continuation(
-                    launcher_id, sender_id, msg_chain, effective_text, ev_raw_obj, session_key=session_key
+                    launcher_id, sender_id, msg_chain, cont_probe_text, ev_raw_obj, session_key=session_key
                 ):
-                    df.append_group_context_line(
-                        self._group_msg_buffers, session_key, sender_id, effective_text, sender_name=sender_name
-                    )
+                    if not is_recent_same_speaker_img:
+                        df.append_group_context_line(
+                            self._group_msg_buffers, session_key, sender_id, effective_text, sender_name=sender_name
+                        )
                     conv = self._group_active_conv.get(session_key) or {}
                     api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
                     base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
@@ -4029,7 +1691,8 @@ class WhaleListener(EventListener):
                         self._temper_state, session_key, sender_id, effective_text
                     )
                     if temper_mood_delta != 0:
-                        g_state["mood"] = int(_clamp(int(g_state.get("mood", 75)) + temper_mood_delta, 25, 100))
+                        async with self._state_lock:
+                            g_state["mood"] = int(_clamp(int(g_state.get("mood", 75)) + temper_mood_delta, 25, 100))
 
                     # Attach recent group image if speaker sent one within 90s or mentioned image keywords
                     ctx_vision_b64: str | None = None
@@ -4044,6 +1707,7 @@ class WhaleListener(EventListener):
                     pre_cont_wake_seq = self._group_direct_wake_seq.get(session_key, 0)
                     pre_cont_hist_len = len(self._histories.get(session_key, []))
                     pre_cont_bot_ts = float((self._group_active_conv.get(session_key) or {}).get("last_bot_ts", 0.0))
+                    cont_user_text = "[图片] 看看这张图" if (is_recent_same_speaker_img and effective_text == "[图片]") else effective_text
                     should_rep, rep_txt, _, used_tok = await df.evaluate_group_active_continuation(
                         bot_uuid=bot_uuid,
                         api_key=api_key,
@@ -4051,7 +1715,7 @@ class WhaleListener(EventListener):
                         model=model,
                         group_id=launcher_id,
                         sender_id=sender_id,
-                        current_text=effective_text,
+                        current_text=cont_user_text,
                         recent_lines=recent_lines,
                         last_bot_reply=str(conv.get("last_bot_reply", "")),
                         is_same_speaker=is_same_sp,
@@ -4062,9 +1726,8 @@ class WhaleListener(EventListener):
                         vision_b64=ctx_vision_b64,
                         mode=settings["mode"],
                     )
-                    if used_tok:
-                        self._record_tokens(used_tok)
-                    self._save_persistent_state()
+                    await self._record_tokens_safe(used_tok)
+                    self._mark_state_dirty()
                     if (
                         self._group_direct_wake_seq.get(session_key, 0) != pre_cont_wake_seq
                         or len(self._histories.get(session_key, [])) != pre_cont_hist_len
@@ -4072,7 +1735,9 @@ class WhaleListener(EventListener):
                     ):
                         return
                     if should_rep and rep_txt:
-                        cleaned_rep = self._clean_reply(rep_txt)
+                        cleaned_rep = self._clean_reply(
+                            rep_txt, user_text=effective_text, recent_bot_texts=recent_bot_texts
+                        )
                         final_txt, _, meme_b64_cont = self._extract_text_and_meme(cleaned_rep)
                         final_txt = df.strip_redundant_speaker_name(final_txt, sender_name)
                         if temper_meme_tag and not meme_b64_cont:
@@ -4083,21 +1748,8 @@ class WhaleListener(EventListener):
                         was_multi = self._last_multi_bubble.get(session_key, False)
                         bubbles = self._split_reply_bubbles(final_txt, last_was_multi=was_multi)
                         if bubbles:
-                            self._last_multi_bubble[session_key] = len(bubbles) > 1
-                            joined_log = " ".join(bubbles)
-                            now_ts = time.time()
-                            hist = self._histories.get(session_key, [])
-                            hist.append((now_ts, "user", f"[{sender_name}] {effective_text}"))
-                            hist.append((now_ts, "assistant", joined_log))
-                            self._histories[session_key] = hist[-24:]
-                            df.append_group_context_line(
-                                self._group_msg_buffers,
-                                session_key,
-                                "__self__",
-                                joined_log,
-                                sender_name="大肥鱼",
-                                is_self=True,
-                                now_ts=now_ts,
+                            joined_log, _ = self._record_group_side_reply(
+                                session_key, sender_name, effective_text, bubbles
                             )
                             self._record_group_bot_activity(session_key, sender_id, joined_log)
                             self._start_session_task(session_key,
@@ -4113,39 +1765,32 @@ class WhaleListener(EventListener):
                                     sender_name=sender_name,
                                 )
                             )
-                            first_img = send_cont_meme if len(bubbles) == 1 else None
-                            is_anon_sp = (
-                                not sender_name
-                                or sender_name in ("这位群友", "群友", "朋友")
-                                or sender_name.lower().startswith("wxid_")
+                            await self._send_unified_bubbles(
+                                event_ctx,
+                                session_key=session_key,
+                                target_id=launcher_id,
+                                bubbles=bubbles,
+                                image_b64=send_cont_meme,
+                                is_group=True,
+                                bot_uuid=bot_uuid,
                             )
-                            # Direction 2A: Smart Group @ Rhythm — do not @ on consecutive follow-ups or unresolved wxid
-                            if is_same_sp or is_anon_sp:
-                                await self._reply_group_no_at(event_ctx, launcher_id, bubbles[0], first_img)
-                            else:
-                                self._reply(event_ctx, bubbles[0], first_img)
-                            if len(bubbles) > 1:
-                                self._start_session_task(session_key,
-                                    self._send_followup_bubbles(
-                                        launcher_id, bubbles[1:], send_cont_meme, is_group=True, bot_uuid=bot_uuid
-                                    )
-                                )
                             return
                     else:
                         # Speaker switched topic away from Dafeiyu
                         act_set = conv.get("active_speakers")
                         if isinstance(act_set, set):
                             act_set.discard(sender_id)
-                        repeated_txt = df.check_group_random_repeat(
-                            self._group_repeat_tracker,
-                            settings,
-                            session_key,
-                            sender_id,
-                            msg_chain,
-                            effective_text,
-                        )
-                        if repeated_txt:
-                            await self._reply_group_no_at(event_ctx, launcher_id, repeated_txt)
+                        if not is_recent_same_speaker_img:
+                            repeated_txt = df.check_group_random_repeat(
+                                self._group_repeat_tracker,
+                                settings,
+                                session_key,
+                                sender_id,
+                                msg_chain,
+                                effective_text,
+                            )
+                            if repeated_txt:
+                                await self._reply_group_no_at(event_ctx, launcher_id, repeated_txt)
                         return
 
                 # Diana Feature 1: Random Repeat (0 LLM token, >=2 users, 30% prob, 60s cooldown)
@@ -4180,471 +1825,132 @@ class WhaleListener(EventListener):
                         recent_lines = list(self._group_msg_buffers.get(session_key, []))
                         g_state = self._get_group_state(launcher_id)
                         g_mem_str = self._recall_group_memories(g_state, effective_text)
+                        anti_rep_interj = df.build_anti_repetition_instruction(recent_bot_texts)
                         pre_interj_wake_seq = self._group_direct_wake_seq.get(session_key, 0)
                         pre_interj_hist_len = len(self._histories.get(session_key, []))
                         pre_interj_bot_ts = float(
                             (self._group_active_conv.get(session_key) or {}).get("last_bot_ts", 0.0)
                         )
-                        should_rep, rep_txt, _, used_tok = await df.evaluate_group_interject(
-                            bot_uuid=bot_uuid,
-                            api_key=api_key,
-                            base_url=base_url,
-                            model=model,
-                            group_id=launcher_id,
-                            recent_lines=recent_lines,
-                            state=self._state,
-                            group_memory_str=g_mem_str,
-                            mode=settings["mode"],
-                        )
-                        if used_tok:
-                            self._record_tokens(used_tok)
+                        try:
+                            should_rep, rep_txt, _, used_tok = await df.evaluate_group_interject(
+                                bot_uuid=bot_uuid,
+                                api_key=api_key,
+                                base_url=base_url,
+                                model=model,
+                                group_id=launcher_id,
+                                recent_lines=recent_lines,
+                                state=self._state,
+                                group_memory_str=g_mem_str,
+                                mode=settings["mode"],
+                                anti_rep_str=anti_rep_interj,
+                            )
+                        except TypeError as te:
+                            if "unexpected keyword argument" not in str(te):
+                                raise
+                            fallback_mem = (
+                                f"{g_mem_str}\n{anti_rep_interj}".strip()
+                                if anti_rep_interj
+                                else g_mem_str
+                            )
+                            should_rep, rep_txt, _, used_tok = await df.evaluate_group_interject(
+                                bot_uuid=bot_uuid,
+                                api_key=api_key,
+                                base_url=base_url,
+                                model=model,
+                                group_id=launcher_id,
+                                recent_lines=recent_lines,
+                                state=self._state,
+                                group_memory_str=fallback_mem,
+                                mode=settings["mode"],
+                            )
+                        await self._record_tokens_safe(used_tok)
                         if (
                             self._group_direct_wake_seq.get(session_key, 0) != pre_interj_wake_seq
                             or len(self._histories.get(session_key, [])) != pre_interj_hist_len
                             or float((self._group_active_conv.get(session_key) or {}).get("last_bot_ts", 0.0))
                             > pre_interj_bot_ts
                         ):
-                            logs = self._state.setdefault("interject_logs", [])
-                            if logs and isinstance(logs[-1], dict) and logs[-1].get("group_id") == launcher_id:
-                                logs[-1]["interjected"] = False
-                                logs[-1]["reply"] = ""
-                                logs[-1]["reason"] = "评估期间同群已收到直接唤醒或新回复，放弃重复插话"
-                            self._save_persistent_state()
+                            async with self._state_lock:
+                                logs = self._state.setdefault("interject_logs", [])
+                                if logs and isinstance(logs[-1], dict) and logs[-1].get("group_id") == launcher_id:
+                                    logs[-1]["interjected"] = False
+                                    logs[-1]["reply"] = ""
+                                    logs[-1]["reason"] = "评估期间同群已收到直接唤醒或新回复，放弃重复插话"
+                            self._mark_state_dirty()
                             return
-                        self._save_persistent_state()
+                        self._mark_state_dirty()
                         if should_rep and rep_txt:
-                            cleaned_rep = self._clean_reply(rep_txt)
+                            cleaned_rep = self._clean_reply(
+                                rep_txt, user_text=effective_text, recent_bot_texts=recent_bot_texts
+                            )
                             final_txt, interj_meme_tag, interj_meme_b64 = self._extract_text_and_meme(cleaned_rep)
                             final_txt = df.strip_redundant_speaker_name(final_txt, sender_name)
-                            turns_since_meme = int(g_state.get("turnsSinceMeme", 99)) + 1
-                            last_meme_at = int(g_state.get("lastMemeAt", 0))
                             now_ts_int = int(time.time())
-                            if interj_meme_b64:
-                                if turns_since_meme < 5 or (now_ts_int - last_meme_at) < 180 or random.random() >= 0.15:
-                                    interj_meme_b64 = None
+                            async with self._state_lock:
+                                turns_since_meme = int(g_state.get("turnsSinceMeme", 99)) + 1
+                                last_meme_at = int(g_state.get("lastMemeAt", 0))
+                                if interj_meme_b64:
+                                    if turns_since_meme < 5 or (now_ts_int - last_meme_at) < 180 or random.random() >= 0.15:
+                                        interj_meme_b64 = None
+                                    else:
+                                        interj_meme_b64 = df.pick_stolen_or_official_meme(
+                                            interj_meme_tag or "搞笑", interj_meme_b64, settings, self._stolen_memes
+                                        )
+                                send_interj_meme = interj_meme_b64 if settings["meme_enabled"] else None
+                                if send_interj_meme:
+                                    g_state["turnsSinceMeme"] = 0
+                                    g_state["lastMemeAt"] = now_ts_int
                                 else:
-                                    interj_meme_b64 = df.pick_stolen_or_official_meme(
-                                        interj_meme_tag or "搞笑", interj_meme_b64, settings, self._stolen_memes
-                                    )
-                            send_interj_meme = interj_meme_b64 if settings["meme_enabled"] else None
-                            if send_interj_meme:
-                                g_state["turnsSinceMeme"] = 0
-                                g_state["lastMemeAt"] = now_ts_int
-                            else:
-                                g_state["turnsSinceMeme"] = turns_since_meme
-                            self._save_persistent_state()
+                                    g_state["turnsSinceMeme"] = turns_since_meme
+                            self._mark_state_dirty()
                             was_multi = self._last_multi_bubble.get(session_key, False)
                             bubbles = self._split_reply_bubbles(final_txt, last_was_multi=was_multi)
                             if bubbles:
-                                self._last_multi_bubble[session_key] = len(bubbles) > 1
-                                joined_log = " ".join(bubbles)
-                                now_ts = time.time()
-                                hist = self._histories.get(session_key, [])
-                                hist.append((now_ts, "user", f"[{sender_name}] {effective_text}"))
-                                hist.append((now_ts, "assistant", joined_log))
-                                self._histories[session_key] = hist[-24:]
-                                df.append_group_context_line(
-                                    self._group_msg_buffers,
-                                    session_key,
-                                    "__self__",
-                                    joined_log,
-                                    sender_name="大肥鱼",
-                                    is_self=True,
-                                    now_ts=now_ts,
+                                _, now_ts = self._record_group_side_reply(
+                                    session_key, sender_name, effective_text, bubbles
                                 )
-                                self._group_interject_meta[session_key] = {"last_judge_ts": now_ts, "unjudged_count": 0}
-                                self._record_bot_sent(joined_log, session_key)
-                                first_img = send_interj_meme if len(bubbles) == 1 else None
-                                await self._reply_group_no_at(event_ctx, launcher_id, bubbles[0], first_img)
-                                if len(bubbles) > 1:
-                                    self._start_session_task(session_key,
-                                        self._send_followup_bubbles(
-                                            launcher_id, bubbles[1:], send_interj_meme, is_group=True, bot_uuid=bot_uuid
-                                        )
-                                    )
+                                self._lru_set(
+                                    self._group_interject_meta,
+                                    session_key,
+                                    {"last_judge_ts": now_ts, "unjudged_count": 0},
+                                )
+                                await self._send_unified_bubbles(
+                                    event_ctx,
+                                    session_key=session_key,
+                                    target_id=launcher_id,
+                                    bubbles=bubbles,
+                                    image_b64=send_interj_meme,
+                                    is_group=True,
+                                    bot_uuid=bot_uuid,
+                                )
                 return
             elif not is_group_voice and not (fwd_title or fwd_des) and not incoming_img_b64:
-                # Explicitly waking the bot clears any temporary quiet mode
-                self._group_mute_until.pop(session_key, None)
                 clean_for_buf = self._strip_wake_prefix(effective_text) or effective_text.strip()
                 if not clean_for_buf.startswith("<"):
                     df.append_group_context_line(
                         self._group_msg_buffers, session_key, sender_id, clean_for_buf, sender_name=sender_name
                     )
 
-        # 1. 手动语音（设置开关已由统一设置入口处理）
-        if cmd_norm.startswith("大肥鱼 语音 ") or cmd_norm.startswith("鲸鱼娘 语音 "):
-            tts_txt = re.sub(r"^(?:大肥鱼|鲸鱼娘)\s*语音\s*", "", cmd_norm).strip()
-            if tts_txt:
-                sf_key = self._get_config_str("siliconflow_api_key", DEFAULT_SF_API_KEY)
-                target_recv = launcher_id if is_group else sender_id
-                ok_v = await self._synthesize_and_send_voice(target_recv, tts_txt, sf_api_key=sf_key)
-                if ok_v:
-                    self._record_bot_sent(tts_txt, session_key)
-                    event_ctx.prevent_default()
-                else:
-                    self._reply(event_ctx, tts_txt)
-                return
+        # Unified prefix parsing: 大肥鱼 / 鲸鱼娘 / 小鲸鱼 / 鲸鱼人设 + 子口令
+        m_cmd_wake = CMD_WAKE_PREFIX_RE.match(cmd_norm)
+        has_cmd_wake = bool(m_cmd_wake)
+        cmd_body = (m_cmd_wake.group(1) if m_cmd_wake else cmd_norm).strip()
 
-
-        # 2. Meme / Sticker commands (yyh-001/dsh-meme 24 Dafeiyu memes)
-        if cmd_norm in ("大肥鱼 表情包", "大肥鱼 斗图", "鲸鱼娘 表情包", "大肥鱼 表情"):
-            all_tags = "、".join(MEME_MAP.keys())
-            pick_tag = random.choice(list(self._memes_b64.keys())) if self._memes_b64 else "干饭"
-            b64 = self._memes_b64.get(pick_tag)
-            msg = (
-                f"🎨 大肥鱼官方表情包图库（dsh-meme 24张）\n"
-                f"随机投喂一张：【{pick_tag}】\n\n"
-                f"📌 全部可用表情（共 {len(MEME_MAP)} 款）：\n{all_tags}\n\n"
-                f"💡 发送「大肥鱼 表情 <名称>」（如：大肥鱼 表情 干饭）即可指定发送；日常聊天也会根据心情自动配图！"
-            )
-            self._reply(event_ctx, msg, b64)
-            return
-
-        if cmd_norm.startswith("大肥鱼 表情 ") or cmd_norm.startswith("大肥鱼 发图 "):
-            q_name = re.sub(r"^大肥鱼\s*(?:表情|发图)\s*", "", cmd_norm).strip()
-            resolved = self._resolve_meme_b64(q_name)
-            if resolved:
-                tag_hit, b64 = resolved
-                self._reply(event_ctx, "", b64)
-            else:
-                all_tags = "、".join(MEME_MAP.keys())
-                self._reply(event_ctx, f"没找到「{q_name}」这张表情包哦，目前有这 24 张：{all_tags}")
-            return
-
-        # 3. Moments / Cyber Feed commands
-        if cmd_norm == "大肥鱼 发朋友圈" or cmd_norm.startswith("大肥鱼 发朋友圈 ") or cmd_norm == "大肥鱼 写朋友圈":
-            topic = re.sub(r"^大肥鱼\s*(?:发朋友圈|写朋友圈)\s*", "", effective_text.strip()).strip()
-            card_txt, meme_b64 = await self._generate_and_post_moment(topic)
-            self._reply(event_ctx, card_txt, meme_b64)
-            return
-
-        if cmd_norm in ("大肥鱼 朋友圈", "鲸鱼娘 朋友圈", "鱼塘朋友圈"):
-            lines, meme_b64 = self._format_fish_pond_wall()
-            lines.append("💡 发送「大肥鱼 发朋友圈 [主题]」让她发新动态，或发「大肥鱼 点赞朋友圈」给她点赞！")
-            self._reply(event_ctx, "\n".join(lines), meme_b64 if settings["meme_enabled"] else None)
-            return
-
-        if cmd_norm in (
-            "大肥鱼 刷朋友圈",
-            "大肥鱼 看朋友圈",
-            "大肥鱼 看看朋友圈",
-            "鲸鱼娘 刷朋友圈",
-            "鲸鱼娘 看朋友圈",
-            "刷朋友圈",
-        ):
-            msg_txt, meme_b64 = await self._browse_and_roast_moments(
-                is_group=is_group, sender_id=sender_id, session_key=session_key
-            )
-            self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
-            return
-
-        m_like_idx = re.match(r"^(?:大肥鱼|鲸鱼娘)\s*(?:点赞朋友圈|赞朋友圈|给朋友圈点赞)\s+(\d+)$", cmd_norm)
-        if m_like_idx:
-            msg_txt, meme_b64 = await self._handle_owner_moment_interaction_cmd(
-                is_group=is_group,
-                sender_id=sender_id,
-                session_key=session_key,
-                action="like",
-                index_num=int(m_like_idx.group(1)),
-            )
-            self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
-            return
-
-        m_comment_idx = re.match(
-            r"^(?:大肥鱼|鲸鱼娘)\s*(?:评论朋友圈|评朋友圈|回复朋友圈)\s+(\d+)(?:\s+(.+))?$",
-            cmd_norm,
+        handled, effective_text = await self._dispatch_prefix_command(
+            event_ctx,
+            is_group=is_group,
+            launcher_id=launcher_id,
+            sender_id=sender_id,
+            session_key=session_key,
+            doc_key=doc_key,
+            bot_uuid=bot_uuid,
+            settings=settings,
+            cmd_norm=cmd_norm,
+            cmd_body=cmd_body,
+            has_cmd_wake=has_cmd_wake,
+            effective_text=effective_text,
         )
-        if m_comment_idx:
-            msg_txt, meme_b64 = await self._handle_owner_moment_interaction_cmd(
-                is_group=is_group,
-                sender_id=sender_id,
-                session_key=session_key,
-                action="comment",
-                index_num=int(m_comment_idx.group(1)),
-                custom_comment=(m_comment_idx.group(2) or "").strip(),
-            )
-            self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
-            return
-
-        if cmd_norm in ("大肥鱼 好友申请", "大肥鱼 查看好友申请", "鲸鱼娘 好友申请", "大肥鱼 好友请求"):
-            msg_txt, meme_b64 = await self._handle_owner_friend_request_cmd(
-                is_group=is_group,
-                sender_id=sender_id,
-                session_key=session_key,
-                action="list",
-            )
-            self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
-            return
-
-        m_accept_friend = re.match(
-            r"^(?:大肥鱼|鲸鱼娘)\s*(?:同意好友|通过好友|接受好友|同意好友申请|通过好友申请)\s+(\S+)$",
-            cmd_norm,
-        )
-        if m_accept_friend:
-            msg_txt, meme_b64 = await self._handle_owner_friend_request_cmd(
-                is_group=is_group,
-                sender_id=sender_id,
-                session_key=session_key,
-                action="accept",
-                arg=m_accept_friend.group(1).strip(),
-            )
-            self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
-            return
-
-        m_friend_kw = re.match(
-            r"^(?:大肥鱼|鲸鱼娘)\s*(?:好友验证词|好友关键词|自动好友关键词)\s+(.+)$",
-            cmd_norm,
-        )
-        if m_friend_kw:
-            msg_txt, meme_b64 = await self._handle_owner_friend_request_cmd(
-                is_group=is_group,
-                sender_id=sender_id,
-                session_key=session_key,
-                action="keywords",
-                arg=m_friend_kw.group(1).strip(),
-            )
-            self._reply(event_ctx, msg_txt, meme_b64 if settings["meme_enabled"] else None)
-            return
-
-        if cmd_norm in ("大肥鱼 点赞朋友圈", "大肥鱼 点赞"):
-            async with self._state_lock:
-                moments_list = self._state.setdefault("moments", [])
-                if is_group:
-                    g = self._get_group_state(launcher_id)
-                    g["mood"] = int(_clamp(int(g.get("mood", 75)) + 3, 25, 100))
-                else:
-                    u = self._get_user_state(sender_id)
-                    u["mood"] = int(_clamp(int(u.get("mood", 70)) + 3, 15, 100))
-                    dims = u.setdefault("dims", {})
-                    dims["happy"] = int(_clamp(int(dims.get("happy", 0)) + 5, 0, 100))
-                    dims["sweet"] = int(_clamp(int(dims.get("sweet", 0)) + 4, 0, 100))
-                    u["lastReason"] = "对方专门给我的鱼塘朋友圈点了赞，心里美滋滋的"
-                    u["updatedAt"] = int(time.time() * 1000)
-                if moments_list:
-                    moments_list[-1]["likes"] = int(moments_list[-1].get("likes", 0)) + 1
-                    likes_cnt = moments_list[-1]["likes"]
-                    m_id = moments_list[-1].get("id", 1)
-                else:
-                    likes_cnt = 1
-                    m_id = 1
-                self._save_persistent_state()
-            resolved = self._resolve_meme_b64("得意")
-            self._reply(
-                event_ctx,
-                f"算你有眼光，朋友圈动态 #{m_id} 收到你的赞啦（当前 {likes_cnt} 赞），心情 +3",
-                resolved[1] if resolved else None,
-            )
-            return
-
-        if cmd_norm in ("大肥鱼 搭话", "大肥鱼 找我说话") and is_group:
-            effective_text = "大肥鱼 请结合本群的公开话题和群聊档案，主动跟大家搭句话"
-        elif cmd_norm in ("大肥鱼 搭话", "大肥鱼 找我说话"):
-            target_recv = sender_id
-            reply_su, meme_b64 = await self._trigger_speak_up_for_user(sender_id, manual=True)
-            send_meme = meme_b64 if settings["meme_enabled"] else None
-            if reply_su:
-                bubbles = self._split_reply_bubbles(reply_su)
-                if len(bubbles) > 1:
-                    self._reply(event_ctx, bubbles[0], None)
-                    self._start_session_task(session_key, self._send_followup_bubbles(target_recv, bubbles[1:], send_meme, bot_uuid=bot_uuid))
-                else:
-                    self._reply(event_ctx, bubbles[0] if bubbles else reply_su, send_meme)
-            else:
-                self._reply(event_ctx, "这会儿还没配置好钥匙（DeepSeek API Key），或者正犯困呢，等会儿再找你唠")
-            return
-
-        # 4. Mood panel command (dsh-feiyu-mood)
-        if cmd_norm in ("大肥鱼 心情", "鲸鱼娘 心情", "鱼的心情"):
-            if is_group:
-                g = self._get_group_state(launcher_id)
-                g_mood = int(g.get("mood", 75))
-                msg = (
-                    f"🐟 大肥鱼在本群当前气氛心情：{g_mood}/100（{self._mood_label(g_mood)}）\n"
-                    f"💭 本群状态：{g.get('lastReason', '在群里看大家聊天')}\n"
-                    f"（私聊发「大肥鱼 心情」可查看你与大肥鱼的个人八维情绪面板）"
-                )
-                self._reply(event_ctx, msg)
-                return
-            u = self._get_user_state(sender_id)
-            mood = int(u.get("mood", 70))
-            dims = u.get("dims", {})
-            dim_lines = []
-            for k, label in DIMS:
-                val = int(dims.get(k, 0))
-                bars = "█" * (val // 10) + "░" * (10 - (val // 10))
-                dim_lines.append(f"  {label}：{bars} {val}")
-            tl = u.get("timeline", [])[-3:]
-            tl_lines = [f"  - [{item.get('at')}] {item.get('mood')} ({item.get('delta'):+d})：{item.get('reason')}" for item in reversed(tl)]
-            msg = (
-                f"🐟 大肥鱼当前心情：{mood}/100（{self._mood_label(mood)}）\n"
-                f"💭 心底状态：{u.get('lastReason', '平平常常')}\n\n"
-                f"📊 八维情绪（dsh-feiyu-mood）：\n" + "\n".join(dim_lines)
-            )
-            if tl_lines:
-                msg += "\n\n🕒 最近情绪波动：\n" + "\n".join(tl_lines)
-            self._reply(event_ctx, msg)
-            return
-
-        # 5. Memory & Archive Consolidation commands (Group Archive in Group Chat vs Personal 8-Chapter Archive in Private Chat)
-        if cmd_norm.startswith("大肥鱼 记住 ") or cmd_norm.startswith("大肥鱼 记住："):
-            fact_to_add = re.sub(r"^(?:@[^\s\u2005]+[\s\u2005]*)*大肥鱼\s*记住[：:\s]*", "", effective_text.strip()).strip()
-            if fact_to_add:
-                if is_group:
-                    g = self._get_group_state(launcher_id)
-                    _add_dedup_fact(g.setdefault("facts", []), fact_to_add, max_len=25)
-                    self._save_persistent_state()
-                    self._reply(event_ctx, f"记进咱们群的群聊档案里啦：「{fact_to_add}」")
-                else:
-                    u = self._get_user_state(sender_id)
-                    u["hasPrivateChat"] = True
-                    if _add_dedup_fact(u.setdefault("facts", []), fact_to_add, max_len=25):
-                        u["factsSinceArchive"] = int(u.get("factsSinceArchive", 0)) + 1
-                    self._save_persistent_state()
-                    self._reply(event_ctx, f"记下了记下了：「{fact_to_add}」，我记性好着呢")
-                return
-
-        if cmd_norm in ("大肥鱼 整理档案", "大肥鱼 生成档案", "大肥鱼 重整档案", "鲸鱼娘 整理档案"):
-            if is_group:
-                g = self._get_group_state(launcher_id)
-                g["facts"] = _dedup_facts_in_place(list(g.get("facts") or []))
-                self._save_persistent_state()
-                self._reply(event_ctx, self._format_group_archive_card(launcher_id, g))
-                return
-            api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
-            base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
-            model = self._get_config_str("deepseek_model", DEFAULT_MODEL)
-            _, card_msg = await self._consolidate_user_archive(
-                api_key=api_key,
-                base_url=base_url,
-                model=model,
-                user_id=sender_id,
-            )
-            self._reply(event_ctx, card_msg)
-            return
-
-        if cmd_norm in ("大肥鱼 记忆", "鲸鱼娘 记忆", "鱼的记忆", "大肥鱼 档案", "大肥鱼 群记忆", "大肥鱼 群档案"):
-            if is_group:
-                g = self._get_group_state(launcher_id)
-                self._reply(event_ctx, self._format_group_archive_card(launcher_id, g))
-                return
-            u = self._get_user_state(sender_id)
-            self._reply(event_ctx, self._format_archive_card(u))
-            return
-
-        if cmd_norm in ("大肥鱼 失忆", "鲸鱼娘 失忆"):
-            async with self._state_lock:
-                self._reset_session(session_key, doc_key)
-                if is_group:
-                    self._state.setdefault("groups", {}).pop(launcher_id, None)
-                else:
-                    self._state.get("users", {}).pop(sender_id, None)
-                self._save_persistent_state()
-            if is_group:
-                self._reply(event_ctx, "行，本群的群聊档案和刚才聊的话已经清空重置啦（大家的私聊记忆不受影响）")
-            else:
-                self._reply(event_ctx, "行，关于你的长期档案、八章节记忆和刚才聊的话全都清空重置啦，咱们重新认识")
-            return
-
-        # 6. Token / Balance command (dsh-whale-widget)
-        if cmd_norm in ("大肥鱼 余额", "大肥鱼 粮仓", "大肥鱼 饭量", "鲸鱼娘 余额"):
-            api_key = self._get_config_str("deepseek_api_key", DEFAULT_API_KEY)
-            base_url = self._get_config_str("deepseek_base_url", DEFAULT_BASE_URL).rstrip("/")
-            bal = await self._get_balance_str(api_key, base_url)
-            stats = self._record_tokens(0)
-            msg = (
-                f"🍚 大肥鱼粮仓看板（dsh-whale-widget）\n"
-                f"• DeepSeek 实时余额：{bal}\n"
-                f"• 上一口偷吃白饭：{stats.get('last_tokens', 0)} tokens\n"
-                f"• 今日累计干饭：{stats.get('today_tokens', 0)} tokens\n"
-                f"• 历史总计干饭：{stats.get('total_tokens', 0)} tokens"
-            )
-            self._reply(event_ctx, msg)
-            return
-
-        # 6.5 Diana 扩展：插话记录、表情库、音乐与搜索
-        if cmd_norm in ("大肥鱼 搭话记录", "大肥鱼 插话记录", "大肥鱼 决策记录", "鲸鱼娘 搭话记录"):
-            owners = set(re.split(r"[,，;；\s]+", self._get_config_str("owner_ids", DEFAULT_OWNER_IDS))) - {""}
-            if not is_group and sender_id not in owners:
-                self._reply(event_ctx, "请在群内查看本群搭话记录；跨群记录仅主人私聊可查看")
-            else:
-                self._reply(event_ctx, df.format_interject_logs(
-                    self._state, bot_uuid=bot_uuid, group_id=launcher_id if is_group else None,
-                ))
-            return
-
-        if cmd_norm in ("大肥鱼 表情库", "大肥鱼 偷图库", "鲸鱼娘 表情库"):
-            stolen = self._stolen_memes
-            if not stolen:
-                self._reply(event_ctx, "📦 自带 24 张官方表情包，目前偷图库里还没攒下群友的表情包呢，快发几张表情包喂给我！")
-                return
-            sample = random.choice(stolen)
-            tags_summary = "、".join(
-                f"{m.get('at', '')}[{','.join(m.get('tags') or ['搞笑'])}]" for m in stolen[-6:]
-            )
-            msg = (
-                f"📦 【大肥鱼表情包收藏库】\n"
-                f"• 官方内置：{len(self._memes_b64)} 张 | 偷图收藏：{len(stolen)}/50 张\n"
-                f"• 最近偷图：{tags_summary}\n"
-                f"（下面随机甩一张从你们这儿偷学来的表情包！）"
-            )
-            self._reply(event_ctx, msg, sample.get("b64"))
-            return
-
-        # Diana Feature 7: Multi-library Music Player (Explicit command + Natural Language song requests + Random song)
-        is_explicit_music = (
-            cmd_norm.startswith("大肥鱼 点歌 ")
-            or cmd_norm.startswith("鲸鱼娘 点歌 ")
-            or cmd_norm.startswith("点歌 ")
-            or cmd_norm.startswith("来首歌 ")
-        )
-        is_random_music = bool(NATURAL_RANDOM_MUSIC_RE.match(cmd_norm))
-        m_nat_song = None if (is_explicit_music or is_random_music) else NATURAL_SONG_QUERY_RE.match(cmd_norm)
-        nat_song_name = (m_nat_song.group(1).strip() if m_nat_song else "")
-        if nat_song_name and any(w in nat_song_name for w in NON_SONG_WORDS):
-            nat_song_name = ""
-
-        if is_explicit_music or is_random_music or nat_song_name:
-            if is_random_music:
-                song = await df.pick_random_playable_song()
-                song_q = "随机歌曲"
-            else:
-                song_q = (
-                    nat_song_name
-                    if nat_song_name
-                    else re.sub(r"^(?:大肥鱼\s*|鲸鱼娘\s*)?(?:点歌|来首歌)\s*", "", cmd_norm).strip()
-                )
-                if not song_q:
-                    song = await df.pick_random_playable_song()
-                else:
-                    song = await df.search_and_fetch_music(song_q)
-            if not song:
-                self._reply(event_ctx, f"翻遍了网易云和 QQ 音乐都没搜到「{song_q}」，换个歌名或者加上歌手名再试试？")
-                return
-            target_recv = launcher_id if is_group else sender_id
-            card_ok, audio_ok = await df.send_music_to_wechat(target_recv, song)
-            cover_b64 = await df._download_image_as_jpeg_b64(song.get("cover_url") or "")
-            audio_note = (
-                "✅ 已同步将歌曲 MP3 音频文件直接发到聊天窗口，点开就能听！"
-                if audio_ok
-                else f"⚠️ 该曲目受版权限制无法直接提取 MP3 音频流，已为你提供 {song.get('source')} 歌曲来源页链接。"
-            )
-            prefix_note = "🎲 顺手给你随机挑了一首好听的：\n" if is_random_music else ""
-            msg = (
-                f"{prefix_note}🎵 【大肥鱼点歌台 · {song.get('source')}】\n"
-                f"• 歌名：{song.get('title')}\n"
-                f"• 歌手：{song.get('artist')}\n"
-                + (f"• 专辑：{song.get('album')}\n" if song.get("album") else "")
-                + f"• 链接：{song.get('page_url')}\n"
-                + f"{audio_note}"
-            )
-            self._reply(event_ctx, msg, None if card_ok else cover_b64)
-            return
-
-        # 7. 当前对话重置
-        if cmd_norm in ("大肥鱼 重置", "鲸鱼娘 重置", "清除记忆", "重置对话", "大肥鱼 清除记忆"):
-            self._reset_session(session_key, doc_key)
-            self._reply(event_ctx, "行啦，刚才聊的这几句翻篇了！长期档案还留着呢（要彻底清空请发「大肥鱼 失忆」），想聊啥直说")
+        if handled:
             return
 
         if not settings["enabled"]:
@@ -4672,23 +1978,18 @@ class WhaleListener(EventListener):
         hist_user_text: str = ""
         just_cached_doc_this_turn: bool = False
 
-        if not is_group and incoming_img_b64:
-            self._private_recent_images[session_key] = {
+        if not is_group and incoming_img_b64 and not is_sticker_in:
+            self._lru_set(self._private_recent_images, session_key, {
                 "sender_id": sender_id,
                 "b64": incoming_img_b64,
                 "ts": time.time(),
-            }
+            })
 
         if is_sticker_in:
             if is_group:
                 return
             vision_b64 = (await self._fetch_sticker_strip_b64(raw_text)) or incoming_img_b64
             if vision_b64:
-                self._private_recent_images[session_key] = {
-                    "sender_id": sender_id,
-                    "b64": vision_b64,
-                    "ts": time.time(),
-                }
                 cleaned_text = "（对方刚刚给你发了这张微信表情包！如果是动图则已抽帧拼成左中右三格。请用 DeepSeek-V4.1-Flash 视觉看清表情包里的画面/角色动作/文字，用大肥鱼的微信活人短句接梗回应一句，并在最末尾附上 `[表情: 名称]` 甩一张你的表情包回去！）"
             else:
                 cleaned_text = "（对方刚刚给你发了一张微信表情包跟你斗图！请用活人短句回敬一句，并在最末尾附上 `[表情: 名称]` 甩一张你的表情包回去！）"
@@ -4705,7 +2006,7 @@ class WhaleListener(EventListener):
                         sender_name=sender_name,
                     )
                 has_voice_wake = bool(
-                    voice_text and any(w in voice_text for w in ("大肥鱼", "鲸鱼娘", "小鲸鱼", "肥鱼"))
+                    voice_text and any(w in voice_text for w in ("大肥鱼", "鲸鱼娘", "小鲸鱼", "鲸鱼人设", "肥鱼"))
                 )
                 conv_v = self._group_active_conv.get(session_key) or {}
                 is_same_speaker_60s = bool(
@@ -4720,7 +2021,8 @@ class WhaleListener(EventListener):
                 )
                 if not voice_text or not (has_voice_wake or allow_voice_followup):
                     return
-                self._group_mute_until.pop(session_key, None)
+                if has_voice_wake:
+                    self._group_mute_until.pop(session_key, None)
             tone_part = f"，语气特征[{voice_tone}]" if voice_tone else ""
             if voice_text:
                 cleaned_text = (
@@ -4743,7 +2045,7 @@ class WhaleListener(EventListener):
                 raw_text, api_key=file_api_key, base_url=file_base_url
             )
             if ftext:
-                self._user_docs[doc_key] = {"name": fname, "text": ftext, "ts": time.time()}
+                self._store_user_doc(doc_key, fname, ftext)
                 cleaned_text = (
                     f"（对方刚刚发来了一个文件《{fname}》，已为你提取出文件中的核心文本内容如下：\n"
                     f"--------------------\n{ftext[:7000]}\n--------------------\n"
@@ -4774,11 +2076,7 @@ class WhaleListener(EventListener):
                 first_card_line = parsed_link_card.splitlines()[0].strip() if parsed_link_card else "分享链接"
                 if "【微信公众号推文】" in parsed_link_card or len(parsed_link_card) > 360:
                     doc_title = re.sub(r"^[^\w\u4e00-\u9fa5]*【[^】]+】", "", first_card_line).strip() or "分享文章"
-                    self._user_docs[doc_key] = {
-                        "name": doc_title[:60],
-                        "text": parsed_link_card[:12000],
-                        "ts": time.time(),
-                    }
+                    self._store_user_doc(doc_key, doc_title[:60], parsed_link_card[:12000])
                     just_cached_doc_this_turn = True
                 cleaned_text = (
                     f"（对方刚刚分享了一个链接/卡片，已自动解析出详情如下：\n{parsed_link_card}\n"
@@ -4789,7 +2087,6 @@ class WhaleListener(EventListener):
                 if is_group and not (
                     self._is_group_woken(msg_chain, effective_text, ev_raw_obj)
                     or is_quoting_bot
-                    or bool(incoming_img_b64)
                 ):
                     return
                 cleaned_text = self._strip_wake_prefix(effective_text)
@@ -4799,20 +2096,26 @@ class WhaleListener(EventListener):
                 if not incoming_img_b64 and self._should_ignore_plugin_command(cleaned_text):
                     return
                 if not vision_b64 and is_group:
-                    # Direction 1: Attach cached recent group image if speaker sent one within 90s or mentioned image keywords
+                    # Direction 1: Attach cached recent group image if speaker sent one within 90s, mentioned image keywords, or quoted "[图片]"
                     rec_img = self._group_recent_images.get(session_key)
                     if isinstance(rec_img, dict) and (time.time() - float(rec_img.get("ts", 0))) <= 90.0:
-                        if rec_img.get("sender_id") == sender_id or any(
-                            kw in cleaned_text for kw in IMAGE_FOLLOWUP_KEYWORDS
+                        if (
+                            rec_img.get("sender_id") == sender_id
+                            or any(kw in cleaned_text for kw in IMAGE_FOLLOWUP_KEYWORDS)
+                            or (quote_content and "[图片]" in str(quote_content))
                         ):
+                            self._lru_touch(self._group_recent_images, session_key)
                             vision_b64 = str(rec_img.get("b64") or "") or None
                 elif not vision_b64 and not is_group:
                     rec_priv_img = self._private_recent_images.get(session_key)
                     if isinstance(rec_priv_img, dict):
                         img_age = time.time() - float(rec_priv_img.get("ts", 0))
-                        if img_age <= 45.0 or (
-                            img_age <= 90.0 and any(kw in cleaned_text for kw in IMAGE_FOLLOWUP_KEYWORDS)
+                        if (
+                            img_age <= 45.0
+                            or (img_age <= 90.0 and any(kw in cleaned_text for kw in IMAGE_FOLLOWUP_KEYWORDS))
+                            or (img_age <= 90.0 and quote_content and "[图片]" in str(quote_content))
                         ):
+                            self._lru_touch(self._private_recent_images, session_key)
                             vision_b64 = str(rec_priv_img.get("b64") or "") or None
 
                 if vision_b64 and cleaned_text in ("", "[图片]"):
@@ -4824,11 +2127,7 @@ class WhaleListener(EventListener):
                 elif quote_content:
                     comp_prompt, comp_hist, comp_doc = df.compact_long_user_text(cleaned_text)
                     if comp_doc:
-                        self._user_docs[doc_key] = {
-                            "name": f"长文本消息({len(cleaned_text)}字)",
-                            "text": comp_doc,
-                            "ts": time.time(),
-                        }
+                        self._store_user_doc(doc_key, f"长文本消息({len(cleaned_text)}字)", comp_doc)
                         just_cached_doc_this_turn = True
                     hist_user_text = f"[引用「{quote_speaker}: {quote_content[:60]}」] {comp_hist}"
                     cleaned_text = (
@@ -4837,11 +2136,7 @@ class WhaleListener(EventListener):
                 elif vision_b64 and not incoming_img_b64:
                     comp_prompt, comp_hist, comp_doc = df.compact_long_user_text(cleaned_text)
                     if comp_doc:
-                        self._user_docs[doc_key] = {
-                            "name": f"长文本消息({len(cleaned_text)}字)",
-                            "text": comp_doc,
-                            "ts": time.time(),
-                        }
+                        self._store_user_doc(doc_key, f"长文本消息({len(cleaned_text)}字)", comp_doc)
                         just_cached_doc_this_turn = True
                     hist_user_text = comp_hist
                     cleaned_text = (
@@ -4851,11 +2146,7 @@ class WhaleListener(EventListener):
                 else:
                     comp_prompt, comp_hist, comp_doc = df.compact_long_user_text(cleaned_text)
                     if comp_doc:
-                        self._user_docs[doc_key] = {
-                            "name": f"长文本消息({len(cleaned_text)}字)",
-                            "text": comp_doc,
-                            "ts": time.time(),
-                        }
+                        self._store_user_doc(doc_key, f"长文本消息({len(cleaned_text)}字)", comp_doc)
                         just_cached_doc_this_turn = True
                     cleaned_text = comp_prompt
                     hist_user_text = comp_hist
@@ -4874,8 +2165,8 @@ class WhaleListener(EventListener):
 
         now = time.time()
 
-        # Evict expired document, image & session caches to prevent unbounded memory growth
-        for k_doc in [k for k, v in list(self._user_docs.items()) if now - float(v.get("ts", 0)) > 1800]:
+        # Evict expired document, image & session caches and apply LRU caps (A-08)
+        for k_doc in [k for k, v in list(self._user_docs.items()) if now - float(v.get("ts", 0)) >= 1800]:
             self._user_docs.pop(k_doc, None)
         for k_img in [k for k, v in list(self._group_recent_images.items()) if now - float(v.get("ts", 0)) > 120]:
             self._group_recent_images.pop(k_img, None)
@@ -4884,8 +2175,26 @@ class WhaleListener(EventListener):
         for k_hist, v_hist in list(self._histories.items()):
             if not v_hist or (now - v_hist[-1][0]) > 7200:
                 self._histories.pop(k_hist, None)
+        for cache_dict in (
+            self._histories,
+            self._user_docs,
+            self._group_recent_images,
+            self._private_recent_images,
+            self._group_msg_buffers,
+            self._group_active_conv,
+            self._group_repeat_tracker,
+            self._group_interject_meta,
+            self._last_multi_bubble,
+            self._recent_bot_sent_texts,
+            self._group_mute_until,
+            self._group_direct_wake_seq,
+            self._temper_state,
+            self._disabled_group_hint_ts,
+            self._error_tip_ts,
+        ):
+            self._trim_cache_lru(cache_dict)
 
-        history = self._histories.get(session_key, [])
+        history = list(self._histories.get(session_key, []))
         history = [(ts, r, c) for (ts, r, c) in history if now - ts < 7200]
         if len(history) > max_turns * 2:
             history = history[-(max_turns * 2) :]
@@ -4905,31 +2214,36 @@ class WhaleListener(EventListener):
         )
         coarse_time_str = f"{now_dt.strftime('%Y-%m-%d')}（{wk_str} {period}）"
         exact_time_str = f"{now_dt.strftime('%H:%M')}（{wk_str}{period}）"
-        daily_sched = df.get_or_create_daily_schedule(self._state, now_dt)
+        daily_sched = await self._get_or_update_daily_schedule(now_dt)
         schedule_line = df.format_daily_schedule_line(daily_sched, hour)
         bal_str = await self._get_balance_str(api_key, base_url)
-        stats = self._record_tokens(0)
+        stats = await self._record_tokens_safe(0)
 
-        # On-demand Token/Balance perception: only expose raw token/balance numbers when relevant to avoid repetitive catchphrases
-        mention_token_topic = any(kw in cleaned_text.lower() for kw in TOKEN_TOPIC_KEYWORDS) or bal_str.startswith(("¥0.", "¥1."))
+        # On-demand Token/Balance perception (A-03): only include grain_line when token/balance topic matches or balance < 2.0
+        bal_low = bal_str.startswith(("¥0.", "¥1.", "$0.", "$1."))
+        m_bal_num = re.search(r"(\d+(?:\.\d+)?)", bal_str)
+        if m_bal_num:
+            try:
+                bal_low = float(m_bal_num.group(1)) < 2.0
+            except Exception:
+                pass
+        mention_token_topic = any(kw in cleaned_text.lower() for kw in TOKEN_TOPIC_KEYWORDS) or bal_low
+        grain_line = ""
         if mention_token_topic:
             grain_line = (
-                f"- **粮仓状态（对方正聊到相关话题，可自然引用）**：DeepSeek 账户真实余额 `{bal_str}`；"
-                f"今天已消耗 `{stats.get('today_tokens', 0)} tokens`（上一口 `{stats.get('last_tokens', 0)} tokens`）。\n"
-            )
-        else:
-            grain_line = (
-                "- **粮仓状态**：口粮充足（本轮对话与 token/余额无关，切勿在回复中主动背诵 token 数量或账户余额，专心聊眼前的事）。\n"
+                f"- **粮仓状态（对方正聊到相关话题或余额偏低，可自然引用）**：DeepSeek 账户真实余额 `{bal_str}`；"
+                f"今天已消耗 `{stats.get('today_tokens', 0)} tokens`（上一口 `{stats.get('last_tokens', 0)} tokens`）。"
             )
 
-        # Include cached file context if user uploaded a document within the last 30 minutes
+        # Include best matching cached document if user uploaded/linked a document within the last 30 minutes
         doc_sec = ""
-        cached_doc = self._user_docs.get(doc_key)
-        if cached_doc and (now - float(cached_doc.get("ts", 0))) < 1800 and not is_file_in and not just_cached_doc_this_turn:
-            doc_sec = (
-                f"\n\n## 五、对方最近上传的文档缓存（《{cached_doc.get('name')}》，若对方追问文档内容请据此回答）\n"
-                f"{str(cached_doc.get('text', ''))[:4500]}"
-            )
+        if not is_file_in and not just_cached_doc_this_turn:
+            cached_doc = self._select_relevant_doc_snippet(doc_key, cleaned_text)
+            if cached_doc:
+                doc_sec = (
+                    f"- **对方最近上传的文档缓存（《{cached_doc.get('name')}》，若对方追问文档内容请据此回答）**：\n"
+                    f"{str(cached_doc.get('text', ''))[:4500]}"
+                )
 
         # Direction 3B & 3C + Turn-Level Reminders: Anti-Repetition Gate, Temper State, Time Gap, Unfetched Media
         last_hist_ts = history[-1][0] if history else None
@@ -4949,23 +2263,27 @@ class WhaleListener(EventListener):
         )
 
         base_persona = LIVE_PERSONA_BASE if settings["mode"] == "live" else SWEET_PERSONA_BASE
-        self_moments_line = self._build_self_moments_section()
+        persona_for_prompt = self._prepare_persona_for_tools(
+            base_persona, has_send_meme_tool=bool(settings.get("meme_enabled", True))
+        )
+        self_moments_line = self._build_self_moments_section().strip()
 
-        group_turn_tail_parts: list[str] = []
+        turn_ctx_parts: list[str] = []
         if is_group:
-            # Group Chat: Use Group Archive (groups[launcher_id]) + Read-Only Private Familiarity + Recent Group Chat Flow
-            g_state = self._get_group_state(launcher_id)
-            g_state["lastChatAt"] = int(now * 1000)
-            if temper_mood_delta != 0:
-                g_state["mood"] = int(_clamp(int(g_state.get("mood", 75)) + temper_mood_delta, 25, 100))
-            meme_cooldown_state = g_state
-            g_mood = int(g_state.get("mood", 75))
-            g_reason = g_state.get("lastReason", "在群里看大家聊天")
-            g_mem_sec = self._recall_group_memories(g_state, cleaned_text)
+            # Group Chat: Tier-1 system stays invariant across speakers/turns on the same day/hour; dynamic recall & speaker go to <turn-context>
+            async with self._state_lock:
+                g_state = self._get_group_state(launcher_id)
+                g_state["lastChatAt"] = int(now * 1000)
+                if temper_mood_delta != 0:
+                    g_state["mood"] = int(_clamp(int(g_state.get("mood", 75)) + temper_mood_delta, 25, 100))
+                meme_cooldown_state = g_state
+                g_mood = int(g_state.get("mood", 75))
+                g_reason = str(g_state.get("lastReason", "在群里看大家聊天"))
+                g_mem_sec = self._recall_group_memories(g_state, cleaned_text)
             familiar_sec = self._recall_readonly_private_familiarity(sender_id, sender_name, launcher_id)
             member_names = df.get_cached_group_member_names(launcher_id)
             roster_line = (
-                f"- **本群成员真实昵称名单**：{'、'.join(member_names)}\n"
+                f"- **本群成员真实昵称名单**：{'、'.join(member_names)}"
                 if member_names
                 else ""
             )
@@ -4980,62 +2298,93 @@ class WhaleListener(EventListener):
                 if recent_grp_lines
                 else "（暂无前序群聊记录）"
             )
-            group_turn_tail_parts.extend(
+            system_prompt = (
+                f"{persona_for_prompt}\n\n"
+                f"## 四、群聊共享舞台规则（你在微信群「{launcher_id[:10]}」中跟群友互动）\n"
+                f"{schedule_line}"
+                f"- **当前日期与时段**：{coarse_time_str}\n"
+                "- **群聊发送说明**：直接写出你想说的话即可（系统不会在回复前自动拼 `@昵称`）。"
+            )
+            if roster_line:
+                turn_ctx_parts.append(roster_line)
+            if g_mem_sec:
+                turn_ctx_parts.append(f"- **本群专属群聊档案（群梗与近期话题）**：\n{g_mem_sec}")
+            if self_moments_line:
+                turn_ctx_parts.append(self_moments_line)
+            turn_ctx_parts.append(f"- **本群气氛心情**：{g_mood}/100（{g_reason}）")
+            if grain_line:
+                turn_ctx_parts.append(grain_line)
+            if doc_sec:
+                turn_ctx_parts.append(doc_sec)
+            turn_ctx_parts.extend(
                 [
                     name_rule_line,
                     familiar_sec.strip(),
                     f"- **群里刚刚聊的上下文（帮助你理解大家在讨论什么）**：\n{grp_ctx_block}",
                 ]
             )
-            dynamic_system_prompt = (
-                f"{base_persona}\n\n"
-                f"## 四、当前群聊实时感知（你在微信群「{launcher_id[:10]}」中跟群友互动）\n"
-                f"{roster_line}"
-                f"- **本群专属群聊档案（群梗与近期话题）**：\n{g_mem_sec}\n"
-                f"{self_moments_line}"
-                f"{schedule_line}"
-                f"- **当前日期与时段**：{coarse_time_str}\n"
-                f"- **本群气氛心情**：{g_mood}/100（{g_reason}）\n"
-                f"{grain_line}"
-                f"{doc_sec}"
-            )
         else:
-            # Private Chat: Full personal mood + intimacy tier + 8-chapter personal archive
-            u = self._get_user_state(sender_id)
-            u["hasPrivateChat"] = True
-            u["lastChatAt"] = int(now * 1000)
-            u["missStreak"] = 0
-            if temper_mood_delta != 0:
-                u["mood"] = int(_clamp(int(u.get("mood", 70)) + temper_mood_delta, 15, 100))
-            if sender_name and sender_name not in ("朋友", "群友", "这位群友") and not sender_name.startswith("wxid_"):
-                u["nickname"] = sender_name
-            nick_val = str(u.get("nickname") or "").strip()
+            # Private Chat: Tier-1 system holds static persona + fixed profile + schedule; Tier-3 <turn-context> holds per-turn dynamic items
+            async with self._state_lock:
+                u = self._get_user_state(sender_id)
+                u["hasPrivateChat"] = True
+                u["lastChatAt"] = int(now * 1000)
+                u["missStreak"] = 0
+                u["speakUpCountSinceReply"] = 0
+                if temper_mood_delta != 0:
+                    u["mood"] = int(_clamp(int(u.get("mood", 70)) + temper_mood_delta, 15, 100))
+                if sender_name and sender_name not in ("朋友", "群友", "这位群友") and not sender_name.startswith("wxid_"):
+                    u["nickname"] = sender_name
+                nick_val = str(u.get("nickname") or "").strip()
+                meme_cooldown_state = u
+                core_profile_sec = self._build_core_stable_profile_section(u)
+                intimacy_sec = self._build_intimacy_section(u, mode=settings["mode"])
+                mood_sec = self._build_mood_section(u)
+                mem_sec = self._recall_memories(u, cleaned_text)
+            moment_ctx_line = (
+                await self._check_friend_moment_for_chat(
+                    sender_id, sender_name, session_key, cleaned_text, history_len=len(history)
+                )
+            ).strip()
             nick_line = f"- **对方微信昵称**：{nick_val}\n" if nick_val else ""
-            meme_cooldown_state = u
-            intimacy_sec = self._build_intimacy_section(u, mode=settings["mode"])
-            mood_sec = self._build_mood_section(u)
-            mem_sec = self._recall_memories(u, cleaned_text)
-            moment_ctx_line = await self._check_friend_moment_for_chat(
-                sender_id, sender_name, session_key, cleaned_text, history_len=len(history)
-            )
-            dynamic_system_prompt = (
-                f"{base_persona}\n\n"
-                f"## 四、当前私聊实时感知（系统每轮自动刷新，自然融入语气，不要机械背诵）\n"
+            system_prompt = (
+                f"{persona_for_prompt}\n\n"
+                f"## 四、当前私聊长期设定\n"
                 f"{nick_line}"
-                f"- **你们的亲密度与关系阶段**：{intimacy_sec}\n"
-                f"- **鱼的记忆（dsh-fish-memory）**：\n{mem_sec}\n"
-                f"{self_moments_line}"
-                f"{moment_ctx_line}"
-                f"{schedule_line}"
-                f"- **当前日期与时段**：{coarse_time_str}\n"
-                f"- **鱼的心情（dsh-feiyu-mood）**：\n{mood_sec}\n"
-                f"{grain_line}"
-                f"{doc_sec}"
+                + (f"{core_profile_sec}\n" if core_profile_sec else "")
+                + f"{schedule_line}"
+                + f"- **当前日期与时段**：{coarse_time_str}"
             )
+            turn_ctx_parts.append(f"- **你们的亲密度与关系阶段**：{intimacy_sec}")
+            turn_ctx_parts.append(f"- **鱼的记忆（dsh-fish-memory）**：\n{mem_sec}")
+            if self_moments_line:
+                turn_ctx_parts.append(self_moments_line)
+            if moment_ctx_line:
+                turn_ctx_parts.append(moment_ctx_line)
+            turn_ctx_parts.append(f"- **鱼的心情（dsh-feiyu-mood）**：\n{mood_sec}")
+            if grain_line:
+                turn_ctx_parts.append(grain_line)
+            if doc_sec:
+                turn_ctx_parts.append(doc_sec)
 
-        # If user explicitly used "大肥鱼 搜索 <问题>", pre-run parallel web search right away
-        if cmd_norm.startswith("大肥鱼 搜索 ") or cmd_norm.startswith("鲸鱼娘 搜索 "):
-            sq = re.sub(r"^(?:大肥鱼|鲸鱼娘)\s*搜索\s*", "", cmd_norm).strip()
+        user_asked_meme = any(
+            kw in effective_text for kw in ("表情包", "发个表情", "发张表情", "斗图", "来张图", "发个图")
+        )
+        turns_since_meme_peek = int(meme_cooldown_state.get("turnsSinceMeme", 99)) + 1
+        last_meme_at_peek = int(meme_cooldown_state.get("lastMemeAt", 0))
+        allow_meme = bool(
+            settings.get("meme_enabled", True)
+            and (
+                is_sticker_in
+                or user_asked_meme
+                or bool(temper_meme_tag)
+                or (turns_since_meme_peek >= 5 and (int(now) - last_meme_at_peek) >= 180)
+            )
+        )
+
+        # If user explicitly used "大肥鱼 搜索 <问题>" (or any wake prefix), pre-run parallel web search right away
+        if has_cmd_wake and cmd_body.startswith("搜索 "):
+            sq = re.sub(r"^搜索\s*", "", cmd_body).strip()
             if sq:
                 search_res = await self._call_search_web_parallel([sq], api_key=api_key, base_url=base_url)
                 cleaned_text = (
@@ -5044,10 +2393,8 @@ class WhaleListener(EventListener):
                     "请结合以上最新检索结果，用大肥鱼的活人口吻准确回答对方！"
                 )
 
-        user_asked_voice = df.is_voice_reply_requested(effective_text) or cmd_norm in (
-            "大肥鱼 说句话",
-            "大肥鱼 发语音",
-            "大肥鱼 来条语音",
+        user_asked_voice = df.is_voice_reply_requested(effective_text) or (
+            has_cmd_wake and cmd_body in ("说句话", "发语音", "来条语音")
         )
         if user_asked_voice:
             cleaned_text += (
@@ -5055,30 +2402,37 @@ class WhaleListener(EventListener):
                 "请用自然口语化的 1 句短话（10~45字）回答，不要包含符号、链接、代码块或括号！）"
             )
 
-        tail_parts: list[str] = list(group_turn_tail_parts)
         if time_gap_notice:
-            tail_parts.append(time_gap_notice)
+            turn_ctx_parts.append(time_gap_notice)
         if unfetched_notice:
-            tail_parts.append(unfetched_notice)
+            turn_ctx_parts.append(unfetched_notice)
         if anti_rep_line.strip():
-            tail_parts.append(anti_rep_line.strip().lstrip("- "))
+            turn_ctx_parts.append(anti_rep_line.strip().lstrip("- "))
         if temper_hint.strip() and settings["mode"] == "live":
-            tail_parts.append(temper_hint.strip().lstrip("- "))
+            turn_ctx_parts.append(temper_hint.strip().lstrip("- "))
         if not settings["meme_enabled"]:
-            tail_parts.append(
-                "【表情设置：当前已关闭主动发表情包，本轮不要输出 [表情: ...] 标签，用纯文字回复即可】"
+            turn_ctx_parts.append(
+                "【表情设置：当前已关闭主动发表情包，本轮不要发送表情包或手写 [表情: ...] 标签，用纯文字回复即可】"
+            )
+        elif not allow_meme:
+            turn_ctx_parts.append(
+                "【表情冷却中：本轮不要发送表情包或手写 [表情: ...] 标签，用纯文字自然回复即可】"
             )
         if settings["mode"] == "sweet":
-            tail_parts.append(
+            turn_ctx_parts.append(
                 "【当前为甜宠陪伴模式：语气要软糯、黏人、欢快偏心，像跟喜欢的人撒娇聊天一样，严禁毒舌抬杠、嫌弃损人或怀疑对方没好事！】"
             )
-        tail_parts.append(
+        turn_ctx_parts.append(
             f"【现在时间：{exact_time_str} | 动笔前确认：绝不打括号写动作、单气泡短句为主、只提真聊过的事】"
         )
-        tail_block = "\n\n" + "\n".join(tail_parts)
+        tail_block = (
+            "\n\n<turn-context>\n"
+            + "\n".join(p for p in turn_ctx_parts if p)
+            + "\n</turn-context>"
+        )
         user_msg_for_llm = (f"[{sender_name}]: {cleaned_text}" if is_group else cleaned_text) + tail_block
 
-        messages: list[dict[str, Any]] = [{"role": "system", "content": dynamic_system_prompt}]
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         for _, r, c in history:
             messages.append({"role": r, "content": c})
         if vision_b64:
@@ -5103,8 +2457,16 @@ class WhaleListener(EventListener):
             has_doc_ctx=bool(doc_sec),
         )
         tool_calls: list[Any] = []
+        used_any_tools: bool = False
         voice_sent_in_tool: bool = False
         interim_sent_lines: list[str] = []
+        pushed_interim_texts: list[str] = []
+        target_recv_tool = launcher_id if is_group else sender_id
+        can_push_interim_now = (
+            (httpx.AsyncClient is _ORIG_HTTPX_ASYNC_CLIENT)
+            or hasattr(df.send_wcf_text_or_image, "assert_awaited")
+            or hasattr(df.send_wcf_text_or_image, "mock_calls")
+        )
         try:
             async with httpx.AsyncClient(timeout=50.0) as client:
                 req_payload: dict[str, Any] = {
@@ -5113,12 +2475,17 @@ class WhaleListener(EventListener):
                     "temperature": chat_temp,
                     "max_tokens": 800,
                 }
-                # Enable Native Web Search, Webpage Reader & send_meme Tool Calling for text chats
-                chat_tools = (
-                    self._build_chat_tools(settings)
-                    if (not vision_b64 and not parsed_link_card and not is_file_in)
-                    else []
-                )
+                # Enable Native Web Search, Webpage Reader & send_meme Tool Calling; keep search active for deepseek-flash even with images (U-09)
+                is_deepseek_flash = "deepseek-flash" in model.lower()
+                if not parsed_link_card and not is_file_in:
+                    if not vision_b64 or is_deepseek_flash:
+                        chat_tools = self._build_chat_tools(
+                            settings, allow_meme=allow_meme, allow_search=True
+                        )
+                    else:
+                        chat_tools = []
+                else:
+                    chat_tools = []
                 if chat_tools:
                     req_payload["tools"] = chat_tools
                     req_payload["tool_choice"] = "auto"
@@ -5165,96 +2532,147 @@ class WhaleListener(EventListener):
                 resp.raise_for_status()
                 data = resp.json()
                 used_tokens = int((data.get("usage") or {}).get("total_tokens", 0))
-                self._record_tokens(used_tokens)
+                await self._record_tokens_safe(used_tokens)
 
-                choice_msg = data.get("choices", [{}])[0].get("message", {}) or {}
-                tool_calls = choice_msg.get("tool_calls") or []
                 tool_meme_tag: str | None = None
                 tool_meme_b64: str | None = None
+                last_raw_interim = ""
+                raw_reply = ""
 
-                # Execute parallel web_search / read_webpage / send_meme / send_voice tool calls if requested
-                if tool_calls:
-                    raw_interim_content = str(choice_msg.get("content") or "").strip()
-                    if raw_interim_content:
-                        cleaned_interim, im_tag, im_b64 = self._extract_text_and_meme(
-                            self._clean_reply(raw_interim_content)
-                        )
-                        if im_b64 and not tool_meme_b64:
-                            tool_meme_tag, tool_meme_b64 = im_tag, im_b64
-                        interim_flat = re.sub(r"\s+", " ", cleaned_interim.replace("||", " ")).strip()
-                        if interim_flat:
-                            interim_sent_lines.append(interim_flat)
-
-                    messages.append(choice_msg)
-                    for tool_index, tc in enumerate(tool_calls):
-                        fn = (tc.get("function") or {}).get("name", "")
-                        raw_args = (tc.get("function") or {}).get("arguments") or "{}"
-                        try:
-                            args_obj = json.loads(raw_args)
-                            if not isinstance(args_obj, dict):
-                                args_obj = {}
-                        except Exception:
+                async def _exec_one_tool(tool_index: int, tc: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+                    if tool_index >= 3:
+                        return "本轮最多执行 3 个工具调用，此调用未执行；请依据已有结果回答。", {}
+                    fn = (tc.get("function") or {}).get("name", "")
+                    raw_args = (tc.get("function") or {}).get("arguments") or "{}"
+                    try:
+                        args_obj = json.loads(raw_args)
+                        if not isinstance(args_obj, dict):
                             args_obj = {}
-                        if tool_index >= 3:
-                            tool_out = "本轮最多执行 3 个工具调用，此调用未执行；请依据已有结果回答。"
-                        elif fn == "web_search":
-                            qs = args_obj.get("queries") or args_obj.get("query") or []
-                            if isinstance(qs, str):
-                                qs = [qs]
-                            tool_out = await self._call_search_web_parallel(
-                                qs, api_key=api_key, base_url=base_url
-                            )
-                        elif fn == "read_webpage":
-                            tool_out = await self._call_read_webpage_content(
-                                str(args_obj.get("url") or ""),
-                                api_key=api_key,
-                                base_url=base_url,
-                            )
-                        elif fn == "send_meme":
-                            m_name = str(
-                                args_obj.get("name") or args_obj.get("meme") or args_obj.get("tag") or ""
-                            ).strip()
+                    except Exception:
+                        args_obj = {}
+                    meta: dict[str, Any] = {}
+                    if fn == "web_search":
+                        qs = args_obj.get("queries") or args_obj.get("query") or []
+                        if isinstance(qs, str):
+                            qs = [qs]
+                        out = await self._call_search_web_parallel(
+                            qs, api_key=api_key, base_url=base_url
+                        )
+                    elif fn == "read_webpage":
+                        out = await self._call_read_webpage_content(
+                            str(args_obj.get("url") or ""),
+                            api_key=api_key,
+                            base_url=base_url,
+                        )
+                    elif fn == "send_meme":
+                        m_name = str(
+                            args_obj.get("name") or args_obj.get("meme") or args_obj.get("tag") or ""
+                        ).strip()
+                        if not settings.get("meme_enabled", True):
+                            out = "当前会话已关闭表情包发送，请直接用纯文字回复，严禁写 [表情: ...] 或 (表情: ...) 标记。"
+                        elif not allow_meme:
+                            out = "当前表情包正在冷却中，请直接用纯文字回复，严禁写 [表情: ...] 或 (表情: ...) 标记。"
+                        else:
                             resolved_m = self._resolve_meme_b64(m_name) if m_name else None
-                            if not settings.get("meme_enabled", True):
-                                tool_out = "当前会话已关闭表情包发送，请直接用纯文字回复，严禁写 [表情: ...] 或 (表情: ...) 标记。"
-                            elif resolved_m:
-                                tool_meme_tag, tool_meme_b64 = resolved_m
-                                tool_out = (
-                                    f"已调用原生表情包「{tool_meme_tag}」并直接以图片形式发送。"
+                            if resolved_m:
+                                meta["meme_tag"], meta["meme_b64"] = resolved_m
+                                out = (
+                                    f"已调用原生表情包「{resolved_m[0]}」并直接以图片形式发送。"
                                     "回复正文中严禁再写 `[表情: ...]` 或 `(表情: ...)` 等任何文字表情标记！"
                                 )
                             else:
-                                tool_out = (
+                                out = (
                                     f"未找到表情包「{m_name}」（可用：{'、'.join(MEME_MAP.keys())}）。"
                                     "请直接用纯文字回复，严禁写 `[表情: ...]` 或 `(表情: ...)` 文字标记！"
                                 )
-                        elif fn == "send_voice":
-                            v_raw = self._clean_reply(
-                                str(args_obj.get("text") or args_obj.get("content") or "").strip()
+                    elif fn == "send_voice":
+                        v_raw = self._clean_reply(
+                            str(args_obj.get("text") or args_obj.get("content") or "").strip(),
+                            user_text=effective_text,
+                            recent_bot_texts=recent_bot_texts,
+                        )
+                        v_txt, _, _ = self._extract_text_and_meme(v_raw)
+                        if v_txt:
+                            sf_key_tool = self._get_config_str("siliconflow_api_key", DEFAULT_SF_API_KEY)
+                            ok_vt = await self._synthesize_and_send_voice(
+                                target_recv_tool,
+                                v_txt,
+                                sf_api_key=sf_key_tool,
+                                api_key=api_key,
+                                base_url=base_url,
                             )
-                            v_txt, _, _ = self._extract_text_and_meme(v_raw)
-                            target_recv_tool = launcher_id if is_group else sender_id
-                            if v_txt:
-                                sf_key_tool = self._get_config_str("siliconflow_api_key", DEFAULT_SF_API_KEY)
-                                ok_vt = await self._synthesize_and_send_voice(
-                                    target_recv_tool,
-                                    v_txt,
-                                    sf_api_key=sf_key_tool,
-                                    api_key=api_key,
-                                    base_url=base_url,
-                                )
-                                if ok_vt:
-                                    voice_sent_in_tool = True
-                                    v_flat = re.sub(r"\s+", " ", v_txt.replace("||", " ")).strip()
-                                    if v_flat and v_flat not in interim_sent_lines:
-                                        interim_sent_lines.append(v_flat)
-                                    tool_out = f"语音「{v_txt}」已发出。"
-                                else:
-                                    tool_out = "语音合成暂不可用，请直接用纯文字回复。"
+                            if ok_vt:
+                                meta["voice_sent"] = True
+                                v_flat = re.sub(r"\s+", " ", v_txt.replace("||", " ")).strip()
+                                if v_flat:
+                                    meta["voice_flat"] = v_flat
+                                out = f"语音「{v_txt}」已发出。"
                             else:
-                                tool_out = "语音文本为空。"
+                                out = "语音合成暂不可用，请直接用纯文字回复。"
                         else:
-                            tool_out = "未知工具"
+                            out = "语音文本为空。"
+                    else:
+                        out = "未知工具"
+                    return out, meta
+
+                # Up to 2 tool-calling hops; execute up to 3 tool calls per hop in parallel via asyncio.gather
+                for hop in range(2):
+                    choice_msg = data.get("choices", [{}])[0].get("message", {}) or {}
+                    hop_tool_calls = choice_msg.get("tool_calls") or []
+                    if not hop_tool_calls:
+                        raw_reply = str(choice_msg.get("content") or "").strip()
+                        break
+
+                    used_any_tools = True
+                    tool_calls = hop_tool_calls
+                    raw_interim_content = str(choice_msg.get("content") or "").strip()
+                    interim_flat = ""
+                    if raw_interim_content:
+                        last_raw_interim = raw_interim_content
+                        cleaned_interim, im_tag, im_b64 = self._extract_text_and_meme(
+                            self._clean_reply(
+                                raw_interim_content,
+                                user_text=effective_text,
+                                recent_bot_texts=recent_bot_texts,
+                            )
+                        )
+                        if im_b64 and allow_meme and not tool_meme_b64:
+                            tool_meme_tag, tool_meme_b64 = im_tag, im_b64
+                        interim_flat = re.sub(r"\s+", " ", cleaned_interim.replace("||", " ")).strip()
+                        if interim_flat and interim_flat not in interim_sent_lines:
+                            interim_sent_lines.append(interim_flat)
+
+                    hop_fn_names = [
+                        ((tc.get("function") or {}).get("name", ""))
+                        for tc in hop_tool_calls[:3]
+                    ]
+                    has_slow_tool = any(n in ("web_search", "read_webpage") for n in hop_fn_names)
+                    if (
+                        hop == 0
+                        and has_slow_tool
+                        and interim_flat
+                        and can_push_interim_now
+                        and interim_flat not in pushed_interim_texts
+                    ):
+                        try:
+                            if await df.send_wcf_text_or_image(target_recv_tool, text=interim_flat):
+                                pushed_interim_texts.append(interim_flat)
+                                self._record_bot_sent(interim_flat, session_key)
+                        except Exception as exc_push:
+                            logger.debug("Interim push before slow tools skipped: %s", exc_push)
+
+                    tool_results = await asyncio.gather(
+                        *[_exec_one_tool(i, tc) for i, tc in enumerate(hop_tool_calls)]
+                    )
+                    messages.append(choice_msg)
+                    for tc, (tool_out, meta) in zip(hop_tool_calls, tool_results):
+                        if meta.get("meme_b64") and not tool_meme_b64:
+                            tool_meme_tag, tool_meme_b64 = meta.get("meme_tag"), meta.get("meme_b64")
+                        if meta.get("voice_sent"):
+                            voice_sent_in_tool = True
+                        v_flat = str(meta.get("voice_flat") or "").strip()
+                        if v_flat and v_flat not in interim_sent_lines:
+                            interim_sent_lines.append(v_flat)
                         messages.append(
                             {
                                 "role": "tool",
@@ -5262,6 +2680,12 @@ class WhaleListener(EventListener):
                                 "content": str(tool_out or "")[:3500],
                             }
                         )
+
+                    # Short-circuit wasted resp2 when ONLY send_meme ran and model already produced substantive interim text
+                    only_send_meme = bool(hop_fn_names) and all(n == "send_meme" for n in hop_fn_names)
+                    if only_send_meme and len(interim_flat) >= 2 and not pushed_interim_texts:
+                        raw_reply = raw_interim_content
+                        break
 
                     # Diana #1577: Remind follow-up turn of already spoken/drafted lines to prevent paraphrased duplicates
                     if interim_sent_lines and messages and messages[-1].get("role") == "tool":
@@ -5272,35 +2696,37 @@ class WhaleListener(EventListener):
                         )
                         messages[-1]["content"] = messages[-1]["content"][:3200] + interim_reminder
 
+                    next_payload: dict[str, Any] = {
+                        "model": model,
+                        "messages": messages,
+                        "temperature": 0.78,
+                        "max_tokens": 800,
+                    }
+                    if hop == 0 and chat_tools:
+                        next_payload["tools"] = chat_tools
+                        next_payload["tool_choice"] = "auto"
                     resp2 = await client.post(
                         f"{base_url}/chat/completions",
                         headers={
                             "Authorization": f"Bearer {api_key}",
                             "Content-Type": "application/json",
                         },
-                        json={
-                            "model": model,
-                            "messages": messages,
-                            "temperature": 0.78,
-                            "max_tokens": 800,
-                        },
+                        json=next_payload,
                     )
                     resp2.raise_for_status()
-                    data2 = resp2.json()
-                    used2 = int((data2.get("usage") or {}).get("total_tokens", 0))
-                    self._record_tokens(used2)
-                    raw_reply = (
-                        data2.get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content")
-                        or ""
-                    ).strip()
-                    if not raw_reply and not voice_sent_in_tool and raw_interim_content:
-                        raw_reply = raw_interim_content
+                    data = resp2.json()
+                    used2 = int((data.get("usage") or {}).get("total_tokens", 0))
+                    await self._record_tokens_safe(used2)
                 else:
-                    raw_reply = (choice_msg.get("content") or "").strip()
+                    final_msg = data.get("choices", [{}])[0].get("message", {}) or {}
+                    raw_reply = str(final_msg.get("content") or "").strip()
 
-                cleaned_reply = self._clean_reply(raw_reply)
+                if not raw_reply and not voice_sent_in_tool and not pushed_interim_texts and last_raw_interim:
+                    raw_reply = last_raw_interim
+
+                cleaned_reply = self._clean_reply(
+                    raw_reply, user_text=effective_text, recent_bot_texts=recent_bot_texts
+                )
                 reply_text, meme_tag, meme_b64 = self._extract_text_and_meme(cleaned_reply)
                 used_send_meme_tool = bool(tool_meme_b64)
                 if tool_meme_b64 and not meme_b64:
@@ -5312,14 +2738,16 @@ class WhaleListener(EventListener):
                 if is_sticker_in:
                     self._start_session_task(session_key, df.steal_incoming_sticker(raw_text, settings, self._stolen_memes, meme_tag))
 
-                user_asked_meme = any(
-                    kw in effective_text for kw in ("表情包", "发个表情", "发张表情", "斗图", "来张图", "发个图")
-                )
                 if temper_meme_tag and not meme_b64:
                     res_tm = self._resolve_meme_b64(temper_meme_tag)
                     if res_tm:
                         meme_tag, meme_b64 = res_tm
-                force_meme = bool(is_sticker_in or user_asked_meme or temper_meme_tag or used_send_meme_tool)
+                force_meme = bool(
+                    is_sticker_in
+                    or user_asked_meme
+                    or temper_meme_tag
+                    or (used_send_meme_tool and allow_meme)
+                )
                 if force_meme and not meme_b64 and self._memes_b64:
                     meme_tag = random.choice(["得意", "干饭", "猫爪", "偷看", "飘了"])
                     meme_b64 = self._memes_b64.get(meme_tag)
@@ -5328,40 +2756,66 @@ class WhaleListener(EventListener):
                     meme_b64 = df.pick_stolen_or_official_meme(meme_tag or "搞笑", meme_b64, settings, self._stolen_memes)
 
                 # Scheme 1: Code-level cooldown (min 4 text turns & 180s interval) + 15% real RNG gate for normal chats
-                turns_since_meme = int(meme_cooldown_state.get("turnsSinceMeme", 99)) + 1
-                last_meme_at = int(meme_cooldown_state.get("lastMemeAt", 0))
-                if not force_meme and meme_b64:
-                    if turns_since_meme < 5 or (int(now) - last_meme_at) < 180 or random.random() >= 0.15:
-                        meme_b64 = None
+                async with self._state_lock:
+                    turns_since_meme = int(meme_cooldown_state.get("turnsSinceMeme", 99)) + 1
+                    last_meme_at = int(meme_cooldown_state.get("lastMemeAt", 0))
+                    if not force_meme and meme_b64:
+                        if turns_since_meme < 5 or (int(now) - last_meme_at) < 180 or random.random() >= 0.15:
+                            meme_b64 = None
 
-                if meme_b64 and settings["meme_enabled"]:
-                    meme_cooldown_state["turnsSinceMeme"] = 0
-                    meme_cooldown_state["lastMemeAt"] = int(now)
-                else:
-                    meme_cooldown_state["turnsSinceMeme"] = turns_since_meme
-                self._save_persistent_state()
+                    if meme_b64 and settings["meme_enabled"]:
+                        meme_cooldown_state["turnsSinceMeme"] = 0
+                        meme_cooldown_state["lastMemeAt"] = int(now)
+                    else:
+                        meme_cooldown_state["turnsSinceMeme"] = turns_since_meme
+                self._mark_state_dirty()
         except Exception as exc:
             logger.warning("Whale persona DeepSeek API call failed: %s", exc)
             if parsed_link_card:
                 self._reply(event_ctx, parsed_link_card, parsed_link_img_b64)
+            elif not is_group or self._is_group_woken(msg_chain, effective_text, ev_raw_obj) or is_quoting_bot:
+                now_err = time.time()
+                last_err_tip = float(self._error_tip_ts.get(session_key, 0.0) or 0.0)
+                if now_err - last_err_tip >= 60.0:
+                    self._lru_set(self._error_tip_ts, session_key, now_err)
+                    err_s = str(exc)
+                    if "401" in err_s or "403" in err_s:
+                        tip_txt = "呜…粮仓钥匙好像失效或者填错啦（401/403），检查下 DeepSeek API Key 呗"
+                    elif "402" in err_s:
+                        tip_txt = "完蛋…DeepSeek 余额好像见底啦（402），得去充点口粮了喂"
+                    elif "429" in err_s:
+                        tip_txt = "慢点慢点，刚才问太急被限流啦（429），歇两秒再喊我"
+                    elif isinstance(exc, httpx.TimeoutException) or "timeout" in err_s.lower():
+                        tip_txt = "信号飘了，等半天没连上服务器（超时），待会儿再戳我试试"
+                    else:
+                        tip_txt = "信号突然卡住啦，暂时没连上脑瓜子，过会儿再叫我~"
+                    if is_group:
+                        await self._reply_group_no_at(event_ctx, launcher_id, tip_txt)
+                    else:
+                        self._reply(event_ctx, tip_txt)
             return
 
         if parsed_link_card:
             reply_text_clean = reply_text.replace("||", " ")
             reply_text = f"{parsed_link_card}\n━━━━━━━━━━━━━━\n🐟 大肥鱼：{reply_text_clean}" if reply_text_clean else parsed_link_card
 
-        if not reply_text and not meme_b64 and not parsed_link_img_b64 and not voice_sent_in_tool:
+        if not reply_text and not meme_b64 and not parsed_link_img_b64 and not voice_sent_in_tool and not pushed_interim_texts:
             return
 
-        allow_split = not (parsed_link_card or is_file_in or bool(tool_calls))
+        allow_split = not (parsed_link_card or is_file_in or used_any_tools)
         was_multi = self._last_multi_bubble.get(session_key, False)
         bubbles = self._split_reply_bubbles(
             reply_text, allow_split=allow_split, last_was_multi=was_multi
         )
-        self._last_multi_bubble[session_key] = len(bubbles) > 1
+        self._lru_set(self._last_multi_bubble, session_key, len(bubbles) > 1)
         reply_flat = " ".join(bubbles) if bubbles else reply_text
         if not reply_flat and voice_sent_in_tool and interim_sent_lines:
             reply_flat = " ".join(interim_sent_lines)
+        hist_reply_entry = (
+            " ".join([*pushed_interim_texts, reply_flat]).strip()
+            if pushed_interim_texts
+            else reply_flat
+        )
 
         if not vision_desc_for_history and vision_b64:
             vision_desc_for_history = self._lookup_cached_vision_desc(vision_b64)
@@ -5373,40 +2827,22 @@ class WhaleListener(EventListener):
             )
         hist_entry_user = f"[{sender_name}] {hist_user_text}" if is_group else hist_user_text
         history.append((now, "user", hist_entry_user))
-        history.append((now, "assistant", reply_flat))
+        history.append((now, "assistant", hist_reply_entry))
         if len(history) > max_turns * 2:
             history = history[-(max_turns * 2) :]
-        self._histories[session_key] = history
-
-        prev_conv = self._group_active_conv.get(session_key) or {}
-        is_anon_speaker = (
-            not sender_name
-            or sender_name in ("这位群友", "群友", "朋友")
-            or sender_name.lower().startswith("wxid_")
-        )
-        no_at_group_reply = bool(
-            is_group
-            and (
-                is_anon_speaker
-                or (
-                    prev_conv.get("last_speaker_id") == sender_id
-                    and (now - float(prev_conv.get("last_bot_ts", 0.0))) <= 60.0
-                    and not self._is_group_woken(msg_chain, effective_text, ev_raw_obj)
-                )
-            )
-        )
+        self._lru_set(self._histories, session_key, history)
 
         if is_group:
             df.append_group_context_line(
                 self._group_msg_buffers,
                 session_key,
                 "__self__",
-                reply_flat[:100],
+                hist_reply_entry[:100],
                 sender_name="大肥鱼",
                 is_self=True,
                 now_ts=now,
             )
-            self._record_group_bot_activity(session_key, sender_id, reply_flat)
+            self._record_group_bot_activity(session_key, sender_id, hist_reply_entry)
             self._start_session_task(session_key,
                 self._async_post_group_turn_judge(
                     api_key=api_key,
@@ -5415,13 +2851,14 @@ class WhaleListener(EventListener):
                     group_id=launcher_id,
                     expected_state=g_state,
                     user_text=hist_entry_user,
-                    reply_text=reply_flat,
+                    reply_text=hist_reply_entry,
                     sender_id=sender_id,
                     sender_name=sender_name,
                 )
             )
         else:
-            self._record_bot_sent(reply_flat, session_key)
+            if reply_flat:
+                self._record_bot_sent(reply_flat, session_key)
             self._start_session_task(session_key,
                 self._async_post_turn_judge(
                     api_key=api_key,
@@ -5430,26 +2867,37 @@ class WhaleListener(EventListener):
                     user_id=sender_id,
                     expected_state=u,
                     user_text=hist_user_text,
-                    reply_text=reply_flat,
+                    reply_text=hist_reply_entry,
                 )
             )
 
         send_b64 = parsed_link_img_b64 or (meme_b64 if settings["meme_enabled"] else None)
         target_recv = launcher_id if is_group else sender_id
 
+        if pushed_interim_texts and not reply_text and not send_b64:
+            event_ctx.prevent_default()
+            return
+
         # Direction 4: WeChat 4.1 Native SILK v3 Voice Replies (TTS -> /api/send_voice)
+        cur_mood_for_voice = int(
+            (g_state if is_group else u).get("mood", 75 if is_group else 70)
+        )
         should_send_voice = False
         if user_asked_voice:
             should_send_voice = True
         elif (
             settings["voice_reply_enabled"]
-            and not (parsed_link_card or is_file_in or bool(tool_calls))
+            and not (parsed_link_card or is_file_in or used_any_tools)
             and self._is_suitable_for_random_voice(reply_flat)
         ):
             if is_voice_in:
                 should_send_voice = random.random() < (0.25 if is_group else 0.45)
-            elif 6 <= len(reply_flat) <= 36:
-                should_send_voice = random.random() < (0.06 if is_group else 0.10)
+            elif (
+                not is_group
+                and cur_mood_for_voice >= 65
+                and 6 <= len(reply_flat) <= 36
+            ):
+                should_send_voice = random.random() < 0.03
 
         if should_send_voice and reply_flat and not voice_sent_in_tool:
             sf_key = self._get_config_str("siliconflow_api_key", DEFAULT_SF_API_KEY)
@@ -5468,22 +2916,13 @@ class WhaleListener(EventListener):
             event_ctx.prevent_default()
             return
 
-        if len(bubbles) <= 1:
-            first_txt = bubbles[0] if bubbles else reply_text
-            if no_at_group_reply:
-                await self._reply_group_no_at(event_ctx, launcher_id, first_txt, send_b64)
-            else:
-                self._reply(event_ctx, first_txt, send_b64)
-        else:
-            if no_at_group_reply:
-                await self._reply_group_no_at(event_ctx, launcher_id, bubbles[0], None)
-            else:
-                self._reply(event_ctx, bubbles[0], None)
-            self._start_session_task(session_key,
-                self._send_followup_bubbles(
-                    target_recv,
-                    bubbles[1:],
-                    send_b64,
-                    is_group=is_group, bot_uuid=bot_uuid,
-                )
-            )
+        await self._send_unified_bubbles(
+            event_ctx,
+            session_key=session_key,
+            target_id=target_recv,
+            bubbles=bubbles,
+            image_b64=send_b64,
+            is_group=is_group,
+            bot_uuid=bot_uuid,
+            fallback_text=reply_text,
+        )

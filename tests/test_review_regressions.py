@@ -168,6 +168,10 @@ class ListenerRegressions(ListenerHarness):
         self.assertEqual(self.requests, [])
 
     async def test_public_moment_does_not_use_private_memory_or_mood_reason(self):
+        prior_cfg = self.listener._get_config_str
+        self.listener._get_config_str = lambda key, default: (
+            "wxid_test" if key == "owner_ids" else prior_cfg(key, default)
+        )
         self.listener._state["users"]["wxid_test"] = {
             "hasPrivateChat": True, "facts": ["PRIVATE-FACT-SENTINEL"],
             "archive": {"一": ["PRIVATE-ARCHIVE-SENTINEL"]},

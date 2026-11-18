@@ -25,6 +25,7 @@ SWITCHES = (
     Switch("voice_reply_enabled", "语音", ("语音",)),
     Switch("steal_meme_enabled", "偷图", ("偷图",)),
     Switch("auto_moments_enabled", "自动朋友圈", ("自动朋友圈",), "global"),
+    Switch("moments_auto_interact_enabled", "朋友圈互动", ("朋友圈互动", "朋友圈自动互动"), "global"),
     Switch("auto_accept_friend_enabled", "自动同意好友", ("自动同意好友", "自动加好友", "自动通过好友"), "global"),
 )
 DEFAULTS: dict[str, Any] = {
@@ -86,8 +87,21 @@ def effective_settings(state: dict[str, Any], scope: str) -> dict[str, Any]:
     settings = {key: state.get(key, default) for key, default in DEFAULTS.items()}
     overrides = (state.get("conversation_settings") or {}).get(scope) or {}
     settings.update(overrides)
-    has_profile_override = any(k in overrides for k in { key for p in PROFILES.values() for key in p })
-    settings["profile"] = overrides.get("profile", "自定义" if has_profile_override else "沿用原设置")
+    has_profile_override = any(k in overrides for k in {key for p in PROFILES.values() for key in p})
+    if "profile" in overrides:
+        settings["profile"] = overrides["profile"]
+    elif not has_profile_override:
+        settings["profile"] = "沿用原设置"
+    else:
+        settings["profile"] = next(
+            (
+                p_name
+                for p_name, p_vals in PROFILES.items()
+                if all(settings.get(k) == v for k, v in p_vals.items())
+                and settings.get("explicit_only") == p_vals.get("explicit_only")
+            ),
+            "自定义",
+        )
     return settings
 
 
@@ -166,7 +180,7 @@ def settings_text(state: dict[str, Any], scope: str, *, advanced: bool = False) 
     lines.extend([
         "调整：大肥鱼 设置 <项目> 开启/关闭；大肥鱼 设置 模式 活人/甜宠",
         "查询：大肥鱼 心情 / 粮仓 / 搭话记录 / 表情库",
-        "记忆维护：大肥鱼 记住 <内容> / 整理档案 / 失忆",
+        "记忆维护：大肥鱼 记住 <内容> / 忘掉 <关键词> / 整理档案 / 失忆",
         "点播：大肥鱼 语音 <内容> / 表情 <名称> / 点歌 <歌名>",
         "动态与好友：大肥鱼 发朋友圈 [主题] / 朋友圈 / 刷朋友圈 / 点赞 / 好友申请",
     ])
@@ -193,6 +207,9 @@ def handle_control(
         return settings_text(state, scope, advanced=action == "advanced"), False
     if action == "invalid":
         return "设置可选：安静 / 均衡 / 热闹 / 高级；项目开关示例：大肥鱼 设置 语音 关闭", False
+    if is_group and required_scope == "person" and key == "speak_up_enabled":
+        key = "group_interject_enabled"
+        required_scope = "group"
     if required_scope in ("group", "person") and (required_scope == "group") != is_group:
         return f"这项设置只支持{'群聊' if required_scope == 'group' else '私聊'}，请在对应聊天中修改", False
     if required_scope == "global":
@@ -201,7 +218,9 @@ def handle_control(
             return f"{label}是全局设置，请由主人在私聊中修改", False
         owners = set(re.split(r"[,，;；\s]+", owner_ids.strip())) - {""}
         if sender_id not in owners:
-            return f"仅主人可修改全局{label}，请先在插件配置 owner_ids 中填写主人账号 ID", False
+            if not owners:
+                return f"仅主人可修改全局{label}，请先在插件配置 owner_ids 中填写主人账号 ID（你当前的账号 ID 为：{sender_id}）", False
+            return f"仅主人可修改全局{label}，当前账号无权操作", False
         state[key] = value
         return f"已更新全局设置：{label}{'开启' if value else '关闭'}", True
     overrides = state.setdefault("conversation_settings", {}).setdefault(scope, {})
