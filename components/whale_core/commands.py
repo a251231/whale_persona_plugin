@@ -981,6 +981,8 @@ class CommandMixin:
                         if _add_dedup_fact(u.setdefault("facts", []), fact_to_add, max_len=25):
                             u["factsSinceArchive"] = int(u.get("factsSinceArchive", 0)) + 1
                     self._mark_state_dirty(immediate=True)
+                if not is_group:
+                    self._flush_memory_recall_cache(sender_id)
                 if is_group:
                     self._reply(event_ctx, f"记进咱们群的群聊档案里啦：「{fact_to_add}」")
                 else:
@@ -1058,6 +1060,8 @@ class CommandMixin:
                 if removed_cnt > 0:
                     self._mark_state_dirty(immediate=True)
             if removed_cnt > 0:
+                if not is_group:
+                    self._flush_memory_recall_cache(sender_id)
                 self._reply(event_ctx, f"好嘞，已经把包含「{kw}」的 {removed_cnt} 条相关记忆划掉啦~")
             else:
                 self._reply(event_ctx, f"翻遍记忆本也没找到包含「{kw}」的记录呀（如果想全清空可用「大肥鱼 失忆」）")

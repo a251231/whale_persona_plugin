@@ -53,10 +53,13 @@ __all__ = [
     "SERIOUS_MOMENT_KEYWORDS",
     "TAUNT_KEYWORDS",
     "check_and_update_temper_state",
+    "compare_memory_recall_key",
+    "compute_memory_query_metrics",
     "compute_memory_query_overlap",
     "format_daily_schedule_line",
     "get_or_create_daily_schedule",
     "is_serious_or_sad_moment",
+    "normalize_mood_judge_delta",
     "strip_memory_query_noise",
 ]
 
@@ -95,6 +98,17 @@ MEMORY_STOP_BIGRAMS: frozenset[str] = frozenset({
 })
 
 
+_NAME_PREFIX_COMMON_SKIP: frozenset[str] = frozenset({
+    "大小", "多少", "好坏", "老是", "小心", "大家", "老板", "老师",
+    "老婆", "老公", "小时", "小说", "小事", "老家", "小鱼",
+})
+_STOP_WINDOW_FRAGMENTS: tuple[str, ...] = (
+    "我是", "你是", "这是", "那是", "我在", "你在", "今天", "明天", "昨天",
+    "现在", "刚才", "刚刚", "什么", "怎么", "为什么", "可以", "不是", "没有",
+    "一个", "一下", "一点", "觉得", "知道", "告诉", "已经",
+)
+
+
 def strip_memory_query_noise(query_text: str) -> str:
     """Strips quote headers, share/file wrappers, XML/msg tags, and wake prefixes before memory recall
     so quoted speaker names or protocol wrappers do not pollute recall scoring (dsh-fish-memory v1.6.0 & Diana #1513).
@@ -111,34 +125,47 @@ def strip_memory_query_noise(query_text: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def compute_memory_query_overlap(query_text: str, candidate_text: str) -> float:
-    """Computes relevance score between a user query and a memory fact/event/chapter:
-    - Uses 2-gram CJK words and alphanumeric words as primary clues.
+def compute_memory_query_metrics(query_text: str, candidate_text: str) -> tuple[float, int, int]:
+    """Computes `(overlap_score, hit_count, hit_char_len)` between a user query and a memory candidate:
+    - Uses 2-gram CJK words, 3~4 char CJK proper-noun windows / `[阿小老]X` name prefixes (v1.6.2),
+      and alphanumeric tokens as multi-char clues.
     - Never allows single-character stop-word or isolated 1-char coincidence in multi-char queries
       to trigger false-positive recall (aligning with dsh-fish-memory v1.6.0 & Diana #1513).
     """
     q = strip_memory_query_noise(query_text).lower()
     cand = (candidate_text or "").lower()
     if not q or not cand:
-        return 0.0
+        return 0.0, 0, 0
 
     cjk_runs = re.findall(r"[\u4e00-\u9fff]{2,}", q)
     bigrams: set[str] = set()
+    proper_clues: set[str] = set()
     for run in cjk_runs:
-        for i in range(len(run) - 1):
+        run_len = len(run)
+        for i in range(run_len - 1):
             bg = run[i : i + 2]
-            if bg in MEMORY_STOP_BIGRAMS:
+            if bg not in MEMORY_STOP_BIGRAMS and bg[0] not in MEMORY_STOP_CHARS and bg[1] not in MEMORY_STOP_CHARS:
+                bigrams.add(bg)
+            if bg[0] in ("阿", "小", "老") and bg[1] not in MEMORY_STOP_CHARS and bg not in _NAME_PREFIX_COMMON_SKIP:
+                proper_clues.add(bg)
+        for win_len in (3, 4):
+            if run_len < win_len:
                 continue
-            if bg[0] in MEMORY_STOP_CHARS or bg[1] in MEMORY_STOP_CHARS:
-                continue
-            bigrams.add(bg)
+            for i in range(run_len - win_len + 1):
+                win = run[i : i + win_len]
+                if win in MEMORY_STOP_BIGRAMS or any(frag in win for frag in _STOP_WINDOW_FRAGMENTS):
+                    continue
+                if sum(1 for ch in win if ch not in MEMORY_STOP_CHARS) >= 2:
+                    proper_clues.add(win)
 
     ascii_tokens = {
         tk for tk in re.findall(r"[a-z0-9_]{2,}", q) if tk not in ("http", "https", "www", "com")
     }
 
-    bigram_hits = sum(1 for bg in bigrams if bg in cand)
-    token_hits = sum(1 for tk in ascii_tokens if tk in cand)
+    matched_bigrams = {bg for bg in bigrams if bg in cand}
+    matched_proper = {pc for pc in proper_clues if pc in cand}
+    matched_ascii = {tk for tk in ascii_tokens if tk in cand}
+    extra_proper = matched_proper - matched_bigrams
 
     content_chars = {
         ch for ch in re.findall(r"[\u4e00-\u9fff]", q) if ch not in MEMORY_STOP_CHARS
@@ -147,12 +174,38 @@ def compute_memory_query_overlap(query_text: str, candidate_text: str) -> float:
 
     compact_q_len = len(re.sub(r"\s+", "", q))
     # In normal multi-character queries (>2 chars), single-character matches alone cannot trigger recall
-    if bigram_hits == 0 and token_hits == 0:
+    if not matched_bigrams and not matched_ascii and not extra_proper:
         if compact_q_len <= 2 and char_hits > 0:
-            return float(char_hits)
-        return 0.0
+            return float(char_hits), char_hits, char_hits
+        return 0.0, 0, 0
 
-    return float(bigram_hits * 2.0 + token_hits * 2.5 + char_hits * 0.25)
+    all_multi_hits = matched_bigrams | matched_proper | matched_ascii
+    hit_count = len(all_multi_hits)
+    hit_char_len = sum(len(k) for k in all_multi_hits)
+    overlap_score = float(
+        len(matched_bigrams) * 2.0
+        + len(matched_ascii) * 2.5
+        + len(extra_proper) * 1.8
+        + char_hits * 0.25
+    )
+    return overlap_score, hit_count, hit_char_len
+
+
+def compute_memory_query_overlap(query_text: str, candidate_text: str) -> float:
+    """Computes relevance score between a user query and a memory fact/event/chapter."""
+    return compute_memory_query_metrics(query_text, candidate_text)[0]
+
+
+def compare_memory_recall_key(
+    overlap: float,
+    hit_count: int,
+    hit_char_len: int,
+    priority_score: float,
+) -> tuple[float, int, int, float]:
+    """Multi-level recall sort key (dsh-fish-memory v1.6.2):
+    rounded overlap DESC -> hit_count DESC -> hit_char_len DESC -> priority_score DESC.
+    """
+    return (round(float(overlap), 3), int(hit_count), int(hit_char_len), float(priority_score))
 DAILY_WAKE_POOL: tuple[str, ...] = (
     "早上 8:20 被饿醒的",
     "上午 9:10 赖床赖到闹钟响了三次才爬起来",
@@ -544,7 +597,7 @@ ARCHIVE_CHAPTERS: dict[str, str] = {
 }
 MOOD_JUDGE_SYSTEM = """你是「大肥鱼」（用户的赛博伴侣）。下面给你刚刚发生的一轮私聊微信对话（按真实先后顺序：对方先说、你后回），请判断这一轮里你的心情和八维情绪发生了怎样的变化（既包括对方的话怎么影响你，也包括你自己这轮念叨、顶嘴、心疼或得意的情绪），同时判断是否有需要长期记住（一周后依然有用）的关于用户的事实或双方约定。
 只输出一个合法的 JSON 对象，不要 markdown 代码块，不要任何多余文字：
-{"moodDelta":0,"dims":{"happy":0,"calm":0,"sweet":0,"heartache":0,"worry":0,"sad":0,"jealous":0,"angry":0},"reason":"","confidence":80,"memory_fact":"","memory_event":""}
+{"moodDelta":0,"subject":"owner","dims":{"happy":0,"calm":0,"sweet":0,"heartache":0,"worry":0,"sad":0,"jealous":0,"angry":0},"reason":"","confidence":80,"memory_fact":"","memory_event":""}
 
 规则：
 1. 对方累/困/烦/卡住/加班/没吃好/熬夜/受委屈/不舒服 → heartache(心疼)和worry(担心)增加(+2~+6)，moodDelta为负，按轻重分档：
@@ -553,12 +606,76 @@ MOOD_JUDGE_SYSTEM = """你是「大肥鱼」（用户的赛博伴侣）。下面
 2. 真的好事才明显加分：对方夸你/哄你/撒娇说想你/起可爱的专属称呼/分享开心大事/给你投喂 → happy(开心)、calm(踏实)、sweet(甜蜜)增加(+2~+6)，moodDelta为正(+2~+5)。
    - ⚠️「对方吃了、睡了、报平安」这类日常常态不算大事：moodDelta 给 0~+1（大多数给 0，心里确实踏实给 +1），calm/sweet 可 +1~+2，大心情几乎不动。
 3. 对方提别的AI（如Claude/豆包/Qwen）或夸别人 → jealous(吃醋)增加(+1~+4)，moodDelta基本不动。
+3b. ⭐ 先判断这一轮的情绪主角 `subject`（四选一，全部小写）：
+   - `owner`：被夸、被呛、被冷落、累了烦了、受委屈或聊到正主的那个人是对方本人；
+   - `self`：这一轮跟你自己有关（事办成了/没办成、自己被夸或受挫）；
+   - `other`：对方只是在讲第三个人/朋友/同事之间的比较或闹别扭（你和对方都没掺和进去）；
+   - `none`：纯闲聊、天气、普通八卦，没有谁被针对。
+   ⛔ 只要 `subject` 是 `other` 或 `none`：`moodDelta` 必须给 `0`，除 `calm`/`happy` 最多 `+1` 外其余情绪维（`sweet`/`heartache`/`worry`/`sad`/`jealous`/`angry`）一律给 `0`（绝不替第三个人心酸、吃醋或难过）。
 4. 心情下降只能因为心疼/担心对方，或者你自己这一轮过得不好（事情没办成、白忙一场、心里委屈），绝不因对方逗你玩（比如叫你胖鱼、互怼打闹）而真降心情（打闹互怼算亲近，happy/sweet可+1~+3，moodDelta可+1~+2）。
 5. 生气(angry)只对「事」不对「人」：事情卡住、白忙一场、反复报错、被人无理顶撞（那个人不是对方）、或替对方打抱不平（对方被欺负/受委屈时，heartache和angry可同时涨 +2~+8）时可增加(+2~+10)；绝对禁止因为对方本人（撒娇、闹脾气、说重话、熬夜）判成angry！angry不单独拉低moodDelta。
 6. reason 用一句简短过去式中文描述：「对方…，我当时…」（如「对方大半夜还没睡跑来喊我，我当时嘴上嫌烦心里有点挂心」），不要用现在时。
 7. memory_fact：严格按【唯一的尺子：「过了一个星期再看，这条还有用吗？」】判断！只收用户长期稳定的个人事实/性格/喜好/病史/习惯/双方定下的规矩称呼（用第三人称写一句简短事实）；**凡是对方主动告诉你的名字、昵称、小名或希望你对TA的称呼，必须优先提取记入 memory_fact**；严禁把大肥鱼自己的设定或口头禅（如爱吃大白饭、偷吃token、流线型身材、怕打雷虫子、讨厌香菜等）写进用户的 memory_fact 里，也不要给用户乱贴负面标签；某天吃了啥、几点睡、助手单方面的猜测劝说一律不收，填 ""。
 8. memory_event：如果这轮发生了今天值得一提的具体事件/转折，写一句简短事件；日常普通闲聊问候一律填 ""。"""
 MOOD_JUDGE_SYSTEM_PROMPT = MOOD_JUDGE_SYSTEM
+
+_MOOD_SUBJECT_ALIASES: dict[str, str] = {
+    "她": "owner",
+    "他": "owner",
+    "你": "owner",
+    "对方": "owner",
+    "用户": "owner",
+    "主人": "owner",
+    "owner": "owner",
+    "我": "self",
+    "自己": "self",
+    "本鱼": "self",
+    "self": "self",
+    "别人": "other",
+    "其他人": "other",
+    "第三人": "other",
+    "他人": "other",
+    "other": "other",
+    "没谁": "none",
+    "闲聊": "none",
+    "none": "none",
+}
+
+
+def normalize_mood_judge_delta(obj: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalizes mood judge JSON output with 4-way emotional protagonist gating (`dsh-feiyu-mood v0.9.5`).
+
+    When ``subject`` resolves to ``other`` or ``none``, clamps ``moodDelta`` to ``0`` and zeroes out
+    all dims except ``calm`` and ``happy`` (each clamped to ``0..1``) so third-party stories never
+    trigger phantom jealousy, sorrow, or heartbreak.
+    """
+    data = obj if isinstance(obj, dict) else {}
+    raw_subj = str(data.get("subject") or "").strip().lower()
+    subject = _MOOD_SUBJECT_ALIASES.get(raw_subj, "owner")
+
+    try:
+        mood_delta = int(_clamp(round(float(data.get("moodDelta", 0) or 0)), -8, 8))
+    except (TypeError, ValueError):
+        mood_delta = 0
+
+    raw_dims = data.get("dims") if isinstance(data.get("dims"), dict) else {}
+    dims: dict[str, int] = {}
+    for k, _ in DIMS:
+        try:
+            raw_dv = float(raw_dims.get(k, 0) or 0)
+        except (TypeError, ValueError):
+            raw_dv = 0.0
+        dims[k] = int(_clamp(round(raw_dv), -10, 10))
+
+    if subject in ("other", "none"):
+        mood_delta = 0
+        for k, _ in DIMS:
+            if k in ("calm", "happy"):
+                dims[k] = max(0, min(1, dims[k]))
+            else:
+                dims[k] = 0
+
+    return {"subject": subject, "moodDelta": mood_delta, "dims": dims}
 GROUP_MOOD_JUDGE_SYSTEM = """你是微信群里的「大肥鱼」。下面给你这个微信群刚刚发生的一轮群聊互动，请判断你在本群的气氛心情变化，以及是否有值得记入【本群公共群聊档案】（一周后依然有用）的群内共同梗、群氛围特征、群重要事件，或对当前说话群友的性格/互动标签印象。
 只输出一个合法的 JSON 对象，不要代码块，不要多余文字：
 {"moodDelta":0,"reason":"","group_fact":"","group_event":"","member_tag":""}
@@ -766,9 +883,74 @@ class MoodMemoryMixin:
             )
         )
 
-    def _recall_memories(self, u: dict[str, Any], query_text: str) -> str:
+    def _flush_memory_recall_cache(self, user_or_session_id: str = "") -> None:
+        """Clears cached recall turns when memories are added, forgotten, or consolidated (`dsh-fish-memory v1.6.2`)."""
+        store = getattr(self, "_recent_memory_injections", None)
+        if not isinstance(store, dict) or not store:
+            return
+        key = str(user_or_session_id or "").strip()
+        if not key:
+            store.clear()
+            return
+        store.pop(key, None)
+        if not key.startswith("person:"):
+            store.pop(f"person:{key}", None)
+        else:
+            store.pop(key.split(":", 1)[1], None)
+
+    def _recall_memories(
+        self,
+        u: dict[str, Any],
+        query_text: str,
+        *,
+        current_turn_text: str | None = None,
+        session_id: str = "",
+        repeat_window: int = 15,
+    ) -> str:
         archive: dict[str, list[str]] = u.get("archive") or {}
         now_ms = time.time() * 1000.0
+        fact_query = query_text if current_turn_text is None else current_turn_text
+        context_borrowed = current_turn_text is not None and query_text != current_turn_text
+
+        # Track per-session user-message turns for v1.6.3 15-turn non-repetition window
+        seen_map: dict[str, int] = {}
+        cur_turn = 0
+        sig = df.strip_memory_query_noise(fact_query) if session_id else ""
+        if session_id and repeat_window > 0 and sig:
+            inj_store = getattr(self, "_recent_memory_injections", None)
+            if not isinstance(inj_store, dict):
+                inj_store = {}
+                try:
+                    self._recent_memory_injections = inj_store
+                except Exception:
+                    pass
+            inj_entry = inj_store.get(session_id)
+            if not isinstance(inj_entry, dict):
+                inj_entry = {"turn": 0, "last_sig": "", "seen": {}}
+                inj_store[session_id] = inj_entry
+                if len(inj_store) > 256:
+                    oldest_k = next(iter(inj_store), None)
+                    if oldest_k is not None and oldest_k != session_id:
+                        inj_store.pop(oldest_k, None)
+            if sig != inj_entry.get("last_sig"):
+                inj_entry["last_sig"] = sig
+                inj_entry["turn"] = int(inj_entry.get("turn", 0) or 0) + 1
+            cur_turn = int(inj_entry.get("turn", 0) or 0)
+            seen_map = inj_entry.setdefault("seen", {})
+            if len(seen_map) > 400:
+                for sk in [k for k, v in seen_map.items() if (cur_turn - int(v or 0)) > max(200, repeat_window * 4)]:
+                    seen_map.pop(sk, None)
+
+        def _norm_mem_key(s: str) -> str:
+            return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+        def _is_recently_repeated(text_str: str) -> bool:
+            if not session_id or repeat_window <= 0 or cur_turn <= 0 or not seen_map:
+                return False
+            prev = seen_map.get(_norm_mem_key(text_str))
+            if prev is None:
+                return False
+            return 0 < (cur_turn - int(prev)) < repeat_window
 
         # Collect facts + stable_profile + structured memories without dropping stable_profile or high-importance entries (v1.6.1)
         raw_fact_entries: list[tuple[str, bool]] = []
@@ -797,29 +979,43 @@ class MoodMemoryMixin:
                 if not merged:
                     raw_fact_entries.append((txt, is_core_item))
 
-        scored_facts: list[tuple[float, float, bool, int, str]] = []
+        scored_facts: list[tuple[float, float, bool, int, str, float, int, int]] = []
         total_f = max(1.0, float(len(raw_fact_entries)))
         for idx, (f_txt, is_core) in enumerate(raw_fact_entries):
-            raw_ov = df.compute_memory_query_overlap(query_text, f_txt)
+            raw_ov, hit_n, hit_len = compute_memory_query_metrics(fact_query, f_txt)
             overlap = min(1.0, raw_ov / 4.0)
             recency = (idx + 1) / total_f
             score = (0.55 if is_core else 0.0) + 0.65 * overlap + 0.35 * recency
-            scored_facts.append((score, raw_ov, is_core, idx, f_txt))
-        scored_facts.sort(key=lambda x: x[0], reverse=True)
+            scored_facts.append((score, raw_ov, is_core, idx, f_txt, overlap, hit_n, hit_len))
+        scored_facts.sort(key=lambda x: compare_memory_recall_key(x[5], x[6], x[7], x[0]), reverse=True)
 
-        selected_fact_map: dict[int, str] = {
-            idx: f_txt for _, _, _, idx, f_txt in scored_facts[:6]
-        }
-        # Guarantee stable_profile / core / high-importance facts are never dropped when crowded out by ordinary facts
-        core_candidates = [item for item in scored_facts if item[2]]
-        for _, _, _, idx, f_txt in core_candidates[:4]:
-            if len(selected_fact_map) >= 8 and idx not in selected_fact_map:
-                break
-            selected_fact_map.setdefault(idx, f_txt)
-        picked_facts = [selected_fact_map[k] for k in sorted(selected_fact_map.keys())]
+        eligible_facts = [
+            item for item in scored_facts if item[2] or not _is_recently_repeated(item[4])
+        ]
+        if context_borrowed:
+            # Borrowed prior-turn context must never pull in facts that do not match the current turn sentence
+            eligible_facts = [item for item in eligible_facts if item[1] > 0.0]
+            selected_fact_items = list(eligible_facts[:4])
+        elif current_turn_text is not None:
+            selected_fact_items = [item for item in eligible_facts if item[1] > 0.0][:4]
+        else:
+            selected_fact_map: dict[int, tuple[str, bool]] = {
+                idx: (f_txt, is_core) for _, _, is_core, idx, f_txt, _, _, _ in eligible_facts[:6]
+            }
+            # Guarantee stable_profile / core / high-importance facts are never dropped when crowded out by ordinary facts
+            core_candidates = [item for item in eligible_facts if item[2]]
+            for _, _, is_core, idx, f_txt, _, _, _ in core_candidates[:4]:
+                if len(selected_fact_map) >= 8 and idx not in selected_fact_map:
+                    break
+                selected_fact_map.setdefault(idx, (f_txt, is_core))
+            picked_facts_with_core = [selected_fact_map[k] for k in sorted(selected_fact_map.keys())]
+            selected_fact_items = []
+        if current_turn_text is not None:
+            selected_fact_items.sort(key=lambda x: x[3])
+            picked_facts_with_core = [(item[4], item[2]) for item in selected_fact_items]
 
         events_list: list[Any] = list(u.get("events") or [])
-        scored_events: list[tuple[float, float, bool, int, str, str]] = []
+        scored_events: list[tuple[float, float, bool, int, str, str, float, int, int]] = []
         for idx, ev in enumerate(events_list):
             if isinstance(ev, dict):
                 text = str(ev.get("text") or ev.get("content") or "").strip()
@@ -835,18 +1031,24 @@ class MoodMemoryMixin:
                 continue
             age_days = max(0.0, (now_ms - ts) / 86400000.0)
             freshness = math.exp(-(math.log(2.0) * age_days) / 30.0)
-            raw_ov = df.compute_memory_query_overlap(query_text, text)
+            raw_ov, hit_n, hit_len = compute_memory_query_metrics(query_text, text)
             overlap = min(1.0, raw_ov / 4.0)
             score = 0.55 + (0.45 if is_high_ev else 0.0) + 0.30 * freshness + 0.65 * overlap
-            scored_events.append((score, raw_ov, is_high_ev, idx, date_str, text))
+            scored_events.append((score, raw_ov, is_high_ev, idx, date_str, text, overlap, hit_n, hit_len))
 
-        scored_events.sort(key=lambda x: (x[1] > 0.0, x[2], x[0], x[3]), reverse=True)
-        top_ev_slice = list(scored_events[:4])
-        if len(scored_events) > 4 and not any(item[2] for item in top_ev_slice):
-            high_ev_extra = next((item for item in scored_events[4:] if item[2]), None)
+        scored_events.sort(
+            key=lambda x: (x[1] > 0.0, x[2], *compare_memory_recall_key(x[6], x[7], x[8], x[0]), x[3]),
+            reverse=True,
+        )
+        eligible_events = [
+            item for item in scored_events if item[2] or not _is_recently_repeated(item[5])
+        ]
+        top_ev_slice = list(eligible_events[:4])
+        if len(eligible_events) > 4 and not any(item[2] for item in top_ev_slice):
+            high_ev_extra = next((item for item in eligible_events[4:] if item[2]), None)
             if high_ev_extra is not None:
                 top_ev_slice.append(high_ev_extra)
-        picked_events = [(sc, d_str, e_txt) for sc, _, _, _, d_str, e_txt in top_ev_slice]
+        picked_events = [(item[0], item[4], item[5], item[2]) for item in top_ev_slice]
 
         lines: list[str] = []
         extra_profile_arch = [
@@ -863,37 +1065,48 @@ class MoodMemoryMixin:
             if ch_key in ("一", "二", "三", "五", "七"):
                 picked_ch: list[str] = []
                 for it in ch_items:
-                    ov = df.compute_memory_query_overlap(query_text, it)
+                    ov = compute_memory_query_metrics(fact_query, it)[0]
                     if ov > 0.0 and it not in picked_ch:
                         picked_ch.append(it)
-                for it in ch_items:
-                    if self._is_high_importance_or_profile_entry(it) and it not in picked_ch:
-                        picked_ch.append(it)
-                for it in ch_items[-2:]:
-                    if it not in picked_ch:
-                        picked_ch.append(it)
+                if current_turn_text is None:
+                    for it in ch_items:
+                        if self._is_high_importance_or_profile_entry(it) and it not in picked_ch:
+                            picked_ch.append(it)
+                    for it in ch_items[-2:]:
+                        if it not in picked_ch:
+                            picked_ch.append(it)
                 picked_ch = picked_ch[-4:]
             else:
-                scored_ch: list[tuple[float, int, str]] = []
+                scored_ch: list[tuple[float, int, str, float, int, int, float]] = []
                 n_ch = max(1.0, float(len(ch_items)))
                 for i, it in enumerate(ch_items):
-                    ov = min(1.0, df.compute_memory_query_overlap(query_text, it) / 4.0)
+                    raw_ov_c, hit_n_c, hit_len_c = compute_memory_query_metrics(query_text, it)
+                    ov = min(1.0, raw_ov_c / 4.0)
                     core_boost = 0.35 if self._is_high_importance_or_profile_entry(it) else 0.0
                     sc = core_boost + 0.70 * ov + 0.30 * ((i + 1) / n_ch)
-                    scored_ch.append((sc, i, it))
-                scored_ch.sort(key=lambda x: x[0], reverse=True)
-                picked_ch = [it for _, _, it in sorted(scored_ch[:2], key=lambda x: x[1])]
+                    scored_ch.append((sc, i, it, ov, hit_n_c, hit_len_c, raw_ov_c))
+                if current_turn_text is not None:
+                    scored_ch = [row for row in scored_ch if row[6] > 0.0]
+                scored_ch.sort(
+                    key=lambda x: compare_memory_recall_key(x[3], x[4], x[5], x[0]),
+                    reverse=True,
+                )
+                picked_ch = [it for _, _, it, _, _, _, _ in sorted(scored_ch[:2], key=lambda x: x[1])]
             for item in picked_ch:
                 lines.append(f"- [档案·{ch_key}] {item}")
-        for f_txt in picked_facts:
+        for f_txt, is_core in picked_facts_with_core:
             if not any(
                 _fact_similarity(f_txt, re.sub(r"^-\s*\[[^\]]+\]\s*", "", existing)) >= 0.78
                 for existing in lines
             ):
                 lines.append(f"- [长期事实] {f_txt}")
-        for _, d_str, e_txt in picked_events:
+                if session_id and repeat_window > 0 and cur_turn > 0 and not is_core:
+                    seen_map[_norm_mem_key(f_txt)] = cur_turn
+        for _, d_str, e_txt, is_high_ev in picked_events:
             prefix = f"[{d_str}] " if d_str else ""
             lines.append(f"- {prefix}{e_txt}")
+            if session_id and repeat_window > 0 and cur_turn > 0 and not is_high_ev:
+                seen_map[_norm_mem_key(e_txt)] = cur_turn
         return "\n".join(lines) if lines else "- （暂无特别记录，在聊天中自然认识对方即可）"
 
     _build_user_memory_section = _recall_memories
@@ -1130,6 +1343,7 @@ class MoodMemoryMixin:
             u["factsSinceArchive"] = 0
             u["lastArchiveAt"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M")
             self._mark_state_dirty(immediate=True)
+        self._flush_memory_recall_cache(user_id)
 
         return True, self._format_archive_card(u)
 
@@ -1220,29 +1434,27 @@ class MoodMemoryMixin:
             return
 
         should_consolidate = False
+        added_memory = False
         async with self._state_lock:
             if self._state.get("users", {}).get(user_id) is not user_state:
                 return
             u = self._get_user_state(user_id)
-            raw_mood_delta = int(_clamp(round(float(obj.get("moodDelta", 0))), -8, 8))
+            norm = normalize_mood_judge_delta(obj)
+            subject = norm["subject"]
+            raw_mood_delta = norm["moodDelta"]
             new_mood, actual_delta = self._apply_saturated_mood_delta(
                 int(u.get("mood", 70)), raw_mood_delta, min_mood=15, max_mood=100
             )
             u["mood"] = new_mood
             dims = u.setdefault("dims", {})
-            raw_dims = obj.get("dims") or {}
-            if isinstance(raw_dims, dict):
-                for k, _ in DIMS:
-                    try:
-                        raw_dv = float(raw_dims.get(k, 0) or 0)
-                    except (TypeError, ValueError):
-                        raw_dv = 0.0
-                    d_val = int(_clamp(round(raw_dv), -10, 10))
-                    dims[k] = int(_clamp(int(dims.get(k, 0)) + d_val, 0, 100))
+            norm_dims = norm["dims"]
+            for k, _ in DIMS:
+                d_val = int(norm_dims.get(k, 0))
+                dims[k] = int(_clamp(int(dims.get(k, 0)) + d_val, 0, 100))
             reason = str(obj.get("reason") or "").strip()[:120]
             conf = int(_clamp(round(float(obj.get("confidence", 75))), 0, 100))
             now_ms = int(time.time() * 1000)
-            if reason and conf >= 60:
+            if reason and conf >= 60 and subject not in ("other", "none"):
                 u["lastReason"] = reason
                 u["lastConfidence"] = conf
                 u["lastNotedMood"] = u["mood"]
@@ -1266,6 +1478,7 @@ class MoodMemoryMixin:
             if mem_fact and mem_fact != "无" and len(mem_fact) >= 4:
                 facts = u.setdefault("facts", [])
                 if _add_dedup_fact(facts, mem_fact, max_len=25):
+                    added_memory = True
                     u["factsSinceArchive"] = int(u.get("factsSinceArchive", 0)) + 1
                     if int(u.get("factsSinceArchive", 0)) >= 8:
                         should_consolidate = True
@@ -1274,11 +1487,15 @@ class MoodMemoryMixin:
             if mem_event and mem_event != "无" and len(mem_event) >= 4:
                 evs = u.setdefault("events", [])
                 if not any(_fact_similarity(str(ev.get("text") or ""), mem_event) >= 0.80 for ev in evs):
+                    added_memory = True
                     evs.append({"date": today_str, "ts": now_ms, "text": mem_event})
                     if len(evs) > 40:
                         u["events"] = evs[-40:]
 
             self._mark_state_dirty()
+
+        if added_memory:
+            self._flush_memory_recall_cache(user_id)
 
         if should_consolidate:
             await self._consolidate_user_archive(
