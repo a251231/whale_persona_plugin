@@ -2348,15 +2348,18 @@ class WhaleListener(
                 intimacy_sec = self._build_intimacy_section(u, mode=settings["mode"])
                 mood_sec = self._build_mood_section(u)
                 recall_query = cleaned_text
-                short_clean = df.strip_memory_query_noise(cleaned_text)
-                if 0 < len(short_clean) < 6 and history:
-                    prev_user_texts = [
-                        str(c or "").strip()
-                        for _, role, c in history
-                        if role == "user" and str(c or "").strip()
-                    ][-2:]
-                    if prev_user_texts:
-                        recall_query = " ".join(prev_user_texts + [cleaned_text])
+                # dsh-fish-memory v1.6.5: short-query prior-turn borrowing defaults to OFF
+                # so short replies like "嗯"/"好辣" do not drag in unrelated prior topics.
+                if bool(self._state.get("memory_borrow_short_context", False)):
+                    short_clean = df.strip_memory_query_noise(cleaned_text)
+                    if 0 < len(short_clean) < 6 and history:
+                        prev_user_texts = [
+                            str(c or "").strip()
+                            for _, role, c in history
+                            if role == "user" and str(c or "").strip()
+                        ][-2:]
+                        if prev_user_texts:
+                            recall_query = " ".join(prev_user_texts + [cleaned_text])
                 mem_sec = self._recall_memories(
                     u,
                     recall_query,
@@ -2444,9 +2447,7 @@ class WhaleListener(
             turn_ctx_parts.append(
                 "【当前为甜宠陪伴模式：语气要软糯、黏人、欢快偏心，像跟喜欢的人撒娇聊天一样，严禁毒舌抬杠、嫌弃损人或怀疑对方没好事！】"
             )
-        turn_ctx_parts.append(
-            f"【现在时间：{exact_time_str} | 动笔前确认：绝不打括号写动作、单气泡短句为主、只提真聊过的事】"
-        )
+        turn_ctx_parts.append(df.build_tail_precheck_line(exact_time_str, is_group=is_group))
         tail_block = (
             "\n\n<turn-context>\n"
             + "\n".join(p for p in turn_ctx_parts if p)

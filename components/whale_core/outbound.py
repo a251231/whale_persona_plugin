@@ -46,6 +46,8 @@ __all__ = [
     "SHORT_REACTION_BUBBLES",
     "SPEAK_UP_META_ECHO_RE",
     "SPEAK_UP_TAG_RE",
+    "_find_protected_spans",
+    "_split_outside_protected_spans",
     "plain_markdown_bullets",
 ]
 
@@ -104,6 +106,156 @@ MEME_TAG_RE = re.compile(r"\[(?:表情|表情包|meme)\s*[:：]\s*([^\]\s]{1,12}
 PAREN_MEME_TAG_RE = re.compile(r"[（(](?:表情|表情包|meme)\s*[:：]\s*([^）)\s]{1,12})\s*[）)]", re.IGNORECASE)
 SPEAK_UP_TAG_RE = re.compile(r"</?speak-up\b[^>]*>", re.IGNORECASE)
 SPEAK_UP_META_ECHO_RE = re.compile(r"[（(]这个块里的内容是你自己心里冒出来的念头[^）)\n]*[）)]\s*")
+
+
+_PROTECTED_OPEN_TO_CLOSE: dict[str, str] = {
+    "《": "》",
+    "〈": "〉",
+    "【": "】",
+    "〔": "〕",
+    "「": "」",
+    "『": "』",
+    "“": "”",
+    "‘": "’",
+    "（": "）",
+    "(": ")",
+}
+_URL_SPAN_RE = re.compile(r"https?://[^\s）)】」』》〉”’]+", re.IGNORECASE)
+
+
+def _find_protected_spans(text: str) -> list[tuple[int, int]]:
+    """Returns non-overlapping `[start, end)` spans that bubble splitting must never cut through:
+    URLs, inline code backticks, paired CJK/ASCII brackets & quotes (ignoring English apostrophes
+    like `character's` or `don't`; Diana #1639/#1645).
+    """
+    n = len(text)
+    spans: list[tuple[int, int]] = []
+    i = 0
+    while i < n:
+        ch = text[i]
+        # 1) URLs (opaque span; trim unbalanced trailing ')' and trailing '||')
+        if (ch == "h" or ch == "H") and text[i : i + 8].lower().startswith(("http://", "https://")):
+            m = _URL_SPAN_RE.match(text, i)
+            if m:
+                end = m.end()
+                while end > i and text[end - 1] == ")":
+                    sub = text[i:end]
+                    if sub.count(")") > sub.count("("):
+                        end -= 1
+                    else:
+                        break
+                while end - i >= 2 and text[end - 2 : end] == "||":
+                    end -= 2
+                if end > i:
+                    spans.append((i, end))
+                    i = end
+                    continue
+        # 2) Inline code backtick runs (`...`, ``...``)
+        if ch == "`":
+            run = 1
+            while i + run < n and text[i + run] == "`":
+                run += 1
+            fence = "`" * run
+            close_idx = text.find(fence, i + run)
+            if close_idx != -1:
+                end = close_idx + run
+                spans.append((i, end))
+                i = end
+                continue
+            i += run
+            continue
+        # 3) Double quotes ("...")
+        if ch == '"':
+            j = i + 1
+            found = -1
+            while j < n:
+                if text[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    found = j
+                    break
+                j += 1
+            if found != -1:
+                spans.append((i, found + 1))
+                i = found + 1
+                continue
+            i += 1
+            continue
+        # 4) Single quotes ('...'), skipping English contractions/possessives (character's, don't)
+        if ch == "'":
+            if i > 0 and text[i - 1].isascii() and text[i - 1].isalnum():
+                i += 1
+                continue
+            j = i + 1
+            found = -1
+            while j < n:
+                if text[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if text[j] == "'":
+                    if j + 1 < n and text[j + 1].isascii() and text[j + 1].isalnum():
+                        j += 1
+                        continue
+                    found = j
+                    break
+                j += 1
+            if found != -1:
+                spans.append((i, found + 1))
+                i = found + 1
+                continue
+            i += 1
+            continue
+        # 5) Paired CJK/ASCII brackets & smart quotes with nesting
+        close_ch = _PROTECTED_OPEN_TO_CLOSE.get(ch)
+        if close_ch is not None:
+            depth = 1
+            j = i + 1
+            found = -1
+            while j < n:
+                cj = text[j]
+                if cj == ch:
+                    depth += 1
+                elif cj == close_ch:
+                    depth -= 1
+                    if depth == 0:
+                        found = j
+                        break
+                j += 1
+            if found != -1:
+                spans.append((i, found + 1))
+                i = found + 1
+                continue
+        i += 1
+    return spans
+
+
+def _split_outside_protected_spans(text: str, sep: str) -> list[str]:
+    """Splits `text` by `sep` only at occurrences strictly outside `_find_protected_spans(text)`."""
+    if not text or not sep:
+        return [text] if text else []
+    spans = _find_protected_spans(text)
+    parts: list[str] = []
+    n = len(text)
+    sep_len = len(sep)
+    start = 0
+    span_idx = 0
+    num_spans = len(spans)
+    i = 0
+    while i <= n - sep_len:
+        while span_idx < num_spans and spans[span_idx][1] <= i:
+            span_idx += 1
+        if span_idx < num_spans and spans[span_idx][0] <= i < spans[span_idx][1]:
+            i = spans[span_idx][1]
+            continue
+        if text[i : i + sep_len] == sep:
+            parts.append(text[start:i])
+            i += sep_len
+            start = i
+            continue
+        i += 1
+    parts.append(text[start:])
+    return parts
 
 
 class OutboundMixin:
@@ -266,24 +418,43 @@ class OutboundMixin:
         s = (text or "").strip()
         if not s:
             return []
+        if "```" in s:
+            return [s]
         if (
             not allow_split
-            or "```" in s
             or len(s) > 160
             or "\n- " in s
             or "\n• " in s
             or "\n1." in s
         ):
-            return [s.replace("||", " ")]
+            pipe_clean = [p.strip() for p in _split_outside_protected_spans(s, "||") if p.strip()]
+            return [" ".join(pipe_clean) if pipe_clean else s]
 
-        if "||" in s:
-            raw_parts = [p.strip() for p in s.split("||") if p.strip()]
+        pipe_parts = [p.strip() for p in _split_outside_protected_spans(s, "||") if p.strip()]
+        if len(pipe_parts) > 1:
+            raw_parts = pipe_parts
         else:
-            lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
-            if len(lines) == 2 and all(len(ln) <= 36 for ln in lines):
+            lines = [ln.strip() for ln in _split_outside_protected_spans(s, "\n") if ln.strip()]
+            if len(lines) == 2 and all(len(ln) <= 45 for ln in lines):
                 raw_parts = lines
             else:
+                # Comedic empty-parens boundary (`（）` or CJK+`()`): split right AFTER `（）`
+                # keeping `（）` at the end of bubble 1 (Diana #1639).
                 raw_parts = [s]
+                if "\n" not in s:
+                    for a, b in _find_protected_spans(s):
+                        if b - a != 2:
+                            continue
+                        token = s[a:b]
+                        if token == "()" and a > 0 and (s[a - 1].isascii() and (s[a - 1].isalnum() or s[a - 1] in "_.")):
+                            continue
+                        if token not in ("（）", "()"):
+                            continue
+                        left = s[:b].strip()
+                        right = s[b:].lstrip(" \t，,、").strip()
+                        if len(left) >= 4 and len(right) >= 2:
+                            raw_parts = [left, right]
+                            break
 
         bubbles: list[str] = []
         for p in raw_parts:
@@ -300,13 +471,15 @@ class OutboundMixin:
         # Anti-mechanical rhythm gate:
         # 1) Never split into 2 bubbles on two consecutive turns in the same session
         # 2) Never send a standalone '?' bubble when followed by a second bubble
-        # 3) Merge very short 2-part splits (<16 chars total) unless the first bubble is a short reaction word
+        # 3) Merge very short 2-part splits (<16 chars total) unless the first bubble is a short reaction
+        #    word or comedic empty-parens punchline (`（）`/`()`)
         if len(bubbles) == 2:
             if bubbles[0] in ("？", "?", "？？", "!", "！", "…", "..."):
                 return [bubbles[1]]
             total_chars = len(bubbles[0]) + len(bubbles[1])
             is_reaction_lead = bubbles[0] in SHORT_REACTION_BUBBLES
-            if last_was_multi or (total_chars < 16 and not is_reaction_lead):
+            is_comedic_paren_lead = bubbles[0].endswith(("（）", "()"))
+            if last_was_multi or (total_chars < 16 and not is_reaction_lead and not is_comedic_paren_lead):
                 return [f"{bubbles[0]} {bubbles[1]}"]
 
         return bubbles

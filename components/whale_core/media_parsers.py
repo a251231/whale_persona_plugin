@@ -27,6 +27,7 @@ import time
 import urllib.parse
 import zipfile
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from datetime import datetime
 from itertools import islice
 from typing import Any, Optional
@@ -109,6 +110,8 @@ __all__ = [
     "VISION_DESC_CACHE_TTL_SEC",
     "VOICE_REQUEST_RE",
     "XIAOHONGSHU_STATE_RE",
+    "_resolve_qq_music_proxy",
+    "_sanitize_music_error",
     "bilibili_live_room_id",
     "clean_deepseek_ocr_text",
     "compact_long_user_text",
@@ -2386,10 +2389,79 @@ def normalize_qq_music_cookie(raw_cookie: str) -> tuple[str, str]:
     return "; ".join(parts), uin
 
 
+_VALID_MUSIC_PROXY_SCHEMES = frozenset(("http", "https", "socks5", "socks5h"))
+_MUSIC_SENSITIVE_KV_RE = re.compile(
+    r"(?i)\b(vkey|uin|qqmusic_key|qm_keyst|musickey|musicid|music_u|cookie|token|authorization)\s*([:=])\s*[^\s;,&\"')\]}]+"
+)
+_MUSIC_URI_CRED_RE = re.compile(r"://[^/\s@]+@")
+_MUSIC_URL_RE = re.compile(r"\b(?:https?|socks5h?)://\S+", re.IGNORECASE)
+_MUSIC_BARE_CRED_RE = re.compile(r"\b[^\s/:@]+:[^\s/@]+@[^\s/]+")
+
+
+def _resolve_qq_music_proxy(proxy_override: str = "") -> str | None:
+    """Resolves and validates an optional QQ-Music-only proxy URL from `proxy_override`,
+    `QQ_MUSIC_PROXY`, or `MUSIC_PROXY` (Diana #1617). Invalid values degrade gracefully
+    to `None` without breaking NetEase Cloud Music or direct QQ Music requests.
+    """
+    raw = (proxy_override or os.getenv("QQ_MUSIC_PROXY", "") or os.getenv("MUSIC_PROXY", "")).strip()
+    if not raw:
+        return None
+    if any(ch.isspace() or ord(ch) < 32 for ch in raw):
+        logger.debug("Ignoring QQ music proxy: contains whitespace or control characters")
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in _VALID_MUSIC_PROXY_SCHEMES or not parsed.hostname:
+            logger.debug("Ignoring QQ music proxy: unsupported scheme or missing host (%s)", scheme or "empty")
+            return None
+        _ = parsed.port  # validates numeric port range (1..65535) if present
+    except ValueError:
+        logger.debug("Ignoring QQ music proxy: invalid URL or port format")
+        return None
+    return raw
+
+
+def _sanitize_music_error(exc: BaseException) -> str:
+    """Strips full URLs, proxy credentials (`user:pass@`), and QQ/NetEase tokens (`vkey`,
+    `uin`, `qqmusic_key`, `MUSIC_U`, etc.) from music-search exceptions before logging (Diana #1617).
+    """
+    msg = str(exc or "").strip()
+    if not msg:
+        return type(exc).__name__
+    msg = _MUSIC_URI_CRED_RE.sub("://<redacted>@", msg)
+    msg = _MUSIC_URL_RE.sub("<url>", msg)
+    msg = _MUSIC_SENSITIVE_KV_RE.sub(r"\1\2<redacted>", msg)
+    msg = _MUSIC_BARE_CRED_RE.sub("<redacted>@<host>", msg)
+    msg = re.sub(r"\s+", " ", msg).strip()
+    if len(msg) > 200:
+        msg = msg[:197] + "..."
+    return f"{type(exc).__name__}: {msg}"
+
+
+@asynccontextmanager
+async def _borrow_qq_music_client(proxy_url: str | None, timeout: float = 10.0):
+    """Uses the shared direct public client by default, or opens a scoped proxy client
+    exclusively for QQ Music when `proxy_url` is configured (NetEase stays direct).
+    """
+    if not proxy_url:
+        async with _borrow_client("public", timeout=timeout) as client:
+            yield client
+        return
+    async with httpx.AsyncClient(
+        proxy=proxy_url,
+        follow_redirects=False,
+        timeout=timeout,
+        headers={"User-Agent": USER_AGENT},
+    ) as client:
+        yield client
+
+
 async def search_and_fetch_music(
     query: str,
     qq_cookie: str = "",
     netease_music_u: str = "",
+    qq_proxy: str = "",
 ) -> dict[str, Any] | None:
     """
     Searches NetEase Cloud Music first, and automatically falls back to QQ Music / backup API
@@ -2402,7 +2474,7 @@ async def search_and_fetch_music(
 
     fallback_candidate: dict[str, Any] | None = None
 
-    # 1. Try NetEase Cloud Music (SSRF-validated + size-capped)
+    # 1. Try NetEase Cloud Music (SSRF-validated + size-capped; always direct, never uses QQ proxy)
     try:
         ne_headers = {
             "User-Agent": USER_AGENT,
@@ -2467,9 +2539,10 @@ async def search_and_fetch_music(
                 except Exception:
                     pass
     except Exception as e:
-        logger.debug("NetEase search error: %s", e)
+        logger.debug("NetEase search error: %s", _sanitize_music_error(e))
 
-    # 2. Automatic switch to QQ Music search API (with musicid/musickey -> uin/qqmusic_key support)
+    # 2. Automatic switch to QQ Music search API (with musicid/musickey -> uin/qqmusic_key support
+    #    and optional QQ-Music-only proxy via QQ_MUSIC_PROXY / MUSIC_PROXY)
     try:
         norm_cookie, qq_uin = normalize_qq_music_cookie(qq_cookie)
         qq_headers = {
@@ -2478,7 +2551,8 @@ async def search_and_fetch_music(
         }
         if norm_cookie:
             qq_headers["Cookie"] = norm_cookie
-        async with _borrow_client("public", timeout=10.0) as client:
+        resolved_proxy = _resolve_qq_music_proxy(qq_proxy)
+        async with _borrow_qq_music_client(resolved_proxy, timeout=10.0) as client:
             qq_payload = {
                 "comm": {"ct": "19", "cv": "1859", "uin": qq_uin},
                 "req": {
@@ -2497,8 +2571,17 @@ async def search_and_fetch_music(
                 timeout=10.0,
             )
             if rq.status_code == 200:
+                qq_json = rq.json() or {}
+                req_obj = qq_json.get("req") if isinstance(qq_json, dict) else {}
+                if not isinstance(req_obj, dict):
+                    req_obj = {}
+                if (isinstance(qq_json, dict) and qq_json.get("code") == 2001) or req_obj.get("code") == 2001:
+                    logger.warning(
+                        "QQ Music API returned code=2001 (missing/expired cookie or login required); "
+                        "configure qq_music_cookie or refresh QQ Music login"
+                    )
                 q_songs = (
-                    (((rq.json() or {}).get("req") or {}).get("data") or {}).get("body") or {}
+                    ((req_obj.get("data") or {}).get("body") or {})
                 ).get("song", {}).get("list") or []
                 if q_songs:
                     s0 = q_songs[0]
@@ -2521,7 +2604,7 @@ async def search_and_fetch_music(
                     if fallback_candidate is None:
                         fallback_candidate = qq_cand
     except Exception as e:
-        logger.debug("QQ music search error: %s", e)
+        logger.debug("QQ music search error: %s", _sanitize_music_error(e))
 
     return fallback_candidate
 RANDOM_SONG_POOL: tuple[str, ...] = (

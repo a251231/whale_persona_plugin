@@ -67,6 +67,7 @@ __all__ = [
     "TaggedGroupLine",
     "append_group_context_line",
     "build_anti_repetition_instruction",
+    "build_tail_precheck_line",
     "build_time_gap_notice",
     "build_unfetched_media_notice",
     "check_group_random_repeat",
@@ -1317,6 +1318,21 @@ def build_time_gap_notice(last_ts: float | None, now_ts: float | None = None) ->
     else:
         gap_str = f"{int(gap_sec // 60)} 分钟"
     return f"（迟到/间隔提醒：距离你们上一句对话已经过去了 {gap_str}，请按当前最新时间自然衔接，不要当成上一秒刚说的话硬接）"
+
+
+def build_tail_precheck_line(exact_time_str: str, *, is_group: bool = False) -> str:
+    """Builds the compact tail pre-output self-check line placed inside `<turn-context>`
+    (never in Tier-1 `system_prompt`, preserving Prefix-Cache byte stability; Diana #1602/#1634/#1638).
+    """
+    if is_group:
+        return (
+            f"【现在时间：{exact_time_str} | 动笔前确认：绝不打括号写动作、别照抄对方原话开头、"
+            "没实际调工具查过别说查过；群聊闲聊只回1句真实反应或态度（约20字内，不写科普讲解；问技术/查资料不受限）】"
+        )
+    return (
+        f"【现在时间：{exact_time_str} | 动笔前确认：绝不打括号写动作、单气泡短句为主、"
+        "别照抄对方原话开头、没实际调工具查过别说查过、只提真聊过的事】"
+    )
 
 
 # ==============================================================================
