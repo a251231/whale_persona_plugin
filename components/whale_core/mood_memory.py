@@ -92,9 +92,13 @@ MEMORY_STOP_CHARS: frozenset[str] = frozenset(
 )
 MEMORY_STOP_BIGRAMS: frozenset[str] = frozenset({
     "我是", "你是", "他是", "她是", "这是", "那是", "我在", "你在", "今天", "明天", "昨天",
-    "现在", "刚才", "刚刚", "什么", "怎么", "为什么", "可以", "不是", "没有", "一个", "一下",
-    "一点", "觉得", "知道", "告诉", "已经", "如果", "因为", "所以", "但是", "或者", "还是",
-    "时候", "地方", "东西", "事情", "问题", "意思", "大肥", "肥鱼", "鲸鱼", "鱼娘",
+    "现在", "刚才", "刚刚", "什么", "怎么", "为什么", "为啥", "可以", "不行", "不是", "没有",
+    "一个", "一下", "一点", "觉得", "知道", "告诉", "已经", "如果", "因为", "所以", "但是",
+    "或者", "还是", "时候", "地方", "东西", "事情", "问题", "意思", "大肥", "肥鱼", "鲸鱼", "鱼娘",
+    "没去", "还没", "不去", "没来", "没吃", "没睡", "没看", "没事", "没啥",
+    "好像", "应该", "可能", "肯定", "大概", "也许", "其实", "确实", "反正", "随便",
+    "之前", "之后", "以后", "最近", "一直", "麻烦", "谢谢", "抱歉", "不错",
+    "这样", "那样", "这么", "那么",
 })
 
 
@@ -142,9 +146,21 @@ def compute_memory_query_metrics(query_text: str, candidate_text: str) -> tuple[
     proper_clues: set[str] = set()
     for run in cjk_runs:
         run_len = len(run)
+        stop_covered: set[int] = set()
+        for sw_len in (2, 3):
+            if run_len < sw_len:
+                continue
+            for idx in range(run_len - sw_len + 1):
+                if run[idx : idx + sw_len] in MEMORY_STOP_BIGRAMS:
+                    stop_covered.update(range(idx, idx + sw_len))
         for i in range(run_len - 1):
             bg = run[i : i + 2]
-            if bg not in MEMORY_STOP_BIGRAMS and bg[0] not in MEMORY_STOP_CHARS and bg[1] not in MEMORY_STOP_CHARS:
+            if (
+                bg not in MEMORY_STOP_BIGRAMS
+                and not (i in stop_covered and (i + 1) in stop_covered)
+                and bg[0] not in MEMORY_STOP_CHARS
+                and bg[1] not in MEMORY_STOP_CHARS
+            ):
                 bigrams.add(bg)
             if bg[0] in ("阿", "小", "老") and bg[1] not in MEMORY_STOP_CHARS and bg not in _NAME_PREFIX_COMMON_SKIP:
                 proper_clues.add(bg)
@@ -153,9 +169,16 @@ def compute_memory_query_metrics(query_text: str, candidate_text: str) -> tuple[
                 continue
             for i in range(run_len - win_len + 1):
                 win = run[i : i + win_len]
-                if win in MEMORY_STOP_BIGRAMS or any(frag in win for frag in _STOP_WINDOW_FRAGMENTS):
+                if (
+                    win in MEMORY_STOP_BIGRAMS
+                    or any(idx in stop_covered for idx in range(i, i + win_len))
+                    or any(frag in win for frag in _STOP_WINDOW_FRAGMENTS)
+                ):
                     continue
-                if sum(1 for ch in win if ch not in MEMORY_STOP_CHARS) >= 2:
+                if (
+                    (win[0] not in MEMORY_STOP_CHARS or win[-1] not in MEMORY_STOP_CHARS)
+                    and sum(1 for ch in win if ch not in MEMORY_STOP_CHARS) >= 2
+                ):
                     proper_clues.add(win)
 
     ascii_tokens = {
