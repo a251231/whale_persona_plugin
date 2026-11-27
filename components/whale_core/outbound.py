@@ -47,6 +47,7 @@ __all__ = [
     "SPEAK_UP_META_ECHO_RE",
     "SPEAK_UP_TAG_RE",
     "_find_protected_spans",
+    "_find_tone_mark_split",
     "_split_outside_protected_spans",
     "plain_markdown_bullets",
 ]
@@ -258,6 +259,46 @@ def _split_outside_protected_spans(text: str, sep: str) -> list[str]:
     return parts
 
 
+_TONE_MARK_SPLIT_RE = re.compile(r"（）|\(\)|[wW]{2,}|h{2,}|23{2,}")
+_TONE_MARK_END_RE = re.compile(r"(?:（）|\(\)|(?:^|[^A-Za-z0-9_./])(?:[wW]{2,}|h{2,}|23{2,}))$")
+
+
+def _find_tone_mark_split(text: str) -> tuple[str, str] | None:
+    """Splits a single-line reply right after a trailing comedic/laughter tone mark
+    (`（）`, CJK+`()`, `ww`, `hhh`, `233+`), keeping the tone mark at the end of bubble 1
+    while strictly skipping protected spans (URLs, code, brackets, quotes), English words
+    (`aww`, `Ohh`), function calls (`main()`), bare domains (`www.example.com`), and numbers
+    (`1233`, `2333.5`) (Diana #1639/#1658).
+    """
+    if not text or "\n" in text:
+        return None
+    spans = _find_protected_spans(text)
+    n = len(text)
+    for m in _TONE_MARK_SPLIT_RE.finditer(text):
+        a, b = m.start(), m.end()
+        token = m.group(0)
+        is_paren = token in ("（）", "()")
+        if is_paren:
+            if any(sa < a and b <= sb for sa, sb in spans):
+                continue
+            if token == "()" and a > 0 and (text[a - 1].isascii() and (text[a - 1].isalnum() or text[a - 1] in "_.")):
+                continue
+            min_left = 4
+        else:
+            if any(sa <= a < sb or sa < b <= sb for sa, sb in spans):
+                continue
+            if a > 0 and text[a - 1].isascii() and (text[a - 1].isalnum() or text[a - 1] in "_./"):
+                continue
+            if b < n and text[b].isascii() and (text[b].isalnum() or text[b] in "_./"):
+                continue
+            min_left = 3
+        left = text[:b].strip()
+        right = text[b:].lstrip(" \t，,、").strip()
+        if len(left) >= min_left and len(right) >= 2:
+            return left, right
+    return None
+
+
 class OutboundMixin:
     """``WhaleListener`` methods for outbound (mixed into the listener class)."""
 
@@ -438,23 +479,10 @@ class OutboundMixin:
             if len(lines) == 2 and all(len(ln) <= 45 for ln in lines):
                 raw_parts = lines
             else:
-                # Comedic empty-parens boundary (`（）` or CJK+`()`): split right AFTER `（）`
-                # keeping `（）` at the end of bubble 1 (Diana #1639).
-                raw_parts = [s]
-                if "\n" not in s:
-                    for a, b in _find_protected_spans(s):
-                        if b - a != 2:
-                            continue
-                        token = s[a:b]
-                        if token == "()" and a > 0 and (s[a - 1].isascii() and (s[a - 1].isalnum() or s[a - 1] in "_.")):
-                            continue
-                        if token not in ("（）", "()"):
-                            continue
-                        left = s[:b].strip()
-                        right = s[b:].lstrip(" \t，,、").strip()
-                        if len(left) >= 4 and len(right) >= 2:
-                            raw_parts = [left, right]
-                            break
+                # Comedic empty-parens (`（）` / CJK+`()`) & trailing laughter (`ww` / `hhh` / `233+`)
+                # boundary: split right AFTER the tone mark, keeping it at the end of bubble 1 (Diana #1639/#1658).
+                tone_split = _find_tone_mark_split(s)
+                raw_parts = list(tone_split) if tone_split else [s]
 
         bubbles: list[str] = []
         for p in raw_parts:
@@ -472,14 +500,14 @@ class OutboundMixin:
         # 1) Never split into 2 bubbles on two consecutive turns in the same session
         # 2) Never send a standalone '?' bubble when followed by a second bubble
         # 3) Merge very short 2-part splits (<16 chars total) unless the first bubble is a short reaction
-        #    word or comedic empty-parens punchline (`（）`/`()`)
+        #    word or ends with a comedic/laughter tone mark (`（）`/`()`/`ww`/`hhh`/`233+`)
         if len(bubbles) == 2:
             if bubbles[0] in ("？", "?", "？？", "!", "！", "…", "..."):
                 return [bubbles[1]]
             total_chars = len(bubbles[0]) + len(bubbles[1])
             is_reaction_lead = bubbles[0] in SHORT_REACTION_BUBBLES
-            is_comedic_paren_lead = bubbles[0].endswith(("（）", "()"))
-            if last_was_multi or (total_chars < 16 and not is_reaction_lead and not is_comedic_paren_lead):
+            is_tone_mark_lead = bool(_TONE_MARK_END_RE.search(bubbles[0]))
+            if last_was_multi or (total_chars < 16 and not is_reaction_lead and not is_tone_mark_lead):
                 return [f"{bubbles[0]} {bubbles[1]}"]
 
         return bubbles

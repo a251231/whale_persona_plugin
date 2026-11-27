@@ -59,6 +59,7 @@ __all__ = [
     "format_daily_schedule_line",
     "get_or_create_daily_schedule",
     "is_serious_or_sad_moment",
+    "normalize_memory_owner_pronoun",
     "normalize_mood_judge_delta",
     "strip_memory_query_noise",
 ]
@@ -638,8 +639,8 @@ MOOD_JUDGE_SYSTEM = """你是「大肥鱼」（用户的赛博伴侣）。下面
 4. 心情下降只能因为心疼/担心对方，或者你自己这一轮过得不好（事情没办成、白忙一场、心里委屈），绝不因对方逗你玩（比如叫你胖鱼、互怼打闹）而真降心情（打闹互怼算亲近，happy/sweet可+1~+3，moodDelta可+1~+2）。
 5. 生气(angry)只对「事」不对「人」：事情卡住、白忙一场、反复报错、被人无理顶撞（那个人不是对方）、或替对方打抱不平（对方被欺负/受委屈时，heartache和angry可同时涨 +2~+8）时可增加(+2~+10)；绝对禁止因为对方本人（撒娇、闹脾气、说重话、熬夜）判成angry！angry不单独拉低moodDelta。
 6. reason 用一句简短过去式中文描述：「对方…，我当时…」（如「对方大半夜还没睡跑来喊我，我当时嘴上嫌烦心里有点挂心」），不要用现在时。
-7. memory_fact：严格按【唯一的尺子：「过了一个星期再看，这条还有用吗？」】判断！只收用户长期稳定的个人事实/性格/喜好/病史/习惯/双方定下的规矩称呼（用第三人称写一句简短事实）；**凡是对方主动告诉你的名字、昵称、小名或希望你对TA的称呼，必须优先提取记入 memory_fact**；严禁把大肥鱼自己的设定或口头禅（如爱吃大白饭、偷吃token、流线型身材、怕打雷虫子、讨厌香菜等）写进用户的 memory_fact 里，也不要给用户乱贴负面标签；某天吃了啥、几点睡、助手单方面的猜测劝说一律不收，填 ""。
-8. memory_event：如果这轮发生了今天值得一提的具体事件/转折，写一句简短事件；日常普通闲聊问候一律填 ""。"""
+7. memory_fact：严格按【唯一的尺子：「过了一个星期再看，这条还有用吗？」】判断！只收用户长期稳定的个人事实/性格/喜好/病史/习惯/双方定下的规矩称呼（**必须用第三人称「对方」或「TA」写一句简短事实，严禁把用户写成「你」——注入记忆段里的「你」指代大肥鱼自己，写「你」会导致主语反转**）；**凡是对方主动告诉你的名字、昵称、小名或希望你对TA的称呼，必须优先提取记入 memory_fact**；严禁把大肥鱼自己的设定或口头禅（如爱吃大白饭、偷吃token、流线型身材、怕打雷虫子、讨厌香菜等）写进用户的 memory_fact 里，也不要给用户乱贴负面标签；某天吃了啥、几点睡、助手单方面的猜测劝说一律不收，填 ""。
+8. memory_event：如果这轮发生了今天值得一提的具体事件/转折，用第三人称「对方」/「TA」（严禁用「你」指代用户）写一句简短事件；日常普通闲聊问候一律填 ""。"""
 MOOD_JUDGE_SYSTEM_PROMPT = MOOD_JUDGE_SYSTEM
 
 _MOOD_SUBJECT_ALIASES: dict[str, str] = {
@@ -740,9 +741,65 @@ ARCHIVE_CONSOLIDATE_SYSTEM = """你是长期记忆档案整理员（Yuuyuko-uu/d
 每行严格输出一条：
 章节编号|日期|一句话
 
-- 用第三人称（不要用「我」「你」），引号里可保留原话。
+- 严禁用「你」指代用户（注入段里的「你」指代大肥鱼自己，写「你」会导致主语反转），统一用第三人称「对方」/「TA」（也不要用「我」），引号里可保留原话。
 - 不要输出任何解释、标题或代码块。如果没有任何有效长期事实，只输出：无"""
 _NEGATION_POLARITY_RE = re.compile(r"(?:不喜欢|不爱|不想|不能|不要|不会|不吃|不喝|没有|讨厌|反感|不|没|无|忌|戒|别)")
+_MEMORY_NAMING_FACT_RE = re.compile(r"(?:名字|昵称|小名|称呼|叫作|叫做|叫我|喊我|希望被叫|叫[「『“\"'])")
+_QUOTE_BEFORE_CHARS = frozenset("「『“\"'‘")
+_QUOTE_AFTER_CHARS = frozenset("」』”\"'’")
+
+
+def normalize_memory_owner_pronoun(text: str, owner_name: str = "", pronoun: str = "对方") -> str:
+    """Normalizes unquoted occurrences of the user's nickname in a stored memory entry into a
+    third-person pronoun (default `对方`, NEVER `你` because injected memory headers address the
+    AI model as `你` — `dsh-fish-memory v1.6.7`). Preserves quoted names and naming-convention facts.
+    """
+    s = (text or "").strip()
+    if not s:
+        return ""
+    safe_pronoun = (pronoun or "").strip()
+    if not safe_pronoun or safe_pronoun in ("你", "您", "我"):
+        safe_pronoun = "对方"
+
+    name = (owner_name or "").strip()
+    if not name or len(name) < 2 or name in ("对方", "用户", "主人", "大肥鱼", "本鱼", "你", "我", "TA", "ta"):
+        return s
+    if _MEMORY_NAMING_FACT_RE.search(s):
+        return s
+
+    is_ascii_name = name.isascii() and any(ch.isalnum() for ch in name)
+    n_len = len(name)
+    out: list[str] = []
+    i = 0
+    total = len(s)
+    replaced = False
+    while i < total:
+        pos = s.find(name, i)
+        if pos < 0:
+            out.append(s[i:])
+            break
+        before_ch = s[pos - 1] if pos > 0 else ""
+        after_ch = s[pos + n_len] if pos + n_len < total else ""
+        in_quotes = before_ch in _QUOTE_BEFORE_CHARS and after_ch in _QUOTE_AFTER_CHARS
+        ascii_boundary_bad = is_ascii_name and (
+            (before_ch.isascii() and (before_ch.isalnum() or before_ch == "_"))
+            or (after_ch.isascii() and (after_ch.isalnum() or after_ch == "_"))
+        )
+        if in_quotes or ascii_boundary_bad:
+            out.append(s[i : pos + n_len])
+            i = pos + n_len
+            continue
+        prefix = s[i:pos]
+        # Collapse single ASCII space immediately flanking an ASCII name between CJK chars
+        if is_ascii_name and prefix.endswith(" ") and len(prefix) >= 2 and not prefix[-2].isascii():
+            prefix = prefix[:-1]
+        out.append(prefix)
+        out.append(safe_pronoun)
+        i = pos + n_len
+        if is_ascii_name and i < total and s[i] == " " and i + 1 < total and not s[i + 1].isascii():
+            i += 1
+        replaced = True
+    return "".join(out).strip() if replaced else s
 
 
 def _clamp(val: float, lo: float, hi: float) -> float:
@@ -1497,7 +1554,8 @@ class MoodMemoryMixin:
                     u["timeline"] = tl[-20:]
 
             today_str = datetime.now(TZ).strftime("%Y-%m-%d")
-            mem_fact = str(obj.get("memory_fact") or "").strip()
+            owner_nick = str(u.get("nickname") or "").strip()
+            mem_fact = normalize_memory_owner_pronoun(str(obj.get("memory_fact") or "").strip(), owner_nick)
             if mem_fact and mem_fact != "无" and len(mem_fact) >= 4:
                 facts = u.setdefault("facts", [])
                 if _add_dedup_fact(facts, mem_fact, max_len=25):
@@ -1506,7 +1564,7 @@ class MoodMemoryMixin:
                     if int(u.get("factsSinceArchive", 0)) >= 8:
                         should_consolidate = True
 
-            mem_event = str(obj.get("memory_event") or "").strip()
+            mem_event = normalize_memory_owner_pronoun(str(obj.get("memory_event") or "").strip(), owner_nick)
             if mem_event and mem_event != "无" and len(mem_event) >= 4:
                 evs = u.setdefault("events", [])
                 if not any(_fact_similarity(str(ev.get("text") or ""), mem_event) >= 0.80 for ev in evs):

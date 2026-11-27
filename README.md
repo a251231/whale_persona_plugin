@@ -2,16 +2,16 @@
 
 <img src="assets/memes/ganfan.jpg" width="120" style="border-radius: 50%;" alt="大肥鱼 Dafeiyu" />
 
-# 🐋 LangBot 大肥鱼插件 (`whale_persona_plugin` v0.5.4)
+# 🐋 LangBot 大肥鱼插件 (`whale_persona_plugin` v0.5.5)
 **DeepSeek 鲸鱼娘「活人感全家桶」 × Diana 全能扩展 × 微信 4.1 V7 原生增强**
 
-[![Version](https://img.shields.io/badge/version-v0.5.4-blue.svg)](manifest.yaml)
+[![Version](https://img.shields.io/badge/version-v0.5.5-blue.svg)](manifest.yaml)
 [![Release](https://img.shields.io/github/v/release/a251231/whale_persona_plugin?label=release&color=00B4D8)](https://github.com/a251231/whale_persona_plugin/releases)
 [![CI](https://github.com/a251231/whale_persona_plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/a251231/whale_persona_plugin/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](requirements.txt)
 [![LangBot](https://img.shields.io/badge/LangBot-Plugin%20v1-00B4D8.svg)](https://github.com/RockChinQ/LangBot)
 [![Model](https://img.shields.io/badge/DeepSeek-deepseek--flash-4D6BFE.svg)](https://api.deepseek.com)
-[![Tests](https://img.shields.io/badge/tests-285%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-295%20passed-brightgreen.svg)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](#-十许可证与致谢)
 
 [核心模块](#-一核心模块总览dsh-六大件--diana-扩展--微信-41-v7-原生增强) •
@@ -36,16 +36,16 @@
 
 | 模块 | 来源 / 对应原版 | 功能亮点 |
 | :--- | :--- | :--- |
-| **1. 大肥鱼·微信活人版内核** | [wxzjss/dsh-whale-girl](https://github.com/wxzjss/dsh-whale-girl) + `@dafeifish` | **严禁使用 `（...）` / `*...*` 舞台剧动作旁白**；支持**单气泡为主（75%+）、受保护跨度安全双气泡 (`\|\|`/`（）`) 拟真打字停顿**、**`<turn-context>` 尾段发前自检（含群聊约 20 字闲聊短反应约束）**、**防高频词与句首开头复读**、**炸毛赌气与哄好状态机**；去人设复读机化（日常 85% 自称「我」），粮仓数据按需触发。 |
+| **1. 大肥鱼·微信活人版内核** | [wxzjss/dsh-whale-girl](https://github.com/wxzjss/dsh-whale-girl) + `@dafeifish` | **严禁使用 `（...）` / `*...*` 舞台剧动作旁白**；支持**单气泡为主（75%+）、受保护跨度安全双气泡 (`\|\|`/`（）`/`ww`/`hhh`/`233`) 拟真打字停顿**、**`<turn-context>` 尾段发前自检（含群聊约 20 字闲聊短反应约束）**、**防高频词与句首开头复读**、**炸毛赌气与哄好状态机**；去人设复读机化（日常 85% 自称「我」），粮仓数据按需触发。 |
 | **2. 鱼的心情 (`dsh-feiyu-mood`)** | [Yuuyuko-uu/dsh-feiyu-mood](https://github.com/Yuuyuko-uu/dsh-feiyu-mood) | 维护 `0~100` 心情值 + **八维情绪**（`开心`/`踏实`/`甜蜜`/`心疼`/`担心`/`难过`/`吃醋` 90 分钟半衰 + **只对事不对人的 `生气` 45 分钟快散**）+ **四分类情绪主角 `subject` 门控（聊第三人/闲聊归零不代伤）** + **三阶关系亲密度**，随时间自然平复。 |
-| **3. 鱼的记忆：私聊八章节档案 + 群聊独立建档 (`dsh-fish-memory`)** | [Yuuyuko-uu/dsh-fish-memory](https://github.com/Yuuyuko-uu/dsh-fish-memory) (`lib/生成档案.js`) + `WeChat 4.1 V7 Bridge` | **私聊**按用户独立建八章节长期档案，支持极性去重、**中文双字词与 2~4 字专名线索 + 多级排序 + 高频虚词组合过滤 + 短消息默认不回借上轮防串流 + 15 轮防重复注入**；**开启白名单的群聊**按群独立建「群聊档」（记录群氛围、群共同梗、群事件与**群友印象标签 `member_impressions`**，绝不污染单人私聊档），接入微信内存 LRU 群成员昵称缓存自动扶正非好友真实昵称，并在群内**只读识别私聊熟人**。 |
+| **3. 鱼的记忆：私聊八章节档案 + 群聊独立建档 (`dsh-fish-memory`)** | [Yuuyuko-uu/dsh-fish-memory](https://github.com/Yuuyuko-uu/dsh-fish-memory) (`lib/生成档案.js`) + `WeChat 4.1 V7 Bridge` | **私聊**按用户独立建八章节长期档案，支持极性去重、**中文双字词与 2~4 字专名线索 + 多级排序 + 高频虚词组合过滤 + 短消息默认不回借上轮防串流 + 15 轮防重复注入 + 写库人称防主语反转（统一第三人称不写「你」）+ 记错以实时工具为准**；**开启白名单的群聊**按群独立建「群聊档」（记录群氛围、群共同梗、群事件与**群友印象标签 `member_impressions`**，绝不污染单人私聊档），接入微信内存 LRU 群成员昵称缓存自动扶正非好友真实昵称，并在群内**只读识别私聊熟人**。 |
 | **4. 实时粮仓 (`dsh-whale-widget`)** | [MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget) | 实时调用 `GET /user/balance` 查询 DeepSeek 账户真实余额，统计上一口偷吃与今日累计消耗的 Token 饭量；日常闲聊按需唤醒，不机械背诵数字。 |
 | **5. 24张官方表情包 + 原生识图 + 偷图复用** | [yyh-001/dsh-meme](https://github.com/yyh-001/dsh-meme) + [SuInk/Diana](https://github.com/SuInk/Diana) | 内置 24 张大肥鱼官方表情包（带冷却门控与 15% 真随机门禁，发表情包必回）；基于 `deepseek-flash` 原生多模态看图（支持 GIF 动图三帧拼接看图，非多模态接口自动回退 `Qwen3-VL` 并按 SHA-256 缓存），**自动将见过的有趣表情包偷图入库打标复用**（GIF 原样发送为微信原生动画表情，聊天历史中表情包自动压缩为一句话短标注省 Token）。 |
 | **6. 微信双向真声语音 (`SenseVoiceSmall` + `DeepSeek Speech` + `SILK v3 TTS`)** | `FunAudioLLM/SenseVoiceSmall` + `DeepSeek /v1/tools` + `CosyVoice2 / Edge-TTS` | **听语音**：收到微信语音自动转写文字并识别笑声/叹气/哭腔等语气特征（未配硅基密钥时自动回退 DeepSeek `/v1/tools/asr`）；**发语音**：支持口令、自然语言及心情好时以微信原生语音气泡（Type 34）回复（支持 `CosyVoice2`、DeepSeek 官方 `stella` 音色 `/v1/tools/tts` 与 `Edge-TTS >= 7.3.1` 多重热备）。 |
 | **7. 群聊智能主动搭话 + 多人参聊活跃窗口 + 临时闭麦** | [SuInk/Diana](https://github.com/SuInk/Diana) + [Yuuyuko-uu/dsh-speak-up](https://github.com/Yuuyuko-uu/dsh-speak-up) | 在白名单群内实时跟踪完整群聊上下文，支持多人同时与大肥鱼连续对话（`active_speakers` 集合）、并发直呼抢占防重（`direct_wake` 抢占插话）、`<speak-up>` 闭合块主动搭话隔离、群回复直发不带冗余 `@` 前缀、自然语言触发 **30 分钟临时闭麦潜水**（被 `@`/点名立解）；每次插话判断的**「回/不回、为什么」**均记录在决策日志中（发 `大肥鱼 搭话记录` 可查）。 |
 | **8. 微信 4.1 朋友圈读写、锐评、点赞回评与好友自动通过** | `@dafeifish` + `WeChat 4.1 V7 Bridge` | 支持每日定时或手动（`大肥鱼 发朋友圈 [主题]`）生成图文动态并同步发布至真实微信朋友圈；主人私聊发送 `大肥鱼 刷朋友圈` 可实时读取电脑微信已加载的朋友圈（含点赞数、评论数与热评摘要）并毒舌锐评；支持 `大肥鱼 点赞朋友圈 <序号>`、`大肥鱼 评论朋友圈 <序号> [内容]`、**自身朋友圈新评论与好友追评自动回评**、**后台自动为近 7 天活跃私聊好友点赞/神评**、**私聊中顺手刷对方最新朋友圈并自然聊起**，以及**实时自动同意微信好友申请并主动发消息打招呼**。 |
 | **9. 联网搜索 + 网页正文读取** | [SuInk/Diana](https://github.com/SuInk/Diana) | 挂载 `web_search` 与 `read_webpage` 原生工具，时效性问题支持**多关键词并行搜索**并读取相关网页正文后再回答（反爬或空结果时自动回退 DeepSeek `/v1/tools/search` 与 `/v1/tools/fetch`）。 |
-| **10. 全平台链接、直播间与合并转发记录解析** | [SuInk/Diana](https://github.com/SuInk/Diana) | 自动解析 **微信公众号推文 (`mp.weixin.qq.com`) / B 站视频（多时间戳 `(BV, p)` 去重与分P）/ B 站直播间 (`live.bilibili.com`) / 抖音视频与直播间 (`webcast.amemv.com`) / YouTube / X（转推原作者与引用标注） / 小红书 / 微信分享卡片** 及 **微信合并转发聊天记录 (`<type>19</type>`)**；封面下载超时自动保底保留已解析出的标题与作者。 |
+| **10. 全平台链接、直播间与合并转发记录解析** | [SuInk/Diana](https://github.com/SuInk/Diana) | 自动解析 **微信公众号推文 (`mp.weixin.qq.com`) / B 站视频（多时间戳 `(BV, p)` 去重与分P）/ B 站直播间 (`live.bilibili.com`) / 抖音视频与直播间 (`webcast.amemv.com`) / YouTube / X（转推原作者与引用标注） / 小红书 / 微信分享卡片** 及 **微信合并转发聊天记录 (`<type>19</type>`)**；统一在卡片末行附中文单位互动热度（`万`/`亿`，字段异常静默跳过），封面下载超时自动保底保留已解析出的标题与作者。 |
 | **11. 文件解析、扫描件 OCR 与 V7 超长文本保护** | [SuInk/Diana](https://github.com/SuInk/Diana) + `WeChat 4.1 V7 Bridge` | 支持直接发送 **PDF（含扫描件自动回退 DeepSeek `/v1/tools/ocr` 识别）、Word (`.docx`)、Excel (`.xlsx`)、PPT (`.pptx`)、EPUB、TXT/代码文件**（上限 `35 MiB`，自动过滤二进制压缩包与安装包），以及 **V7 超长文本消息（`1,500` 字~`256 KB`）自动归档至会话文档缓存并压缩多轮历史摘要**，支持 30 分钟内多轮追问且防止历史 Token 爆炸。 |
 | **12. 多曲库点歌与随机复读** | [SuInk/Diana](https://github.com/SuInk/Diana) | **网易云音乐、QQ 音乐**多曲库切换，发送卡片并直接投递 `.mp3` 音频文件（支持可选 `QQ_MUSIC_PROXY`/`MUSIC_PROXY` 仅代理 QQ 音乐、报错敏感参数脱敏与 `code=2001` Cookie 失效提示）；白名单群内不同群友连续发送相同纯文字时随机跟读（0 Token 消耗）。 |
 
@@ -53,7 +53,7 @@
 
 ```mermaid
 flowchart LR
-    A["微信 4.1/4.2 客户端\n+ Prometheus-first/helper V7 DLL"] <-->|"Native C++ Bridge"| B["WeChatFerry V4 Gateway\n(server_v4.py HTTP / WS)"]
+    A["微信 4.1/4.2 客户端\n+ a251231/helper-w V7 DLL"] <-->|"Native C++ Bridge"| B["WeChatFerry V4 Gateway\n(server_v4.py HTTP / WS)"]
     B <-->|"/ws (64MiB) + /api/send*"| H["LangBot 平台适配器\n(wechatferry)"]
     H <-->|"LangBot 标准事件链"| C["WhaleListener (主监听器 / 兼容门面)"]
     C --> D["interaction_settings.py\n(会话档位/口令/权限注册表)"]
@@ -85,7 +85,7 @@ whale_persona_plugin/
 │       ├── mood_memory.py                   # 八维情绪衰减、三阶亲密度、极性去重记忆召回与每日作息
 │       ├── commands.py                      # 统一前缀指令分发、严格主人鉴权与记忆/朋友圈/好友命令
 │       └── outbound.py                      # 统一出站气泡调度（拆分、表情包与 WCF/LangBot 投递）
-└── tests/                                   # 标准库 unittest 回归测试套件 (285 项用例)
+└── tests/                                   # 标准库 unittest 回归测试套件 (295 项用例)
 ```
 
 ---
@@ -119,7 +119,7 @@ whale_persona_plugin/
 
 - **完整微信 4.1 / 4.2 原生模式（推荐）**：
   - **平台适配器**：在 LangBot 中选用 **`wechatferry`（WeChatFerry PC微信 3.9 / 4.x Helper）** 适配器（已内置于 [a251231/LangBot](https://github.com/a251231/LangBot) 的 `master` / `feat/wechatferry-adapter` 分支，支持跨机 `<img_b64>` 内联图片、`64 MiB` 大帧文档流及群内非好友真实昵称 `sender_name` 透传）。
-  - **底层桥接网关**：Windows 微信 `4.1` / `4.2`（`4.1.15.13` / `4.1.15.56` / `4.2.0.11` / `4.2.0.12`）配合 [Prometheus-first/helper](https://github.com/Prometheus-first/helper)（Fork：[a251231/helper](https://github.com/a251231/helper)）C++ 原生桥接与 `wechatferry-gateway`（`server_v4.py`），在插件运行容器配置环境变量 `WCF_GATEWAY_URL=http://<网关IP>:18080` 即可解锁原生 SILK 语音气泡、点歌卡片、真实朋友圈读写赞评与好友自动通过。
+  - **底层桥接网关**：Windows 微信 `4.1` / `4.2`（`4.1.15.13` / `4.1.15.56` / `4.2.0.11` / `4.2.0.12`）配合 [a251231/helper-w](https://github.com/a251231/helper-w) C++ 原生桥接与 `wechatferry-gateway`（`server_v4.py`），在插件运行容器配置环境变量 `WCF_GATEWAY_URL=http://<网关IP>:18080` 即可解锁原生 SILK 语音气泡、点歌卡片、真实朋友圈读写赞评与好友自动通过。
 - **其他平台适配器通用兼容模式**：
   - 若使用官方原版 LangBot 搭配 **WeChatPad / Gewechat / OneBot v11 (`aiocqhttp`) / 企业微信 / QQ / Telegram / 飞书** 等标准平台适配器，**双人格对话、八章节长期记忆与群聊档、心情系统、原生多模态看图、24 张表情包收发与偷图、联网搜索、公众号/全平台链接与 35MB 文档解析**等核心功能均可直接正常使用；仅依赖 `WCF_GATEWAY_URL` 的微信 4.x 专属接口会自动静默降级并回退到 LangBot 标准回复通道。
 
@@ -245,7 +245,7 @@ whale_persona_plugin/
    - 仅当聊到 AI / Token / 余额 / 干饭 / 胖瘦，或账户余额低于 `¥2` 触发饥荒预警时，才在回复中自然提起 Token 饭量；其余时候 100% 聚焦用户正在聊的话题。
    - **主动找人（Speak-up）防骚扰上限**：后台主动搭话在用户未回复期间最多触发 **2 次**，达到上限后必须等待用户实际回复方可清零计数。
 2. **微信单/双气泡自然节奏、受保护跨度安全切分与动态采样温度**
-   - 日常短句自动去除死板的句尾句号 `。`，**75% 以上直接单气泡回复**，仅在短反应词起手、明显转折（`||` / 显式两行换行）或喜剧吐槽停顿 `（）` 后拆为最多 2 条短气泡（切分严格跳过行内代码、URL、`《》`/`【】`/`「」`/引号括号等受保护跨度，忽略英文撇号 `character's`，并内置防连续双气泡门控与 `<16` 字过短合并），按文字长度模拟真人打字停顿（`0.75s ~ 2.0s`）。
+   - 日常短句自动去除死板的句尾句号 `。`，**75% 以上直接单气泡回复**，仅在短反应词起手、明显转折（`||` / 显式两行换行）或句末语气记号（喜剧空括号 `（）`、笑声 `ww`/`hhh`/`233+`）后拆为最多 2 条短气泡（切分严格跳过行内代码、URL、`《》`/`【】`/`「」`/引号括号等受保护跨度，忽略英文撇号 `character's` 与单词内字母 `aww`/`www.`，并内置防连续双气泡门控与 `<16` 字过短合并），按文字长度模拟真人打字停顿（`0.75s ~ 2.0s`）。
    - 根据消息类型动态调节生成温度：日常闲聊互怼采用 `1.1` 激发鲜活语感，技术问答/代码/长文/文件总结自动切换至 `0.78 ~ 0.82` 保障严谨准确。
 3. **微信引用消息 (`Quote`) 与会话级并发锁**
    - 自动解析微信 `<type>57</type>`（`<refermsg>`）引用回复 XML 与消息链 `Quote` 组件，精准感知群友或私聊对象正在针对哪句历史消息吐槽或追问。
@@ -316,7 +316,7 @@ git diff --check
 2. **上游核心思路与架构来源**
    - **活人感人设与分层记忆体系**：致敬并深度参考原版 `@dafeifish` 及 DeepSeek Harness (DSH) 社区的鲸鱼娘系列插件设计（去括号旁白、单/双气泡节奏、八章节长期档案「唯一的尺子」合并准则、七维情绪半衰期与实时粮仓）。
    - **实用群聊与多模态扩展**：群聊连续接话窗口、联网搜索、多平台链接/文件解析、多曲库点歌及偷图复用模块移植并改进自 [SuInk/Diana](https://github.com/SuInk/Diana)。
-   - **微信 4.1 / 4.2 原生内存桥接能力**：PC 微信 4.x 原生语音、图片/35MB 文件接收、公众号同步、朋友圈读写赞评与好友申请接口基于 [Prometheus-first/helper](https://github.com/Prometheus-first/helper) 构建并通过 [a251231/LangBot](https://github.com/a251231/LangBot) 的 `wechatferry` 适配器接入。
+   - **微信 4.1 / 4.2 原生内存桥接能力**：PC 微信 4.x 原生语音、图片/35MB 文件接收、公众号同步、朋友圈读写赞评与好友申请接口基于 [a251231/helper-w](https://github.com/a251231/helper-w) 构建并通过 [a251231/LangBot](https://github.com/a251231/LangBot) 的 `wechatferry` 适配器接入。
 
 3. **图片与表情包素材声明**
    - `assets/memes/` 目录下内置的 24 张大肥鱼表情包素材源自 DSH 社区 [yyh-001/dsh-meme](https://github.com/yyh-001/dsh-meme) 及大肥鱼同人社区公开分享作品，版权归原作者/画师所有，仅随本开源插件用于非商业学习交流与个人娱乐。
@@ -338,7 +338,7 @@ git diff --check
   - [yyh-001/dsh-meme](https://github.com/yyh-001/dsh-meme)（24 张大肥鱼表情包组件）
   - [Yuuyuko-uu/dsh-speak-up](https://github.com/Yuuyuko-uu/dsh-speak-up)（主动搭话机制）
 - **[SuInk/Diana](https://github.com/SuInk/Diana)**：提供了优秀的群聊接话、链接/文档解析、点歌与表情包复用的工程范本。
-- **[Prometheus-first/helper](https://github.com/Prometheus-first/helper)**：提供了稳定强大的 Windows 微信 4.1 / 4.2 C++ 原生内存桥接基础。
+- **[a251231/helper-w](https://github.com/a251231/helper-w)**：提供了稳定强大的 Windows 微信 4.1 / 4.2 C++ 原生内存桥接基础。
 - **[DeepSeek](https://www.deepseek.com/) & [SiliconFlow](https://siliconflow.cn/) & [FunAudioLLM/SenseVoice](https://github.com/FunAudioLLM/SenseVoice)**：提供高性价比的 `deepseek-flash` 原生多模态大模型、`SenseVoiceSmall` 语音情感听感识别与 `CosyVoice2` 语音合成能力。
 
 ### 许可证（License）
