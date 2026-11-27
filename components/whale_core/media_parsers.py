@@ -123,6 +123,8 @@ __all__ = [
     "extract_quote_context",
     "extract_xiaohongshu_note_from_state",
     "fetch_webpage_via_deepseek",
+    "format_resolver_count",
+    "format_resolver_stats_line",
     "has_supported_media_link_or_card",
     "is_incoming_wechat_file",
     "is_voice_reply_requested",
@@ -971,6 +973,60 @@ async def _download_cover_preserving_metadata(url: str) -> str | None:
         return None
 
 
+def format_resolver_count(raw: Any) -> str:
+    """Formats a platform engagement count into compact Chinese units (`万` / `亿`),
+    preserving already-formatted strings (e.g. `1.2万`, `100万+`) and silently returning `""`
+    for zero, negative, missing, or malformed JSON values (Diana #1674).
+    """
+    if raw is None or isinstance(raw, (bool, dict, list, tuple, set)):
+        return ""
+    num: int | None = None
+    if isinstance(raw, (int, float)):
+        if raw != raw:  # NaN
+            return ""
+        num = int(raw)
+    elif isinstance(raw, str):
+        s = raw.strip()
+        if not s or s.startswith("-"):
+            return ""
+        compact = s.replace(",", "").replace("_", "")
+        if re.fullmatch(r"\d+(?:\.0+)?", compact):
+            num = int(float(compact))
+        elif re.fullmatch(r"\d+(?:\.\d+)?", compact):
+            num = int(float(compact))
+        else:
+            return "" if compact in ("0", "0.0") else s
+    else:
+        return ""
+
+    if num is None or num <= 0:
+        return ""
+    if num < 10_000:
+        return str(num)
+    if num < 100_000_000:
+        tenths = num // 1_000
+        whole, frac = divmod(tenths, 10)
+        return f"{whole}万" if frac == 0 else f"{whole}.{frac}万"
+    tenths = num // 10_000_000
+    whole, frac = divmod(tenths, 10)
+    return f"{whole}亿" if frac == 0 else f"{whole}.{frac}亿"
+
+
+def format_resolver_stats_line(stats: list[tuple[str, Any]] | tuple[tuple[str, Any], ...]) -> str:
+    """Builds a single bottom-line engagement summary such as `播放 12.3万 · 点赞 3456 · 收藏 1.1万`
+    (Diana #1674/#1677), skipping empty/invalid fields without affecting main content parsing.
+    """
+    parts: list[str] = []
+    for label, val in stats:
+        lbl = str(label or "").strip()
+        if not lbl:
+            continue
+        formatted = format_resolver_count(val)
+        if formatted:
+            parts.append(f"{lbl} {formatted}")
+    return " · ".join(parts)
+
+
 async def parse_bilibili_live_url(url: str) -> tuple[str | None, str | None]:
     """Parses a `live.bilibili.com` room link into title, anchor, status, area, popularity, and cover (Diana #1563)."""
     room_id = bilibili_live_room_id(url)
@@ -1243,10 +1299,16 @@ async def _parse_bilibili_url(url: str, sessdata: str = "") -> tuple[str | None,
             d = j["data"]
             title = d.get("title", "")
             owner = (d.get("owner") or {}).get("name", "未知UP主")
-            stat = d.get("stat") or {}
-            views = stat.get("view", 0)
-            danmaku = stat.get("danmaku", 0)
-            likes = stat.get("like", 0)
+            stat = d.get("stat") if isinstance(d.get("stat"), dict) else {}
+            stats_line = format_resolver_stats_line(
+                [
+                    ("播放", stat.get("view")),
+                    ("点赞", stat.get("like")),
+                    ("投币", stat.get("coin")),
+                    ("收藏", stat.get("favorite")),
+                    ("弹幕", stat.get("danmaku")),
+                ]
+            )
             desc = (d.get("desc") or "").strip()[:240]
             pic = d.get("pic", "")
             bvid = d.get("bvid", "")
@@ -1265,10 +1327,11 @@ async def _parse_bilibili_url(url: str, sessdata: str = "") -> tuple[str | None,
         page_suffix = f"?p={page_num}" if page_num >= 2 else ""
         card = (
             f"📺 【B站视频解析】{title}\n"
-            f"👤 UP主：{owner}  |  ▶️ 播放：{views}  |  👍 点赞：{likes}  |  💬 弹幕：{danmaku}\n"
+            f"👤 UP主：{owner}\n"
             f"{page_line}"
             f"📝 简介：{desc or '无简介'}\n"
             f"🔗 https://www.bilibili.com/video/{bvid}{page_suffix}"
+            + (f"\n📊 {stats_line}" if stats_line else "")
         )
         cover_b64 = await _download_cover_preserving_metadata(pic)
         return card, cover_b64
@@ -1331,9 +1394,15 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
                     q_text = str(quote_obj.get("text") or "").strip()[:180]
                     quote_block = f"\n💬 引用 {q_label}：{q_text}"
                 body_text = f"{repost_prefix}{text}{quote_block}".strip()
-                likes = tw.get("likes", 0)
-                retweets = tw.get("retweets", 0)
-                views = tw.get("views", 0)
+                tw_stats_line = format_resolver_stats_line(
+                    [
+                        ("点赞", tw.get("likes")),
+                        ("转推", tw.get("retweets")),
+                        ("评论", tw.get("replies")),
+                        ("收藏", tw.get("bookmarks")),
+                        ("浏览", tw.get("views")),
+                    ]
+                )
 
                 media_url = ""
                 media_all = (tw.get("media") or {}).get("all") or []
@@ -1351,8 +1420,8 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
                     f"━━━━━━━━━━━━━━\n"
                     f"{body_text}\n"
                     f"━━━━━━━━━━━━━━\n"
-                    f"❤️ 喜欢：{likes}  |  🔁 转推：{retweets}  |  👁️ 浏览：{views}\n"
                     f"🔗 https://x.com/{screen_name}/status/{tweet_id}"
+                    + (f"\n📊 {tw_stats_line}" if tw_stats_line else "")
                 )
                 img_b64 = await _download_cover_preserving_metadata(media_url)
                 return card, img_b64
@@ -1373,18 +1442,22 @@ async def _parse_twitter_url(url: str) -> tuple[str | None, str | None]:
             name = u_info.get("name", user_handle)
             screen_name = u_info.get("screen_name", user_handle)
             desc = u_info.get("description") or "无简介"
-            followers = u_info.get("followers", 0)
-            following = u_info.get("following", 0)
-            tweets = u_info.get("tweets", 0)
+            user_stats_line = format_resolver_stats_line(
+                [
+                    ("粉丝", u_info.get("followers")),
+                    ("关注", u_info.get("following")),
+                    ("推文", u_info.get("tweets")),
+                ]
+            )
             joined = u_info.get("joined") or ""
             avatar_url = u_info.get("avatar_url") or ""
 
             card = (
                 f"👤 【X / Twitter 用户主页】{name} (@{screen_name})\n"
                 f"📝 简介：{desc}\n"
-                f"📊 粉丝：{followers}  |  关注：{following}  |  推文：{tweets}"
-                + (f"  |  加入于：{joined}" if joined else "")
-                + f"\n🔗 https://x.com/{screen_name}"
+                + (f"📅 加入于：{joined}\n" if joined else "")
+                + f"🔗 https://x.com/{screen_name}"
+                + (f"\n📊 {user_stats_line}" if user_stats_line else "")
             )
             avatar_b64 = await _download_cover_preserving_metadata(avatar_url)
             return card, avatar_b64
@@ -1537,6 +1610,15 @@ def _parse_social_html_sync(
                 if first_img.startswith("//"):
                     first_img = "https:" + first_img
                 vid_urls = xiaohongshu_video_candidate_urls(xhs_note)
+                interact = xhs_note.get("interactInfo") if isinstance(xhs_note.get("interactInfo"), dict) else {}
+                xhs_stats_line = format_resolver_stats_line(
+                    [
+                        ("点赞", interact.get("likedCount")),
+                        ("收藏", interact.get("collectedCount")),
+                        ("评论", interact.get("commentCount")),
+                        ("分享", interact.get("shareCount")),
+                    ]
+                )
                 headline = n_title or (n_desc.splitlines()[0][:48] if n_desc else "")
                 if headline:
                     card = (
@@ -1545,20 +1627,41 @@ def _parse_social_html_sync(
                         + (f"📝 摘要：{n_desc}\n" if n_desc else "")
                         + (f"🎬 视频流：已识别 ({len(vid_urls)} 路)\n" if vid_urls else "")
                         + f"🌐 {final_social_url}"
+                        + (f"\n📊 {xhs_stats_line}" if xhs_stats_line else "")
                     )
                     return card, first_img
 
-    if BeautifulSoup is None:
-        return None, ""
-    soup = BeautifulSoup(html_body, "html.parser")
-    og_title = soup.find("meta", attrs={"property": "og:title"}) or soup.find("meta", attrs={"name": "title"})
-    og_desc = soup.find("meta", attrs={"property": "og:description"}) or soup.find("meta", attrs={"name": "description"})
-    og_img = soup.find("meta", attrs={"property": "og:image"})
+    if BeautifulSoup is not None:
+        soup = BeautifulSoup(html_body, "html.parser")
+        og_title = soup.find("meta", attrs={"property": "og:title"}) or soup.find("meta", attrs={"name": "title"})
+        og_desc = soup.find("meta", attrs={"property": "og:description"}) or soup.find("meta", attrs={"name": "description"})
+        og_img = soup.find("meta", attrs={"property": "og:image"})
 
-    title = (og_title.get("content", "") if og_title else "") or (soup.title.string if soup.title else "")
-    title = (title or "").strip()
-    desc = (og_desc.get("content", "") if og_desc else "").strip()[:240]
-    img_url = (og_img.get("content", "") if og_img else "").strip()
+        title = (og_title.get("content", "") if og_title else "") or (soup.title.string if soup.title else "")
+        title = (title or "").strip()
+        desc = (og_desc.get("content", "") if og_desc else "").strip()[:240]
+        img_url = (og_img.get("content", "") if og_img else "").strip()
+    else:
+        def _meta_content(attr_name: str, attr_val: str) -> str:
+            m1 = re.search(
+                rf'<meta\b[^>]*\b{attr_name}\s*=\s*["\']{re.escape(attr_val)}["\'][^>]*\bcontent\s*=\s*["\']([^"\']*)["\']',
+                html_body,
+                re.I,
+            )
+            if not m1:
+                m1 = re.search(
+                    rf'<meta\b[^>]*\bcontent\s*=\s*["\']([^"\']*)["\'][^>]*\b{attr_name}\s*=\s*["\']{re.escape(attr_val)}["\']',
+                    html_body,
+                    re.I,
+                )
+            return html.unescape(m1.group(1)).strip() if m1 else ""
+
+        m_t = re.search(r"<title[^>]*>(.*?)</title>", html_body, re.I | re.S)
+        title = _meta_content("property", "og:title") or _meta_content("name", "title") or (
+            html.unescape(m_t.group(1)).strip() if m_t else ""
+        )
+        desc = (_meta_content("property", "og:description") or _meta_content("name", "description"))[:240]
+        img_url = _meta_content("property", "og:image")
     if img_url.startswith("//"):
         img_url = "https:" + img_url
 
@@ -1570,10 +1673,25 @@ def _parse_social_html_sync(
         "抖音" if domain in ("douyin.com", "live.douyin.com", "webcast.douyin.com", "webcast.amemv.com") else
         "网页链接"
     )
+    dy_stats_line = ""
+    if platform_tag == "抖音" and html_body:
+        dy_pairs: list[tuple[str, Any]] = []
+        for field, label in (
+            ("play_count", "播放"),
+            ("digg_count", "点赞"),
+            ("comment_count", "评论"),
+            ("collect_count", "收藏"),
+            ("share_count", "分享"),
+        ):
+            m_st = re.search(rf'"{field}"\s*:\s*(\d+)', html_body)
+            if m_st:
+                dy_pairs.append((label, m_st.group(1)))
+        dy_stats_line = format_resolver_stats_line(dy_pairs)
     card = (
         f"🔗 【{platform_tag}解析】{title}\n"
         + (f"📝 摘要：{desc}\n" if desc else "")
         + f"🌐 {final_social_url}"
+        + (f"\n📊 {dy_stats_line}" if dy_stats_line else "")
     )
     return card, img_url
 
@@ -1601,10 +1719,17 @@ async def _parse_youtube_or_social_url(url: str) -> tuple[str | None, str | None
                     author = d.get("author_name")
                     thumb = d.get("thumbnail_url")
                     if title:
+                        yt_stats_line = format_resolver_stats_line(
+                            [
+                                ("播放", d.get("view_count")),
+                                ("点赞", d.get("like_count")),
+                            ]
+                        )
                         card = (
                             f"▶️ 【YouTube 视频解析】{title}\n"
                             f"👤 频道：{author or '未知'}\n"
                             f"🔗 {url}"
+                            + (f"\n📊 {yt_stats_line}" if yt_stats_line else "")
                         )
                         img_b64 = await _download_cover_preserving_metadata(thumb or "")
                         return card, img_b64
